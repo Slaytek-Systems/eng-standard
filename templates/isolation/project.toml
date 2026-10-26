@@ -10,7 +10,7 @@ ports = [41000, 41019]    # inclusive range this project's services pick from; k
 
 # Named placeholders: the only variable parts allowed in a connect entry, each a whole argv element like {dump}.
 # Types: port (inside project.ports), path (inside this checkout, no .. or symlink escape), service (a service name),
-# or regex = "..." (the whole value must match). A value may never start with -.
+# Only these built-in types exist (no regex or free-form values). A value may never start with -.
 [placeholders]
 dump = { type = "path" }
 

@@ -219,7 +219,7 @@ test('repo check: eng connect commands must be listed; direct docker, kill and i
   const by = rule => hits.filter(h => h.rule === rule).map(h => h.message.match(/script "(\w)"/)[1]).sort();
   assert.deepEqual(by('not-allowlisted'), ['b', 'c', 'd', 'q', 'r', 's', 'v', 'w'], 'only full listed argv passes: extra flags, selectors and clusters never do');
   assert.deepEqual(by('bare-service-command'), ['e', 'f', 'i', 'k', 'o', 'u'], 'docker, podman, compose and convex go through eng connect');
-  assert.deepEqual(by('bare-kill'), ['f', 'i', 'm', 'n', 'o', 'u'], 'stop, kill, rm and down are found after docker global options too');
+  assert.deepEqual(by('bare-kill'), ['d', 'f', 'i', 'm', 'n', 'o', 'u', 'v'], 'destructive verbs and flags are found after global options and inside eng connect too');
   assert.deepEqual(by('inline-code'), ['g', 'h', 'i', 'j', 'q', 'w']);
   assert.deepEqual(by('shell-string'), ['i', 'j', 'w'], 'quoted or expanded lines around compose or a secret flag');
   assert.deepEqual(by('secret-argv'), ['j'], 'a quoted secret flag is still found');
@@ -250,18 +250,19 @@ test('allowlist entries: the full argv with typed placeholders; inline code, wra
   assert.equal(bad(['node', 'client.cjs', '"--token"', 'v']), true, 'a literal quoted secret flag is still a secret flag');
   for (const v of [['node', 'client.mjs'], ['npx', 'convex', 'codegen'], ['docker', 'compose', '-p', 'alpha', 'ps', '-a'], ['docker', 'compose', '-palpha_x', 'logs', '--tail', '5'], ['docker', 'ps'], ['./scripts/backend.sh', '--port', '{port}']])
     assert.equal(bad(v), false, `allowed: ${JSON.stringify(v)}`);
-  const list = [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', '{file}'], ['node', 'client.mjs', 'tail', '{n}'], ['node', 'client.mjs', 'ping', '{svc}', '{p}'], ['deno', 'eval']];
-  const ph = { file: { type: 'path' }, n: { regex: '[0-9]{1,3}' }, svc: { type: 'service' }, p: { type: 'port' } };
+  const list = [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', '{file}'], ['node', 'client.mjs', 'ping', '{svc}', '{p}'], ['deno', 'eval']];
+  const ph = { file: { type: 'path' }, svc: { type: 'service' }, p: { type: 'port' } };
   const ctx = { ports: [41000, 41010], services: ['api', 'db'], inside: v => !v.startsWith('link') };
   const match = v => connectMatch(v, list, ph, ctx);
-  for (const v of [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', 'data/x.json'], ['node', 'client.mjs', 'tail', '25'], ['node', 'client.mjs', 'ping', 'db', '41003']])
+  for (const v of [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', 'data/x.json'], ['node', 'client.mjs', 'ping', 'db', '41003']])
     assert.ok(match(v), `listed: ${JSON.stringify(v)}`);
   for (const v of [['node', 'client.mjs', 'version', '--x'], ['node', 'client.mjs'], ['node', '-e', 'x'], ['/usr/bin/node', 'client.mjs', 'version'], ['./node', 'client.mjs', 'version'],
     ['docker', 'compose', '-p', 'alpha', 'up', '--remove-orphans', '--force-recreate'], ['deno', 'eval', 'Deno.kill(1)'], ['env', '-S', 'sh -c pwd'],
     ['node', 'client.mjs', 'read', '../other/x'], ['node', 'client.mjs', 'read', '/etc/passwd'], ['node', 'client.mjs', 'read', '~/x'], ['node', 'client.mjs', 'read', 'link/x'], ['node', 'client.mjs', 'read', '--token'],
-    ['node', 'client.mjs', 'tail', '1000'], ['node', 'client.mjs', 'tail', '5; kill 1'], ['node', 'client.mjs', 'ping', 'beta', '41003'], ['node', 'client.mjs', 'ping', 'db', '3210'], ['node', 'client.mjs', 'ping', 'db', '-1']])
+    ['node', 'client.mjs', 'ping', 'beta', '41003'], ['node', 'client.mjs', 'ping', 'db', '3210'], ['node', 'client.mjs', 'ping', 'db', '-1']])
     assert.equal(match(v), undefined, `not listed: ${JSON.stringify(v)}`);
-  assert.equal(placeholderOk('-x', { regex: '.*' }, ctx), false, 'a placeholder value never starts with -');
+  assert.equal(placeholderOk('-x', { type: 'path' }, ctx), false, 'a placeholder value never starts with -');
+  assert.equal(placeholderOk('x', { regex: '.*' }, ctx), false, 'only built-in placeholder types exist');
 });
 
 test('repo check: quoted secret flags and shell strings are warned', () => {
@@ -573,6 +574,42 @@ test('a listed ["deno", "eval"] cannot be used to kill another project\'s servic
   assert.ok(alive(pid), 'the other project\'s service is untouched');
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'deno never ran');
   assert.equal(eng(victim, 'agent-s', 'stop', 'sleeper').status, 0);
+});
+
+test('Luna repro: a free-form regex placeholder cannot read another project\'s secrets', () => {
+  const dir = project('omicron', '47180, 47184');
+  fs.writeFileSync(path.join(dir, '.eng/project.toml'), fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8').replace('file = { type = "path" }', 'file = { regex = ".*" }'));
+  const target = path.relative(dir, path.join(beta, '.eng/secrets/api.env'));
+  const r = eng(dir, 'agent-o', 'connect', 'api', '--', 'node', 'client.mjs', 'read', target);
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /placeholders\.file: unknown placeholder type/);
+  assert.doesNotMatch(out(r), /s3cret/, 'no secret printed');
+  const id = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
+  const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { leak: `eng connect api -- node client.mjs read ${target}` } }) }], id);
+  assert.deepEqual(hits.map(h => h.rule).sort(), ['identity-invalid', 'not-allowlisted'], 'the repo check flags it');
+  assert.match(hits.find(h => h.rule === 'identity-invalid').message, /unknown placeholder type/);
+  const ok = parseIdentity(id.replace('file = { regex = ".*" }', 'file = { type = "path" }')).identity;
+  const ctx = { ports: ok.ports, services: ['api'], inside: () => true };
+  assert.equal(connectMatch(['node', 'client.mjs', 'read', target], ok.services[0].connect, ok.placeholders, ctx), undefined, 'a path placeholder refuses ../beta/... even before resolving');
+});
+
+test('Astra repro: a listed destructive compose command is refused everywhere', () => {
+  const dir = project('pi', '47185, 47189'), base = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
+  const listed = `["docker", "compose", "-p", "pi", "up", "--remove-orphans", "--force-recreate"]`;
+  fs.writeFileSync(path.join(dir, '.eng/project.toml'), base.replace(/connect = \[\[.*\]\]\n/, `connect = [${listed}]\n`));
+  const errs = parseIdentity(fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8')).errors.join('\n');
+  assert.match(errs, /connect\[0\] refused: a destructive docker, podman or compose verb or flag/, 'identity validation refuses it');
+  const r = eng(dir, 'agent-p', 'connect', 'api', '--', 'docker', 'compose', '-p', 'pi', 'up', '--remove-orphans', '--force-recreate');
+  assert.equal(r.status, 1, out(r));
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'it never reached the (stub) engine');
+  const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng connect api -- docker compose -p pi up --remove-orphans --force-recreate' } }) }], fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8'));
+  assert.deepEqual(hits.map(h => h.rule).sort(), ['bare-kill', 'identity-invalid', 'not-allowlisted'], 'the repo check flags it');
+  const bad = v => validateEntry(v, 'pi').some(w => /destructive/.test(w));
+  for (const tail of [['stop'], ['kill'], ['rm'], ['down'], ['restart'], ['pause'], ['up', '--remove-orphans'], ['up', '--force-recreate'], ['up', '-V'], ['up', '--renew-anon-volumes'], ['down', '-v'], ['down', '--volumes'], ['down', '--rmi', 'all'], ['run', '--rm', 'web'], ['up', '--abort-on-container-exit'], ['up', '--timeout', '1'], ['logs', 'stop']])
+    assert.equal(bad(['docker', 'compose', '-p', 'pi', ...tail]), true, `compose ${tail.join(' ')}`);
+  for (const v of [['docker', 'system', 'prune'], ['docker', 'rmi', 'x'], ['docker', 'volume', 'rm', 'x'], ['docker', '--context', 'x', 'stop', 'y'], ['podman', 'kill', 'x'], ['docker-compose', '-p', 'pi', 'down']])
+    assert.equal(bad(v), true, JSON.stringify(v));
+  assert.equal(bad(['docker', 'compose', '-p', 'pi', 'up', '-d']), false, 'a plain up is not destructive');
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {

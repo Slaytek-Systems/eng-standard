@@ -31,7 +31,7 @@ owner = "core-edge"       # the owner in the workspace registry
 state = ".eng/state"      # required; inside the checkout; add it to .gitignore
 ports = [41000, 41019]    # inclusive; must not include 3210, 3211 or 6791
 
-[placeholders]           # the only variable parts of a connect entry: type port | path | service, or regex
+[placeholders]           # the only variable parts of a connect entry: type port | path | service
 dump = { type = "path" }
 
 [[services]]
@@ -55,7 +55,7 @@ All four commands run from the checkout root and read `.eng/project.toml`. They 
 
 **Only listed commands run (allowlist).** `eng run-service` runs exactly the service's `command`. `eng connect` runs a command only when an entry in that service's `connect = [...]` equals it as the full argv: the same length, the same program string (no PATH or basename matching: `/usr/bin/docker` does not match `docker`), and every other element identical or a declared `{placeholder}`. An argument that is not listed can never appear, so flag and subcommand variants (`deno eval`, `compose up --remove-orphans --force-recreate`) are refused. Commands run as argv, never through a shell.
 
-Placeholders are declared under `[placeholders]`, each filling one whole argv element, with a strict type: `port` (inside `project.ports`), `path` (resolved against the checkout; no `/`, `~` or `..`, and every existing part's real path stays inside, so a symlink cannot escape), `service` (a service name from this file), or `regex = "..."` (the whole value must match). A placeholder value never starts with `-`.
+Placeholders are declared under `[placeholders]`, each filling one whole argv element. Only three built-in types exist; there are no regex or free-form placeholders, and any other spec is refused as an unknown type: `port` (inside `project.ports`), `path` (every value is resolved against the checkout with symlinks followed, and the result must stay inside it; `/`, `~` and `..` are refused outright), and `service` (a service name from this file). A placeholder value never starts with `-`.
 
 Identity-file validation checks every `command` and `connect` entry, so a bad entry is refused before anything starts:
 - a launcher that only runs other commands (`env`, `xargs`, `sudo`, `nohup`, `timeout`, `busybox`, ...) cannot be listed; list the program itself;
@@ -64,7 +64,11 @@ Identity-file validation checks every `command` and `connect` entry, so a bad en
 - docker and podman need an approved subcommand (`compose`, `ps`, `version`, `info`, `images`); compose needs an approved subcommand (`up`, `ps`, `logs`, `config`, `exec`, `run`, `build`, `pull`, `images`, `top`, `port`, `version`, `ls`, `events`) and a real `-p`/`--project-name` naming this project before it. Stopping and removing (`stop`, `kill`, `rm`, `down`, `restart`, `pause`) go through `eng stop` only;
 - no secret-looking flag with a value.
 
-At runtime `eng connect` also runs the entry checks on the concrete argv after placeholders are filled (compose targeting, secret flags). Put anything that needs a shell in a script file inside the checkout and list the script.
+At runtime `eng connect` also runs the entry checks on the concrete argv after placeholders are filled (compose targeting, secret flags).
+
+**Destructive operations are never allowed**, even when listed. Any docker, podman or compose argv that contains a destructive verb or flag is refused by identity validation, refused at runtime, and flagged by the repo check (`bare-kill`). Stopping, killing and removing go through `eng stop` only.
+- Verbs anywhere in the argv: `stop`, `kill`, `rm`, `down`, `restart`, `pause`, `unpause`, `prune`, `rmi`, `remove`, `delete`, `purge`, `scale`, `update`, `wait`, `attach`. A service or argument with one of these names is refused too (fail closed).
+- Flags: `-v`/`--volumes`, `-V`/`--renew-anon-volumes`, `--remove-orphans`, `--force-recreate`, `--always-recreate-deps`, `--rmi`, `--rm`, `--force`, `--prune`, `--purge`, `--abort-on-container-exit`, `--exit-code-from`, `--timeout`/`--time`, `--signal`, `--kill`. Any other single-dash flag after the compose subcommand is refused as well, except `-d`, `-q` and `-a`. Put anything that needs a shell in a script file inside the checkout and list the script.
 
 | Command | Does |
 |---------|------|
