@@ -18,6 +18,7 @@ import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { validateIsolation } from '../lib/isolation.mjs';
 import { isolation } from '../lib/isolation-cli.mjs';
+import { trustErrors } from '../lib/trust.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -57,6 +58,7 @@ function configErrors(c) {
   errs.push(...validateRenovation(c.renovation));
   errs.push(...validateAuto(c.merge));
   errs.push(...validateIsolation(c.isolation));
+  errs.push(...trustErrors(c.trust));
   return errs;
 }
 
