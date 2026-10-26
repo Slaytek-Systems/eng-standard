@@ -77,6 +77,7 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { HOME = "/tmp" }\n', /env.HOME is set by eng/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nport_env = "HOME"\n', /port_env HOME is set by eng/);
   bad(base.replace('schema = 1\n', ''), /schema must be 1/);
+  bad(base, /at least one \[\[services\]\] table with an explicit name is required/);
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--token", "-fakesecret"]\n', /carries --token on argv/);
@@ -140,6 +141,13 @@ test('run-service refuses a service whose argv carries a secret value starting w
   assert.ok(!fs.existsSync(recordPath(dir, 'delta', 'leaky')), 'nothing started');
 });
 
+test('compose commands must name this project, through eng connect or not', () => {
+  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p-local up -d', d: 'COMPOSE_PROJECT_NAME=p-local docker compose ps', e: 'eng connect x -- docker compose --project-name=p-local logs' };
+  const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b']);
+});
+
 test('repo check: compose block-scalar commands are scanned across lines', () => {
   for (const style of ['>-', '|'])
     assert.deepEqual(isolationFindings([{ path: 'compose.yml', text: `name: p-x\nservices:\n  a:\n    command: ${style}\n      backend\n      --instance-secret\n      abc\n` }], null).map(h => h.rule), ['identity-missing', 'secret-argv'], style);
@@ -149,7 +157,7 @@ test('repo check: "default" as a name and secret flags split across compose comm
   const hits = isolationFindings([
     { path: 'compose.yml', text: 'name: p-local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
     { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port', c: 'eng connect x -- true && npx convex dev', d: 'eng connect x -- npx convex codegen', e: 'env API_TOKEN=v client' } }, null, 2) },
-  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n');
+  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n');
   assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:secret-argve']);
 });
 
@@ -268,6 +276,9 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
   assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; the command carries --admin-key on argv/);
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'beta-project', 'down');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN, process.env.PIN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
