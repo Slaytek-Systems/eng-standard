@@ -22,8 +22,8 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
     gate_workflow: gate.yml
     # gate_app_id: <id>           # a GitHub App that posts eng-merge-gate; the ruleset then binds the check to it (eng doctor fails until set)
     base: main
-    # A PR touching these also needs a second PASS from a verifier on a different provider (gate, auth, billing).
-    second_provider_paths:
+    # A PR touching these needs PASSes from high_risk_verifiers independent verifiers with distinct identities (gate, auth, billing).
+    high_risk_paths:
       - ".github/**"              # workflows (ci, merge-post, merge-watch), CODEOWNERS, actions
       - ".buildkite/**"
       - ".eng/ci/**"
@@ -45,14 +45,15 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
       - "**/billing.*"
       - "**/payments/**"
       - "**/payments.*"
+    high_risk_verifiers: 2        # N distinct independent identities for high_risk_paths (default 2)
     post_merge: { check: "bash scripts/shipped-artifact-check.sh" }   # tests on merged main + the npm-packed artifact; red = auto-revert PR
     stuck_minutes: 30             # red or missing required check, no activity this long = `stuck` label
     verdict_wait_minutes: 30      # no verdict this long after the head was pushed = restart the owner
     restart_webhook_env: ENG_RESTART_WEBHOOK   # repo secret: URL that restarts the owning job; unset = comment only
-    # verifier_logins: { <github-login>: openai, <github-login>: google }   # bind verdicts to verifier identities. Unset: verdicts are self-declared (one shared GitHub identity); eng doctor flags it
+    # verifier_logins: [<github-login>, <github-login>]   # bind verdicts to verifier identities: one login is one verifier. Unset: verdicts are self-declared (one shared GitHub identity); eng doctor flags it
 
 ship:
-  verifier: fresh-context agent; family different from every author; provider recorded (eng verdict --provider ... --pr <n>)
+  verifier: fresh-context agent whose identity differs from every author's (eng verdict --by <id> --pr <n>)
 
 gates:
   skipped_is_failed: true

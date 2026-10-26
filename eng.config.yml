@@ -11,15 +11,16 @@ project:
     test: npm test
 
 merge:                            # The merge rule (AGENTS.md "Merge rule"). Nobody bypasses anything, Matt included.
-  owner: "self-merge.yml: risk:low after one independent PASS, risk:high after PASSes from two non-author providers, both on the exact head"
+  owner: "self-merge.yml: risk:low after one independent PASS, risk:high after PASSes from N distinct independent identities, all on the exact head"
   command: "self-merge: PUT pulls/<n>/merge {merge_method: squash, sha: <head>}. Matt: gh pr merge <n> --squash --delete-branch --match-head-commit <sha>"
   method: squash
 
 ship:
-  verifier: fresh-context agent from a different model family than every author (eng verdict ... --pr <n>)
-  high_risk:                      # Any changed path here (or a rename's old path) = risk:high: two providers must PASS. Else risk:low.
+  verifier: fresh-context agent whose identity differs from every author's (eng verdict --by <id> --pr <n>)
+  high_risk:                      # Any changed path here (or a rename's old path) = risk:high: N distinct identities must PASS. Else risk:low.
     label: risk:high
     low_label: risk:low
+    verifiers: 2                  # N: distinct independent verifier identities that must PASS a risk:high head
     reasons: [CI, merge setup, executable CLI, package scripts and dependencies, vendored third-party code]
     paths:
       - ".github/**"              # workflows (CI, risk-label, self-merge), CODEOWNERS, actions
@@ -43,7 +44,7 @@ ship:
       - "package-lock.json"
       - "**/.npmrc"
       - "vendor/**"               # third-party skills and kit code at pinned versions
-      - "**/auth/**"              # auth and billing code (none in this repo yet): two providers, like any gate path
+      - "**/auth/**"              # auth and billing code (none in this repo yet): risk:high, like any gate path
       - "**/auth.*"
       - "**/billing/**"
       - "**/billing.*"
@@ -54,8 +55,8 @@ ship:
     hold_minutes: 120             # checks and verdicts green on the head SHA this long before the merge (Matt's window)
     check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
     status: verdict               # commit status the independent checker posts (eng verdict ... --pr <n>)
-    # verifier_logins: { <login>: openai, <login>: google }   # once verifiers have their own GitHub identities: only
-    #                               these logins' verdict comments count, with the login's provider (docs/self-merge.md)
+    # verifier_logins: [<login>, <login>]   # once verifiers have their own GitHub identities: only these logins'
+    #                               verdict comments count, one identity per login (docs/self-merge.md)
 
 gates:
   skipped_is_failed: true

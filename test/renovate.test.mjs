@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import {
   preflight, compareBaseline, makeBaseline, baselineDiff, secretFilenameFindings, gateOutcome, ledgerResult, gatesToRun, refreshPlan,
-  ADAPTERS, crossProviderFlag, covers, withLocalRules, LOCAL_BEGIN, divergencesMd, canApply, planSteps, validateRenovation,
+  ADAPTERS, covers, withLocalRules, LOCAL_BEGIN, divergencesMd, canApply, planSteps, validateRenovation,
 } from '../lib/renovate.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -91,20 +91,17 @@ test('merge policy: strict + behind refreshes first; patch-id carry keeps the ve
   assert.match(refreshPlan({ strict: false, behind: 3, head: 'a'.repeat(40), patchId: 'p1', verdicts: v }).why, /not required \(non-strict\)/);
 });
 
-test('core-edge receipt adapter: valid receipt with provider; self-review and bad provider are rejected; gate files need cross-provider', () => {
+test('core-edge receipt adapter: valid receipt bound to the verifier identity; self-review is rejected', () => {
   const ad = ADAPTERS['core-edge.ship-receipt/v1'];
-  const x = { pr: 373, head: 'a'.repeat(40), baseSha: 'b'.repeat(40), tree: 'c'.repeat(40), authorSession: 'builder-1', authorProvider: 'anthropic', at: Date.parse('2026-10-23T01:02:03.456Z'),
-    verdict: { result: 'PASS', by: 'verifier-1', family: 'gpt', provider: 'openai', model: 'gpt-6.1-sol', session: 'verifier-1' } };
+  const x = { pr: 373, head: 'a'.repeat(40), baseSha: 'b'.repeat(40), tree: 'c'.repeat(40), authorSession: 'builder-1', at: Date.parse('2026-10-23T01:02:03.456Z'),
+    verdict: { result: 'PASS', by: 'verifier-1', session: 'verifier-1' } };
   const r = ad.build(x);
   assert.deepEqual(ad.validate(r), []);
   assert.equal(r.created_at, '2026-10-23T01:02:03Z');
-  assert.equal(r.reviewer.provider, 'openai');
+  assert.deepEqual(r.reviewer, { route: 'eng verdict', session_id: 'verifier-1', fresh_context: true, author_session_id: 'builder-1' }, 'no model or provider fields');
   assert.match(ad.body(r), /^<!-- core-edge\.ship-receipt\/v1 -->\n\n```json\n\{/);
   assert.match(ad.validate(ad.build({ ...x, authorSession: 'verifier-1' })).join(), /self-review/);
-  assert.match(ad.validate(ad.build({ ...x, verdict: { ...x.verdict, provider: 'devin' } })).join(), /provider must be one of/);
-  assert.equal(crossProviderFlag(['scripts/ship-gate/evaluate.ts'], [ad.gatePaths], r.reviewer), null);
-  assert.match(crossProviderFlag(['.buildkite/pipeline.yml'], [ad.gatePaths], { ...r.reviewer, provider: 'anthropic' }), /needs a reviewer on a different provider/);
-  assert.equal(crossProviderFlag(['src/a.ts'], [ad.gatePaths], {}), null);
+  assert.deepEqual(ad.build({ ...x, verdict: { ...x.verdict, family: 'f', provider: 'p', model: 'm' } }).reviewer, r.reviewer, 'a legacy verdict\'s family, provider and model do not reach the receipt');
 });
 
 test('CODEOWNERS coverage, local rules kept, divergences rendered, fixed step order, config boundary', () => {
@@ -221,23 +218,23 @@ test('eng renovate ci-preflight and prove: needs-decision exits 3; a timeout rec
   git('add -A'); git('commit -qm proof-gates-reset');
 });
 
-test('eng verdict records provider; eng renovate receipt drafts a core-edge receipt and never posts', () => {
-  git('add -A'); git('commit -q --allow-empty -m "step3" -m "Agent: builder-1\nAgent-Family: claude"');
+test('eng verdict records the verifier identity; eng renovate receipt drafts a core-edge receipt and never posts', () => {
+  git('add -A'); git('commit -q --allow-empty -m "step3" -m "Agent: builder-1"');
   let r = eng('renovate', 'apply', 'gates-enforce'); assert.equal(r.status, 0, out(r));
   r = eng('renovate', 'apply', 'verifier', '--adapter', 'core-edge.ship-receipt/v1'); assert.equal(r.status, 0, out(r));
   assert.equal(eng('renovate', 'render', '--check').status, 0, 'apply re-renders what its config edit changed');
-  git('add -A'); git('commit -qm "step4-5" -m "Agent: builder-1\nAgent-Family: claude"');
-  r = eng('verdict', 'PASS', '--by', 'verifier-1', '--family', 'gpt', '--provider', 'openai', '--model', 'gpt-6.1-sol', '--session', 'verifier-1');
+  git('add -A'); git('commit -qm "step4-5" -m "Agent: builder-1"');
+  r = eng('verdict', 'PASS', '--by', 'verifier-1', '--session', 'verifier-1');
   assert.equal(r.status, 0, out(r));
-  assert.match(eng('verdict', 'check').stdout, /code written by .*builder-1.*families: claude/);
-  assert.match(out(eng('verdict', 'PASS', '--by', 'x', '--family', 'gpt', '--provider', 'devin')), /--provider must be one of/);
+  assert.match(eng('verdict', 'check').stdout, /code written by .*builder-1/);
+  assert.match(out(eng('verdict', 'PASS', '--by', 'x', '--provider', 'p')), /--provider was removed/);
   r = eng('renovate', 'receipt', '--pr', '7', '--author-session', 'builder-1');
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /DRAFT core-edge\.ship-receipt\/v1 for PR #7/); assert.match(r.stdout, /Not posted/);
   const body = fs.readFileSync(path.join(dir, `renovation/receipts/${git('rev-parse HEAD')}.md`), 'utf8');
   const rec = JSON.parse(body.match(/```json\n([\s\S]+)\n```/)[1]);
   assert.equal(rec.diff_fingerprint, git('rev-parse HEAD^{tree}'));
-  assert.equal(rec.reviewer.provider, 'openai'); assert.equal(rec.reviewer.author_provider, 'anthropic');
+  assert.deepEqual([rec.reviewer.session_id, rec.reviewer.author_session_id, 'model' in rec.reviewer, 'provider' in rec.reviewer], ['verifier-1', 'builder-1', false, false]);
   assert.equal(git('status --porcelain'), '', 'receipt drafts are gitignored');
   r = eng('renovate', 'refresh');
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /eng renovate refresh: receipt/);

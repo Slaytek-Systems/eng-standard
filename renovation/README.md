@@ -41,7 +41,7 @@ Repeat `plan` → branch → `apply <step>` → PR for each step. A step runs on
 | `eng renovate wire --ci buildkite\|github` | Writes `renovation/wire/<ci>.yml` (preflight, scan, lint, render check, fallow) and prints the ruleset change for an admin. It never applies it | 0 |
 | `eng renovate ci-preflight` | Compares the repo's Bun and Node pins (`packageManager`, `.bun-version`, `.node-version`, `.nvmrc`, `.tool-versions`) with `renovation.ci.toolchain` for the named image and queue. A mismatch is `needs-decision: ci-image-operator` with the image and queue named. The pack does not build images | 3 on needs-decision |
 | `eng renovate refresh` | Applies the merge policy: strict and behind → update the branch (merge, no force push), then refresh again. Otherwise it reports whether the verdict carries by patch-id, needs a fresh verifier, or needs a new receipt draft | 3 when a refresh or re-verify is needed |
-| `eng renovate receipt --pr <n> --author-session <id>` | Drafts the repo's receipt from the latest independent verdict for this patch-id into `renovation/receipts/<head>.md`. Flags gate-file changes that need a cross-provider reviewer or a human approval. Never posts | 0 |
+| `eng renovate receipt --pr <n> --author-session <id>` | Drafts the repo's receipt from the latest independent verdict for this patch-id into `renovation/receipts/<head>.md`. Never posts | 0 |
 | `eng renovate prove [--gate g]... [--timeout s] [--force]` | Runs each proof gate with a timeout and records pass, fail or blocked (timeout or admission) in `renovation/proof/<sha>.json` after every gate. A re-run resumes and skips passed gates. Anything but all-pass is NOT PROVED | 0 proved, 1 failed, 3 blocked |
 | `eng launch [--ref r] -- <cmd>` / `eng launch --keep` / `eng launch down <dir>` | Makes a private 0700 round dir under `hygiene.scratch_root` (never /tmp) with a 0700 worktree and a 0700 tmp. It never chmods an existing checkout. `-- <cmd>` runs the command there and removes the round on exit, pass or fail (v0.9.2). `--keep` keeps it; `down` removes it without `--force` | the command's exit code |
 
@@ -56,17 +56,17 @@ renovation:
   divergences: []                  # [{ rule, standard, local, reason, owner }]
   gates: { mode: warn }            # warn | enforce
   ci: { provider: buildkite, queue: <queue>, image: <image>, toolchain: { bun: 1.4.4, node: 24 } }
-  receipt: { adapter: core-edge.ship-receipt/v1, gate_paths: [] }   # or none
+  receipt: { adapter: core-edge.ship-receipt/v1 }   # or none
   proof:
     gates: [{ name: test, command: bun run test, timeout_s: 900 }]
 ```
 
 ## Verifier and receipts
 
-The builder and the verifier are different sessions with fresh context. The verifier records its model provider:
+The builder and the verifier are different identities and sessions with fresh context. The verifier records its own identity:
 
 ```sh
-eng verdict PASS --by <id> --family <family> --provider openai|anthropic|google|xai --model <m> --session <id> --pr <n>
+eng verdict PASS --by <id> --session <id> --pr <n>
 ```
 
 The record binds the head SHA, the merge-base, the base tip, the head tree (the diff fingerprint) and the patch-id (`refs/notes/eng-verdict`). An adapter turns it into the repo's own format. Adapter 1 is `core-edge.ship-receipt/v1`: a COMMENT review body with the `<!-- core-edge.ship-receipt/v1 -->` marker. Its `diff_fingerprint` is the head tree SHA and its `base_sha` is the base tip. A rebase therefore always needs a new receipt draft. The verdict itself carries over when the patch-id is unchanged and `verdict_carry` is `patch-id`. The lead or the lead's lane posts the draft; the pack never does.
@@ -75,7 +75,7 @@ The record binds the head SHA, the merge-base, the base tip, the head tree (the 
 
 | Repo | Gap | Piece |
 |---|---|---|
-| Core Edge #373 | supported-provider receipt | `eng verdict --provider` + `eng renovate receipt` (core-edge adapter) |
+| Core Edge #373 | independent-verifier receipt | `eng verdict --by` + `eng renovate receipt` (core-edge adapter) |
 | Core Edge #373 | up-to-date landing gate | `renovation.merge_policy` + `eng renovate refresh` |
 | Infotech #462 | v7 operator | `eng renovate ci-preflight` → `needs-decision: ci-image-operator` |
 | Infotech #462 | native proof | `eng renovate prove` ledger with timeouts |

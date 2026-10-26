@@ -26,8 +26,8 @@ One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md fi
 | `eng verdict round [--ref r] -- <cmd>` | a verifier round: the same scratch round at HEAD, removed on exit |
 | `eng doctor` | gate: detects the merge mode the repo can run (`merge.auto.mode`) and fails a mismatch; fails a config that skips the scratch root, a toolchain's shared cache (Cargo, Vite, Bun, Deno), the Vite `cacheDir`, the container label or per-PR evidence; plus the built-in disk lint rules |
 | `eng clean --containers` / `--evidence` | dry run by default: containers labelled for this repo (with their volumes); evidence dirs of merged or closed PRs |
-| `eng merge gate\|watch\|post\|settings` | merge rule v0.10.0 (`merge.auto`): the one required check's gate. Strict mode (default): up to date with main + an independent PASS for the exact head. Queue mode (optional, where the repo has a merge queue): a PASS for the queued patch-id. Gate, auth and billing paths need a second provider. Also stuck flags, owner restarts, post-merge auto-revert, and the admin settings (printed, never applied). See `docs/merge-queue.md` |
-| `eng verdict ... --pr <n>` | also posts the verdict as a PR comment (head SHA, patch-id, provider) and, in a repo with `merge.auto`, dispatches `gate.yml` |
+| `eng merge gate\|watch\|post\|settings` | merge rule v0.10.0 (`merge.auto`): the one required check's gate. Strict mode (default): up to date with main + an independent PASS for the exact head. Queue mode (optional, where the repo has a merge queue): a PASS for the queued patch-id. Gate, auth and billing paths need PASSes from N distinct independent identities (default 2). Also stuck flags, owner restarts, post-merge auto-revert, and the admin settings (printed, never applied). See `docs/merge-queue.md` |
+| `eng verdict ... --pr <n>` | also posts the verdict as a PR comment (head SHA, patch-id, verifier identity) and, in a repo with `merge.auto`, dispatches `gate.yml` |
 | `npm test` | this package's own tests (`node --test`) |
 
 Vendored upstream skills (verbatim, path-rewritten `.cursor/skills/` → `.agents/skills/`): see `vendor/PINS.txt`. Licenses: MIT (vendor/*/LICENSE).
