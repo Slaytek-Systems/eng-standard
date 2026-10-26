@@ -12,9 +12,13 @@ const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const PKG = path.resolve(new URL('..', import.meta.url).pathname);
 const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-isolation-'));
 const STATE = path.join(root, 'xdg-state');
+// docker and podman stubs come first on PATH, so no test can reach a real container engine; the stub records any call.
+const FAKEBIN = path.join(root, 'fakebin'), ENGINE_CALLED = path.join(root, 'engine-called');
+fs.mkdirSync(FAKEBIN);
+for (const b of ['docker', 'podman', 'docker-compose', 'podman-compose']) fs.writeFileSync(path.join(FAKEBIN, b), `#!/bin/sh\necho "$0 $*" >> '${ENGINE_CALLED}'\n`, { mode: 0o700 });
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 const started = [];
-const env = agent => ({ ...process.env, XDG_STATE_HOME: STATE, XDG_CACHE_HOME: path.join(root, 'xdg-cache'), ENG_AGENT_ID: agent ?? '', T3_THREAD_ID: '',
+const env = agent => ({ ...process.env, PATH: `${FAKEBIN}:${process.env.PATH}`, XDG_STATE_HOME: STATE, XDG_CACHE_HOME: path.join(root, 'xdg-cache'), ENG_AGENT_ID: agent ?? '', T3_THREAD_ID: '',
   CONVEX_DEPLOYMENT: 'anonymous:anonymous-agent', CONVEX_URL: 'http://127.0.0.1:3210' });
 const eng = (cwd, agent, ...a) => spawnSync(process.execPath, [ENG, ...a], { cwd, encoding: 'utf8', env: env(agent) });
 const out = r => r.stdout + r.stderr;
@@ -135,6 +139,13 @@ test('refusal diagnostics never echo argv text that can hold a value', () => {
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', `DB_URL=${canary} client --token x`);
   assert.equal(r.status, 1);
   assert.doesNotMatch(out(r), new RegExp(canary), 'the connect refusal never prints the assignment');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'env', `DB_URL=${canary}`, 'client', '--token', 'x');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /refusing; the command carries --token on argv/);
+  assert.doesNotMatch(out(r), new RegExp(canary), 'a leading env assignment is never printed');
+  const toml = parseIdentity(`schema = 1\n[project]\nid = "z"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = [DB_URL=${canary}]\n`).errors.join('\n');
+  assert.match(toml, /unsupported value/);
+  assert.doesNotMatch(toml, new RegExp(canary), 'identity parse errors never echo the value');
   assert.equal(programName(`DB_URL=${canary}`), '<command>', 'a command name that carries a value is withheld');
   assert.equal(programName('node'), 'node');
 });
@@ -151,9 +162,9 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g', 'j', 'k'], 'global options, a second -p and a path prefix do not hide it');
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g', 'j', 'k', 'q', 'r'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
   const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
   assert.deepEqual(kills.map(h => `${h.rule}:${h.message.match(/script "(\w)"/)[1]}`).sort(), ['bare-kill:m', 'bare-kill:n', 'bare-kill:o']);
   const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`)).map(h => h.rule));
@@ -298,6 +309,12 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', '-p', 'beta', 'down');
   assert.match(out(r), /refusing; a compose command must name this project/, 'a later -p cannot redirect compose to another project');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', 'docker compose -p alpha ps; docker compose -p beta down');
+  assert.equal(r.status, 1, 'every compose call in a compound command must name this project');
+  assert.match(out(r), /refusing; a compose command must name this project/);
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', 'docker compose -p alpha ps && docker compose down');
+  assert.equal(r.status, 1, 'a later compose call with no selector is refused');
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'no refused compose command reached the (stub) container engine');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', '--context', 'other', 'compose', 'down');
   assert.equal(r.status, 1);
   assert.match(out(r), /refusing; a compose command must name this project/, 'a global option before compose does not hide it');
