@@ -86,7 +86,7 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   verifier: fresh-context agent   # Verdict bound to the head SHA / patch-id (eng verdict).
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
   # in SHIPPING.md instead. Set merge_queue: { provider, max_group_size, ci_trigger } only to opt in (eng then warns if CI lacks merge_group).
-  # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, second_provider_paths, post_merge.check, stuck_minutes,
+  # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, high_risk_paths, high_risk_verifiers, post_merge.check, stuck_minutes,
   # verdict_wait_minutes } plus eng merge gate|watch|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
   high_risk:                      # Matt approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
     label: risk:high

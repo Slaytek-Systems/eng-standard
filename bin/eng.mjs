@@ -12,7 +12,7 @@ import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/fla
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence } from '../lib/hygiene.mjs';
 import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
-import { validateRenovation, compareBaseline, lintFindings, baselinePath, PROVIDERS } from '../lib/renovate.mjs';
+import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
 import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
@@ -832,33 +832,32 @@ const VNOTES = 'eng-verdict';
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
 function codeAuthors(cfg) {
   const mb = sh(`git merge-base ${baseRef(cfg)} HEAD`);
-  const ids = new Set(), fams = new Set();
-  const log = sh(`git log '--format=%ae%x1f%(trailers:key=Agent,valueonly,separator=%x2C)%x1f%(trailers:key=Agent-Family,valueonly,separator=%x2C)%x1e' ${mb}..HEAD`);
+  const ids = new Set();
+  const log = sh(`git log '--format=%ae%x1f%ce%x1f%(trailers:key=Agent,valueonly,separator=%x2C)%x1e' ${mb}..HEAD`);
   for (const row of log.split('\x1e').map(r => r.trim()).filter(Boolean)) {
-    const [email, agent, fam] = row.split('\x1f');
-    (agent || email).split(',').map(x => x.trim()).filter(Boolean).forEach(x => ids.add(x));
-    (fam || '').split(',').map(x => x.trim()).filter(Boolean).forEach(x => fams.add(x));
+    const [email, committer, agent] = row.split('\x1f');
+    [email, committer, ...(agent || '').split(',')].map(x => (x || '').trim()).filter(Boolean).forEach(x => ids.add(x));
   }
-  return { ids, fams };
+  return { ids };
 }
 function verdictsFor(pid) {
   let l = ''; try { l = sh(`git notes --ref ${VNOTES} list`); } catch {}
   return l.split('\n').filter(Boolean).flatMap(x => { try { return sh(`git notes --ref ${VNOTES} show ${x.split(' ')[1]}`).split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } }).filter(v => v.patch_id === pid);
 }
-function independentVerdicts(cfg, pid) { const { ids, fams } = codeAuthors(cfg); return verdictsFor(pid).filter(v => !ids.has(v.by) && !fams.has(v.family)).sort(byTime); }
+function independentVerdicts(cfg, pid) { const { ids } = codeAuthors(cfg); return verdictsFor(pid).filter(v => !ids.has(v.by)).sort(byTime); }
 function verdictRecord(result) {
   const cfg = loadConfig(); clean();
-  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <agent-id> --family <model-family> [--provider openai|anthropic|google|xai] [--model <m>] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
-  const by = arg('--by'), family = arg('--family'), provider = arg('--provider');
-  if (!by || !family) die('verdict: --by <agent-id> and --family <model-family> are required');
-  if (provider && !PROVIDERS.includes(provider)) die(`verdict: --provider must be one of ${PROVIDERS.join(', ')} (the model provider, not the harness)`);
+  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <verifier-id> [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
+  const by = arg('--by');
+  if (!by) die('verdict: --by <verifier-id> is required (the verifier\'s own identity, never an author\'s)');
+  for (const k of ['--family', '--provider', '--model']) if (process.argv.includes(k)) die(`verdict: ${k} was removed; verifier independence is judged by identity (--by)`);
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
-  const H = head(), rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, family,
-    ...Object.fromEntries([['provider', provider], ['model', arg('--model')], ['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
+  const H = head(), rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by,
+    ...Object.fromEntries([['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
   sh(`git notes --ref ${VNOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${H}`);
-  if (result === 'FAIL') logMistake('verdict:FAIL', `FAIL by ${by} (${family})${rec.evidence ? ', evidence ' + rec.evidence : ''}`, 'verdict');
-  console.log(`eng verdict: recorded ${result} by ${by} (${family}) on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
-  // --pr: the record (head SHA and provider included) also goes on the PR as an eng-verdict/v1 comment; self-merge and eng merge gate read those.
+  if (result === 'FAIL') logMistake('verdict:FAIL', `FAIL by ${by}${rec.evidence ? ', evidence ' + rec.evidence : ''}`, 'verdict');
+  console.log(`eng verdict: recorded ${result} by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
+  // --pr: the record (head SHA included) also goes on the PR as an eng-verdict/v1 comment; self-merge and eng merge gate read those.
   if (!arg('--pr')) return;
   try { postVerdict(engCtx(), arg('--pr'), rec, cfg); } catch (e) { die(`verdict: could not post the verdict comment: ${e.message}`); }
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
@@ -889,17 +888,17 @@ function verdictCheck() {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
     const mp = mergedPatchId(), v = mp === 'empty' ? null : verdictsFor(mp).sort(byTime).at(-1);
-    return console.log(`eng verdict: PASS (no change against base${v ? `; merged change ${H.slice(0, 8)} carries ${v.result} by ${v.by} (${v.family}) from ${v.sha.slice(0, 8)}, same patch-id` : ''})`);
+    return console.log(`eng verdict: PASS (no change against base${v ? `; merged change ${H.slice(0, 8)} carries ${v.result} by ${v.by} from ${v.sha.slice(0, 8)}, same patch-id` : ''})`);
   }
-  const { ids, fams } = codeAuthors(cfg), all = verdictsFor(pid);
-  console.log(`  patch-id ${pid.slice(0, 12)}; code written by ${[...ids].join(', ')}${fams.size ? ` (families: ${[...fams].join(', ')})` : ''}`);
-  if (!all.length) die(`verdict: no verdict for this patch-id. An agent that did not write the code runs verify-<app> and records: eng verdict PASS --by <id> --family <family>`);
-  const indep = all.filter(v => !ids.has(v.by) && !fams.has(v.family));
-  for (const v of all.filter(v => !indep.includes(v))) console.log(`  rejected: ${v.result} by ${v.by} (${v.family}) on ${v.sha.slice(0, 8)}: ${ids.has(v.by) ? 'verifier wrote commits in this patch' : 'same model family as an author'}`);
-  if (!indep.length) die('verdict: only self-recorded verdicts; need one from an agent (and model family) that did not write the code');
+  const { ids } = codeAuthors(cfg), all = verdictsFor(pid);
+  console.log(`  patch-id ${pid.slice(0, 12)}; code written by ${[...ids].join(', ')}`);
+  if (!all.length) die(`verdict: no verdict for this patch-id. An agent that did not write the code runs verify-<app> and records: eng verdict PASS --by <id>`);
+  const indep = all.filter(v => !ids.has(v.by));
+  for (const v of all.filter(v => !indep.includes(v))) console.log(`  rejected: ${v.result} by ${v.by} on ${v.sha.slice(0, 8)}: verifier identity is an author of this patch`);
+  if (!indep.length) die('verdict: only self-recorded verdicts; need one from an identity that did not write the code');
   const v = indep.sort(byTime).at(-1);
   if (v.result === 'FAIL') die(`verdict: latest independent verdict is FAIL by ${v.by}`);
-  console.log(`eng verdict: PASS (${v.result} by ${v.by} (${v.family}) on ${v.sha.slice(0, 8)}${v.sha === H ? '' : ', carried to ' + H.slice(0, 8) + ': same patch-id'})`);
+  console.log(`eng verdict: PASS (${v.result} by ${v.by} on ${v.sha.slice(0, 8)}${v.sha === H ? '' : ', carried to ' + H.slice(0, 8) + ': same patch-id'})`);
 }
 
 // ---------- fallow: codebase graph analysis (fallow.tools, MIT) ----------
@@ -1039,4 +1038,4 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, merge: () => merge(engCtx(), a),
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> --family <f> [--provider <p>] [--model <m>] [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();

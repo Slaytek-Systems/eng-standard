@@ -37,7 +37,7 @@ test('squash merge: verify maintain and verdict check resolve PR-head records on
     fs.appendFileSync(path.join(dev, 'feature.txt'), 'two\n'); g('commit -qam done');
     const create = eng(dev, 'verify', 'create', 'feature');
     assert.equal(create.status, 0, create.stdout + create.stderr);
-    const rec = eng(dev, 'verdict', 'PASS', '--by', 'verifier-x', '--family', 'other-family');
+    const rec = eng(dev, 'verdict', 'PASS', '--by', 'verifier-x');
     assert.equal(rec.status, 0, rec.stdout + rec.stderr);
     const prHead = g('rev-parse HEAD');
     g("push -q origin feat 'refs/notes/eng-*:refs/notes/eng-*'");
@@ -61,7 +61,7 @@ test('squash merge: verify maintain and verdict check resolve PR-head records on
 
     const vc = eng(ci, 'verdict', 'check');
     assert.equal(vc.status, 0, vc.stdout + vc.stderr);
-    assert.match(vc.stdout, new RegExp(`carries PASS by verifier-x \\(other-family\\) from ${prHead.slice(0, 8)}`));
+    assert.match(vc.stdout, new RegExp(`carries PASS by verifier-x from ${prHead.slice(0, 8)}`));
 
     // A second main run (re-run) still resolves: records written on main itself must not shadow the PR proof.
     const vm2 = eng(ci, 'verify', 'maintain');

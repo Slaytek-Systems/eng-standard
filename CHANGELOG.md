@@ -11,6 +11,16 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **`eng isolation check`** (gate `isolation`): default names and ports, unnamed compose projects, bare `convex` / `docker compose` / `kill` / `pkill` in package scripts and hooks, secret flags with values on command lines. Warn only; `isolation.mode: fail` flips it.
 - **Starter and renovation pack.** `templates/eng.config.yml` gets `isolation: { mode: warn }`. Renovation audit item `project-isolation`; step 7 (`launch`) seeds the identity file and the mode.
 - AGENTS.md gets an isolation rule row only in repos whose config has `isolation:`.
+## Unreleased (26 Oct 2026)
+
+**Verifier independence is judged by identity** (approved by Matt, 26 Oct 2026). Models and providers are not part of the engineering standard. Supersedes PR #23.
+
+- A verifier counts only when its identity (`eng verdict --by`, plus its GitHub login when `verifier_logins` is set) equals no author's identity: `Agent:` trailer ids, commit author and committer emails, and commit GitHub logins.
+- risk:high (self-merge) needs PASSes on the exact head from `ship.high_risk.verifiers` (default 2) independent verifiers with distinct identities. `eng merge gate`: `merge.auto.high_risk_paths` and `merge.auto.high_risk_verifiers` (default 2) replace `second_provider_paths`, which now fails validation with a rename message. The gate's restart cause `second-provider` is now `verifiers`.
+- `verifier_logins` (`ship.self_merge` and `merge.auto`) is a list of logins. Each login is one identity.
+- `eng verdict` drops `--family`, `--provider` and `--model`, and fails if one is passed. Verdict records and comments carry no family or provider. Older verdict comments with those fields still parse; the fields are ignored. `Agent-Family:` trailers are no longer read.
+- Renovation receipts drop the reviewer `model`, `provider` and `author_provider` fields, `--author-provider` and the cross-provider gate-file flag. `renovation.receipt.gate_paths` is no longer used.
+- AGENTS.md, docs/self-merge.md, docs/merge-queue.md, the SHIPPING template, the renovation README, eng-verify and the configs describe the identity rule.
 
 ## 0.10.0 (24 Oct 2026)
 
