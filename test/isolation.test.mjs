@@ -331,3 +331,35 @@ test('renovation audit: project-isolation is missing, partial or present', () =>
   assert.equal(item.check({ identity: tpl, cfg: {} }).status, 'partial');
   assert.equal(item.check({ identity: tpl, cfg: { isolation: { mode: 'warn' } } }).status, 'present');
 });
+
+test('incident replay: a reviewer cannot stop a test run it did not start, and a target with no record is refused', async () => {
+  const unit = 'devbox-heavyweight-1792999183-707452', dir = project('epsilon', '47130, 47134');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), `\n[[services]]\nname = "${unit}"\ncommand = ["node", "server.mjs"]\nport_env = "PORT"\nhealth = "/version"\n\n[[services]]\nname = "${unit}-orphan"\ncommand = ["node", "server.mjs"]\n`);
+  const byThread = (thread, ...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: { ...env(''), T3_THREAD_ID: thread } });
+
+  let r = byThread('thread-a', 'run-service', unit);
+  assert.equal(r.status, 0, out(r));
+  const rec = readRecord(dir, 'epsilon', unit);
+  assert.equal(rec.agent, 'thread-a', 'the starter comes from T3_THREAD_ID when ENG_AGENT_ID is unset');
+
+  r = byThread('thread-b', 'stop', unit);
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), new RegExp(`epsilon/${unit} \\(pid ${rec.pid}\\) was started by thread-a, not thread-b. Only the starter may stop it`));
+  r = eng(dir, 'agent-b', 'stop', unit);
+  assert.equal(r.status, 1, 'a different ENG_AGENT_ID is refused too');
+  assert.ok(alive(rec.pid), 'the run survives both reviewer attempts');
+  assert.match(byThread('thread-b', 'status').stdout, new RegExp(`ok\\s+${unit} pid ${rec.pid} port \\d+ agent thread-a`), 'status names the owner');
+
+  const stray = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', unit], { stdio: 'ignore' }); started.push(stray.pid);
+  r = byThread('thread-b', 'stop', `${unit}-orphan`);
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /has no ownership record for this checkout/);
+  r = byThread('thread-b', 'stop', 'some-unit-not-declared');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /no service "some-unit-not-declared"/);
+  assert.ok(alive(stray.pid), 'a process with no ownership record is never signalled');
+
+  r = byThread('thread-a', 'stop', unit);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(!alive(rec.pid), 'the starter can stop it');
+});
