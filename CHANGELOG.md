@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.11.0 (26 Oct 2026)
+
+**Devbox project isolation, warn only.** Every devbox project runs as one Unix user, so shared defaults (Convex's `anonymous-agent` state in `~/.convex`, port 3210) let one project's tool reach another's service. This release ships the standard's five rules as an identity file, a helper and a repo check. Docs: `docs/project-isolation.md`.
+
+- **Identity file** `.eng/project.toml`: project id, owner, port range, state path inside the checkout, and services with explicit names and argv commands. Starter: `templates/isolation/project.toml`.
+- **`eng run-service` / `connect` / `stop` / `status`.** Ownership records (0600) under `$XDG_STATE_HOME/eng/owners/<project>/` hold the project, owner, checkout, PID plus `/proc/<pid>/stat` start time and boot id, and the starting agent (`ENG_AGENT_ID`, else `T3_THREAD_ID`). Every command checks the record before acting and re-checks the target after (start time, health path). Only listed commands run: `eng run-service` runs the service's `command`, and `eng connect` runs a command only when a `connect = [...]` entry equals its full argv; variable parts only as built-in `[placeholders]` types (port, a project-relative path with no `..` and no symlink component, service name; no regex). Docker/podman/compose are limited to approved subcommands, each with an allowlist of safe flags; every other flag is refused even when listed (stopping goes through `eng stop`); `exec` and `run` are never allowed. It prevents accidental cross-project actions; it is not a security boundary against a hostile agent (per-project OS users or containers are a devbox-ops follow-up). Entries cannot list launchers, inline code, kill programs or stopping docker/compose subcommands; stopping goes through `eng stop`. `stop` acts only for the starter and never signals a reused PID. Secrets come from `.eng/secrets/<svc>.env` (0600, owned, gitignored) or stdin, never argv. Inherited `CONVEX_*` is scrubbed; `HOME` is the service's own state dir.
+- **`eng isolation check`** (gate `isolation`): default names and ports, unnamed compose projects, bare `convex` / `docker compose` / `kill` / `pkill` in package scripts and hooks, secret flags with values on command lines. Warn only; `isolation.mode: fail` flips it.
+- **Starter and renovation pack.** `templates/eng.config.yml` gets `isolation: { mode: warn }`. Renovation audit item `project-isolation`; step 7 (`launch`) seeds the identity file and the mode.
+- AGENTS.md gets an isolation rule row only in repos whose config has `isolation:`.
 ## Unreleased (26 Oct 2026)
 
 **Verifier independence is judged by identity** (approved by Matt, 26 Oct 2026). Models and providers are not part of the engineering standard. Supersedes PR #23.

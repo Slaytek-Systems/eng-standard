@@ -174,21 +174,26 @@ test('eng launch -- <cmd> on a terminal: re-parented background workers stop on 
   assert.ok(!fs.existsSync(round), 'round removed');
 });
 
-test('eng launch -- <cmd>: SIGTERM while the worktree is still being made removes the round and the worktree', async () => {
-  const hooks = path.join(marks, 'hooks'); fs.mkdirSync(hooks, { recursive: true });
-  fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\necho "$PWD" > ${marks}/prep\nsleep 3\n`, { mode: 0o755 });
+test('eng launch -- <cmd>: SIGTERM while the worktree is still being made removes the round and the worktree', { timeout: 30000 }, async () => {
+  // The post-checkout hook is the synchronization point: it reports its directory through one FIFO, then blocks on another
+  // that the test never writes, so the SIGTERM always lands while git worktree add is still running. No sleeps, no polling.
+  const hooks = path.join(marks, 'hooks'), ready = path.join(marks, 'ready'), hold = path.join(marks, 'hold');
+  fs.mkdirSync(hooks, { recursive: true });
+  assert.equal(spawnSync('mkfifo', [ready, hold]).status, 0, 'mkfifo');
+  fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\necho "$PWD" > ${ready}\nread x < ${hold}\n`, { mode: 0o755 });
   git(`config core.hooksPath ${hooks}`);
   try {
     const p = spawn(process.execPath, [ENG, 'launch', '--ref', 'HEAD', '--', 'sh', '-c', `touch ${marks}/ran`], { cwd: dir, env });
-    const m = path.join(marks, 'prep');
-    for (let i = 0; i < 100 && !fs.existsSync(m); i++) await new Promise(r => setTimeout(r, 100));
-    const wt = fs.readFileSync(m, 'utf8').trim();
+    const wt = (await fs.promises.readFile(ready, 'utf8')).trim();
     const code = await new Promise(r => { p.on('exit', (c, s) => r(c ?? s)); p.kill('SIGTERM'); });
     assert.equal(code, 143);
     assert.ok(!fs.existsSync(path.dirname(wt)), 'round dir removed');
     assert.ok(!git('worktree list').includes(path.dirname(wt)), 'its worktree is gone from git worktree list');
     assert.ok(!fs.existsSync(path.join(marks, 'ran')), 'the command never started');
-  } finally { git('config --unset core.hooksPath'); }
+  } finally {
+    try { const fd = fs.openSync(hold, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, 'go\n'); fs.closeSync(fd); } catch {}  // release a hook that is still waiting
+    git('config --unset core.hooksPath'); fs.rmSync(ready, { force: true }); fs.rmSync(hold, { force: true });
+  }
 });
 
 test('eng doctor and eng rules prove on a repo with the Warden cases', () => {
