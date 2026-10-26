@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings, redactor, programName } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -162,9 +162,11 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g', 'j', 'k', 'q', 'r'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
+  const hook = isolationFindings([{ path: '.githooks/pre-push', text: '#!/bin/sh\ndocker compose -p p ps\ndocker \\\n  compose -p beta down\n' }], id);
+  assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:3'], 'a \\ continuation cannot hide a compose call');
   const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
   assert.deepEqual(kills.map(h => `${h.rule}:${h.message.match(/script "(\w)"/)[1]}`).sort(), ['bare-kill:m', 'bare-kill:n', 'bare-kill:o']);
   const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`)).map(h => h.rule));
@@ -314,7 +316,17 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.match(out(r), /refusing; a compose command must name this project/);
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', 'docker compose -p alpha ps && docker compose down');
   assert.equal(r.status, 1, 'a later compose call with no selector is refused');
+  for (const cmd of [['docker', 'compose', '-p', 'alpha', '-pbeta', 'down'], ['docker', 'compose', '-p', 'alpha', '--project-name=beta', 'down'],
+    ['sh', '-c', 'docker compose -p alpha ps; docker \\\ncompose -p beta down'], ['sh', '-c', 'docker compose -p "$P" down'], ['sh', '-c', 'eval docker compose -p alpha down']]) {
+    r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
+    assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}`);
+    assert.match(out(r), /refusing; a compose command must name this project/);
+  }
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'no refused compose command reached the (stub) container engine');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha_test', 'ps');
+  assert.equal(r.status, 0, `an in-bounds compose call runs: ${out(r)}`);
+  assert.match(fs.readFileSync(ENGINE_CALLED, 'utf8'), /docker compose -p alpha_test ps/, 'it reached the stub, not a real engine');
+  fs.rmSync(ENGINE_CALLED);
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', '--context', 'other', 'compose', 'down');
   assert.equal(r.status, 1);
   assert.match(out(r), /refusing; a compose command must name this project/, 'a global option before compose does not hide it');
@@ -425,6 +437,25 @@ test('concurrent starts from two projects can never record the same port', async
   const [d, id] = dirs[results.findIndex(r => r.status === 0)], i = results.findIndex(r => r.status === 0);
   assert.equal(readRecord(d, id, 'sleeper').port, 47150);
   assert.equal(eng(d, `agent-${i}`, 'stop', 'sleeper').status, 0);
+});
+
+test('a paused lock holder keeps the port lock: no start can break it by age', async () => {
+  const dir = project('lambda', '47155, 47159');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "sleeper"\ncommand = ["sleep", "60"]\n');
+  const holder = spawn(process.execPath, ['-e', "require('net').createServer().listen('\\0' + process.env.LOCK, () => console.log('held'))"], { env: { ...process.env, LOCK: portLockName(path.join(STATE, 'eng/owners')).slice(1) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  started.push(holder.pid);
+  await new Promise(res => holder.stdout.once('data', res));
+  process.kill(holder.pid, 'SIGSTOP');
+  const waitEnv = { ...env('agent-l'), ENG_LOCK_WAIT_S: '2' };
+  let r = spawnSync(process.execPath, [ENG, 'run-service', 'sleeper'], { cwd: dir, encoding: 'utf8', env: waitEnv });
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /timed out after 2s waiting for the port lock/);
+  assert.ok(!fs.existsSync(recordPath(dir, 'lambda', 'sleeper')), 'nothing recorded while the paused holder has the lock');
+  process.kill(holder.pid, 'SIGCONT'); process.kill(holder.pid, 'SIGKILL');
+  await new Promise(res => holder.once('exit', res));
+  r = spawnSync(process.execPath, [ENG, 'run-service', 'sleeper'], { cwd: dir, encoding: 'utf8', env: waitEnv });
+  assert.equal(r.status, 0, `the kernel frees the lock when its holder exits: ${out(r)}`);
+  assert.equal(eng(dir, 'agent-l', 'stop', 'sleeper').status, 0);
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
