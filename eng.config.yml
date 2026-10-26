@@ -55,7 +55,11 @@ ship:
     check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
     status: verdict               # commit status the independent checker posts (eng verdict ... --pr <n>)
     # verifier_logins: { <login>: openai, <login>: xai }   # once verifiers have their own GitHub identities: only
-    #                               these logins' verdict comments count, with the login's provider (docs/self-merge.md)
+    #                               these logins' verdict comments count, with the login's provider if verifier_providers trusts it
+
+verifier_providers:               # whose verdicts count toward the provider rule. A provider not in `trusted` counts as none
+  trusted: [openai, xai, deepseek, moonshot, zhipu, anthropic]   # unset = this list (google is not on it)
+  families: { gpt: openai, openai: openai, codex: openai, grok: xai, xai: xai, deepseek: deepseek, kimi: moonshot, glm: zhipu, claude: anthropic, anthropic: anthropic }   # model family -> provider
 
 gates:
   skipped_is_failed: true

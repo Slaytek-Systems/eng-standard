@@ -7,8 +7,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { PROVIDERS } from '../lib/renovate.mjs';
-import { selfMergeConfig, decide, verdictBody, parseVerdicts, authorsFrom, isAutoRevert, trusted, BOT } from '../lib/self-merge.mjs';
+import { selfMergeConfig, decide, verdictBody, parseVerdicts, authorsFrom, isAutoRevert, trusted, verifierProviders, DEFAULT_VERIFIER_PROVIDERS, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
@@ -125,6 +124,10 @@ test('eng verdict --pr: author family is rejected and posts failure; independent
   const log = fs.readFileSync(calls, 'utf8'), [v] = parseVerdicts([{ body: log.slice(log.lastIndexOf('issues/7/comments -f body=') + 26) }]);
   assert.deepEqual([v.sha, v.result, v.by, v.family, v.provider], [H, 'PASS', 'checker-1', 'fam-b', 'openai'], 'the PR comment carries the exact head and the provider');
   assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=success -f context=verdict -f description=verdict: PASS \\(PASS by checker-1 \\(fam-b\\)`));
+  r = eng('verdict', 'PASS', '--by', 'checker-2', '--family', 'gemini', '--provider', 'google', '--pr', '7');
+  assert.equal(r.status, 0, 'eng verdict records any provider string; trust is decided from config');
+  const log2 = fs.readFileSync(calls, 'utf8'), g = parseVerdicts([{ body: log2.slice(log2.lastIndexOf('issues/7/comments -f body=') + 26), author_association: 'OWNER' }]);
+  assert.deepEqual([g[0].provider, trusted(g, null, C.providers)[0].provider], ['google', null], 'the comment says google; the gate counts it as no provider');
   r = eng('verdict', 'status');
   assert.equal(r.status, 1); assert.match(r.stderr, /usage: eng verdict status --pr <n>/);
 });
@@ -355,18 +358,38 @@ test('round-2 P1: an edited verdict comment counts from its edit, for ordering a
   assert.match(decide(pr(), st({ verdicts: order }), C, at(600)).reason, /FAIL by gpt-checker/, 'the verifier\'s most recently edited verdict is its latest');
 });
 
-test('google is not a provider: a google or gemini verdict counts toward no provider', () => {
+test('verifier_providers: an unlisted provider (google) counts toward no provider; a listed one (deepseek) counts', () => {
   const late = at(600), H = pr({ labels: ['risk:high'] });
   for (const g of [{ family: 'gemini', provider: 'google' }, { family: 'gemini' }, { family: 'google' }, { family: 'Gemini', provider: 'google' }, { family: 'invented-family', provider: 'google' }]) {
     const v = { ...V({ by: 'g-checker', ...g }), ...(g.provider ? {} : { provider: undefined }) };
-    assert.equal(trusted([v], null)[0].provider, null, JSON.stringify(g));
+    assert.equal(trusted([v], null, C.providers)[0].provider, null, JSON.stringify(g));
     assert.match(decide(H, hi({ verdicts: [V(), v] }), C, late).reason, /have openai$/, JSON.stringify(g));
   }
-  assert.throws(() => selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai', 'gemini-bot': 'google' } } } }), /verifier_logins/);
-  assert.deepEqual([...authorsFrom(['x\n\nAgent-Family: gemini']).providers], []);
-  assert.equal(PROVIDERS.includes('google'), false, 'eng verdict --provider google is refused');
+  assert.throws(() => selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai', 'gemini-bot': 'google' } } } }), /verifier_logins maps a GitHub login to a trusted provider/);
+  assert.deepEqual([...authorsFrom(['x\n\nAgent-Family: gemini'], [], C.providers).providers], []);
   for (const [family, provider] of [['deepseek', 'deepseek'], ['kimi', 'moonshot'], ['glm', 'zhipu'], ['grok', 'xai']]) {
     assert.match(decide(H, hi({ verdicts: [V(), V({ by: `${family}-checker`, family, provider })] }), C, late).reason, new RegExp(`PASS from openai \\+ ${provider}`), family);
-    assert.equal(trusted([{ ...V({ family }), provider: undefined }], null)[0].provider, provider, `family ${family} maps to ${provider}`);
+    assert.equal(trusted([{ ...V({ family }), provider: undefined }], null, C.providers)[0].provider, provider, `family ${family} maps to ${provider}`);
   }
+});
+
+test('verifier_providers: trust comes only from config; a missing config falls back to the default, which has no google', () => {
+  const late = at(600), H = pr({ labels: ['risk:high'] }), DS2 = V({ by: 'ds', family: 'deepseek', provider: 'deepseek' });
+  const bare = selfMergeConfig({});
+  assert.deepEqual([...bare.providers.trusted], DEFAULT_VERIFIER_PROVIDERS.trusted);
+  assert.equal(bare.providers.trusted.has('google'), false, 'the default does not trust google');
+  assert.equal([...bare.providers.families.values()].includes('google'), false);
+  const tpl = YAML.parse(fs.readFileSync(new URL('../templates/merge-auto/eng.config.yml', import.meta.url), 'utf8'));
+  for (const [name, c] of [['eng.config.yml', cfg], ['templates/merge-auto/eng.config.yml', tpl]])
+    assert.deepEqual([[...verifierProviders(c).trusted], [...verifierProviders(c).families]], [[...bare.providers.trusted], [...bare.providers.families]], `${name} ships the default`);
+  assert.match(decide(H, hi({ verdicts: [V(), DS2] }), bare, late).reason, /PASS from openai \+ deepseek/);
+  assert.match(decide(H, hi({ verdicts: [V(), V({ by: 'g', family: 'gemini', provider: 'google' })] }), bare, late).reason, /have openai$/);
+  const custom = selfMergeConfig({ verifier_providers: { trusted: ['openai', 'acme'], families: { gpt: 'openai', 'acme-1': 'acme' } } });
+  assert.match(decide(H, hi({ verdicts: [V(), V({ by: 'a', family: 'acme-1', provider: 'acme' })] }), custom, late).reason, /PASS from openai \+ acme/, 'a provider the repo lists counts');
+  assert.match(decide(H, hi({ verdicts: [V(), DS2] }), custom, late).reason, /have openai$/, 'a provider the repo does not list does not count');
+  assert.match(decide(H, hi({ verdicts: [V(), V({ by: 'liar', family: 'acme-1', provider: 'openai' })] }), custom, late).reason, /have openai$/, 'a provider that contradicts the family is none');
+  assert.deepEqual([...verifierProviders({ verifier_providers: { trusted: ['openai'] } }).families], [...verifierProviders(null).families], 'an omitted families map falls back to the default');
+  for (const bad of [[], 'x', { trusted: [] }, { trusted: 'openai' }, { trusted: [''] }, { families: [] }, { families: { gpt: '' } }])
+    assert.throws(() => selfMergeConfig({ verifier_providers: bad }), /verifier_providers/, JSON.stringify(bad));
+  for (const family of ['constructor', '__proto__', 'toString']) assert.equal(verifierProviders(null).families.get(family), undefined, family);
 });

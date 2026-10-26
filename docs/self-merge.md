@@ -43,20 +43,25 @@ again just before the merge call. Dispatch inputs cannot shorten the window.
 supersedes another). The repo is public, so anyone can post a comment that looks like a verdict.
 
 - Only comments whose GitHub `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` count.
+- Which providers count is per-repo config: top-level `verifier_providers` in main's `eng.config.yml`. `trusted` lists
+  the providers whose verdicts count. `families` maps a model family to its provider. Unset, the code falls back to
+  the default (`DEFAULT_VERIFIER_PROVIDERS` in `lib/self-merge.mjs`): openai, xai, deepseek, moonshot, zhipu and
+  anthropic, with families gpt/codex, grok, deepseek, kimi, glm and claude. Google is not on it, so a google or gemini
+  verdict counts toward no provider. `eng verdict --provider` records any string; only this config decides trust.
 - When `ship.self_merge.verifier_logins` (login to provider, in main's `eng.config.yml`) is set, only those logins
-  count. The provider is the login's, whatever the comment claims, and each login is one verifier for superseding.
+  count. The provider is the login's, whatever the comment claims, and each login is one verifier for superseding. A
+  login mapped to a provider not in `trusted` is a config error.
 - Without it, a verifier is its `by` field and its provider is its `provider` field, else its family's provider. A
-  provider that is not a known one (openai, anthropic, xai, deepseek, moonshot, zhipu), or that contradicts the family,
-  counts as none. Google is not a known provider, so a google or gemini verdict counts toward no provider. Lookups are
-  own-property only, so a family or login such as `constructor` or `__proto__` resolves to no provider.
+  provider not in `trusted`, or one that contradicts the family's provider, counts as none. Lookups are own-property
+  only, so a family or login such as `constructor` or `__proto__` resolves to no provider.
 
 **Residual.** eng-standard has no `verifier_logins` yet. Every agent posts through Matt's account, so a comment with
 write access can claim any `by`, family and provider. Separate verifier identities listed in `verifier_logins` close
 this.
 
 The controller is main's code and main's `eng.config.yml`. A PR's comments and commit messages are read only as data,
-so a PR cannot change the rule it is judged by. The family-to-provider map lives in `lib/self-merge.mjs` for the same
-reason: changing it is risk:high.
+so a PR cannot change the rule it is judged by. `verifier_providers` lives in `eng.config.yml` and its default in
+`lib/self-merge.mjs`. Both are risk:high paths, and a PR's own copy is never read.
 
 ## The checker's command
 

@@ -4,10 +4,11 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## Unreleased (26 Oct 2026)
 
-**Google is no longer a verifier provider** (Matt, 26 Oct 2026).
+**Verifier providers are per-repo config, and Google is not trusted** (Matt, 26 Oct 2026).
 
-- `FAMILY_PROVIDER` (`lib/self-merge.mjs`) drops `gemini` and `google`. A verdict with family gemini or google, or provider google, now counts toward no provider for risk:low or risk:high. `ship.self_merge.verifier_logins` and `merge.auto.verifier_logins` refuse a login mapped to google.
-- New providers: `deepseek` (family deepseek), `moonshot` (family kimi) and `zhipu` (family glm). `eng verdict --provider` accepts openai, anthropic, xai, deepseek, moonshot or zhipu (`PROVIDERS` in `lib/renovate.mjs`).
+- New top-level `verifier_providers` in `eng.config.yml`: `trusted` lists the providers whose verdicts count toward the provider rule, and `families` maps a model family to its provider. A provider that is not listed counts as none, for risk:low and risk:high, in `self-merge.yml` and `eng merge gate` alike.
+- The hardcoded lists are gone: `FAMILY_PROVIDER` (`lib/self-merge.mjs`), `PROVIDERS` (`lib/renovate.mjs`), the provider enum in the `eng verdict` usage, and the `merge.auto.verifier_logins` provider check (`lib/merge-queue.mjs`). `eng verdict --provider` accepts any string.
+- Default when the config is unset, in code (`DEFAULT_VERIFIER_PROVIDERS`) and in `templates/merge-auto/eng.config.yml`: openai, xai, deepseek, moonshot (family kimi), zhipu (family glm) and anthropic. Google and gemini are not on it.
 - Docs, config comments and tests use openai with deepseek or xai as the example provider pair.
 - The `risk:high` label description now matches the gate: PASSes on the exact head from two providers other than the authors'.
 

@@ -66,7 +66,7 @@ function prState(pr, tip) {
     risk: riskFor(pr).risk, check: testRun(sha), status: st,
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
-    authors: authorsFrom(commits.map(c => c.commit.message), commits.map(c => c.commit.author?.email)),
+    authors: authorsFrom(commits.map(c => c.commit.message), commits.map(c => c.commit.author?.email), C.providers),
   };
 }
 

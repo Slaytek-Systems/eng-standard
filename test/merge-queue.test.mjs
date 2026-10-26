@@ -54,7 +54,8 @@ test('second provider: gate, auth and billing paths need PASSes from two provide
   assert.equal(two.pass, true, two.reasons.join()); assert.match(two.reasons.at(-1), /openai \+ deepseek/);
   assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'c2', family: 'claude-x', provider: 'anthropic' })], authors, q }).pass, false, 'the author provider does not count as the second');
   assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: trusted([V(), V({ by: 'gemini-1', family: 'gemini', provider: 'google' })].map(v => ({ ...v, association: 'OWNER' })), null), authors, q }).pass, false, 'a google verdict does not count as the second provider');
-  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'google' } } }).join(), /verifier_logins/);
+  const gem = [{ user: { login: 'gemini-bot' }, author_association: 'OWNER', body: verdictBody(V({ by: 'g', family: 'gemini', provider: 'google' })), created_at: '2026-10-24T01:01:00Z' }];
+  assert.deepEqual(trusted(parseVerdicts(gem), { 'gemini-bot': 'google' }, q.providers), [], 'a login mapped to an untrusted provider (google) is ignored');
 });
 
 test('verifier identity: with verifier_logins only listed logins count, with their own provider (round-1 P1: impersonation)', () => {
@@ -68,7 +69,8 @@ test('verifier identity: with verifier_logins only listed logins count, with the
   const t = trusted(parseVerdicts(real), logins);
   assert.deepEqual(t.map(v => v.provider), ['openai', 'xai'], 'the provider comes from the login, not the claim');
   assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: t, authors, q }).pass, true);
-  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'devin' } } }).join(), /verifier_logins/);
+  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 3 } } }).join(), /verifier_logins/);
+  assert.deepEqual(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'devin' } } }), [], 'any provider string is valid config; trust comes from verifier_providers.trusted');
 });
 
 test('auto-revert: needs bot provenance, the auto-revert/<sha12> branch, a shipped target and an exact inverse (round-1 P1)', () => {

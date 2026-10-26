@@ -12,7 +12,7 @@ import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/fla
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence } from '../lib/hygiene.mjs';
 import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
-import { validateRenovation, compareBaseline, lintFindings, baselinePath, PROVIDERS } from '../lib/renovate.mjs';
+import { validateRenovation, compareBaseline, lintFindings, baselinePath, verifierProviders } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
 import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
@@ -54,6 +54,7 @@ function configErrors(c) {
   errs.push(...validateFlake(c.e2e));
   errs.push(...validateRenovation(c.renovation));
   errs.push(...validateAuto(c.merge));
+  try { verifierProviders(c); } catch (e) { errs.push(e.message); }
   return errs;
 }
 
@@ -845,10 +846,10 @@ function verdictsFor(pid) {
 function independentVerdicts(cfg, pid) { const { ids, fams } = codeAuthors(cfg); return verdictsFor(pid).filter(v => !ids.has(v.by) && !fams.has(v.family)).sort(byTime); }
 function verdictRecord(result) {
   const cfg = loadConfig(); clean();
-  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <agent-id> --family <model-family> [--provider openai|anthropic|xai|deepseek|moonshot|zhipu] [--model <m>] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
+  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <agent-id> --family <model-family> [--provider <provider>] [--model <m>] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
   const by = arg('--by'), family = arg('--family'), provider = arg('--provider');
   if (!by || !family) die('verdict: --by <agent-id> and --family <model-family> are required');
-  if (provider && !PROVIDERS.includes(provider)) die(`verdict: --provider must be one of ${PROVIDERS.join(', ')} (the model provider, not the harness)`);
+  if (provider !== null && !provider?.trim()) die('verdict: --provider <provider> names the model provider, not the harness (trust comes from verifier_providers in eng.config.yml)');
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
   const H = head(), rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, family,
     ...Object.fromEntries([['provider', provider], ['model', arg('--model')], ['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };

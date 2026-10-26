@@ -101,7 +101,7 @@ test('core-edge receipt adapter: valid receipt with provider; self-review and ba
   assert.equal(r.reviewer.provider, 'openai');
   assert.match(ad.body(r), /^<!-- core-edge\.ship-receipt\/v1 -->\n\n```json\n\{/);
   assert.match(ad.validate(ad.build({ ...x, authorSession: 'verifier-1' })).join(), /self-review/);
-  assert.match(ad.validate(ad.build({ ...x, verdict: { ...x.verdict, provider: 'devin' } })).join(), /provider must be one of/);
+  assert.match(ad.validate(ad.build({ ...x, verdict: { ...x.verdict, provider: ' ' } })).join(), /provider must name a provider/);
   assert.equal(crossProviderFlag(['scripts/ship-gate/evaluate.ts'], [ad.gatePaths], r.reviewer), null);
   assert.match(crossProviderFlag(['.buildkite/pipeline.yml'], [ad.gatePaths], { ...r.reviewer, provider: 'anthropic' }), /needs a reviewer on a different provider/);
   assert.equal(crossProviderFlag(['src/a.ts'], [ad.gatePaths], {}), null);
@@ -230,7 +230,7 @@ test('eng verdict records provider; eng renovate receipt drafts a core-edge rece
   r = eng('verdict', 'PASS', '--by', 'verifier-1', '--family', 'gpt', '--provider', 'openai', '--model', 'gpt-6.1-sol', '--session', 'verifier-1');
   assert.equal(r.status, 0, out(r));
   assert.match(eng('verdict', 'check').stdout, /code written by .*builder-1.*families: claude/);
-  assert.match(out(eng('verdict', 'PASS', '--by', 'x', '--family', 'gpt', '--provider', 'devin')), /--provider must be one of/);
+  assert.match(out(eng('verdict', 'PASS', '--by', 'x', '--family', 'gpt', '--provider', '')), /--provider <provider> names the model provider/);
   r = eng('renovate', 'receipt', '--pr', '7', '--author-session', 'builder-1');
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /DRAFT core-edge\.ship-receipt\/v1 for PR #7/); assert.match(r.stdout, /Not posted/);
