@@ -83,9 +83,8 @@ At runtime `eng connect` also runs the entry checks on the concrete argv after p
 | `compose top`, `compose port` | none |
 | `compose version` | `--short` |
 | `compose ls` | `-a`, `-q`, `--all`, `--quiet` |
-| `compose exec` | `-T`, `--no-TTY` (any `-` argument to the inner command is refused too) |
 
-Compose also needs a real `-p`/`--project-name` naming this project before the subcommand. Global options before the subcommand are read with their values (`--env-file`, `-f`, `--project-directory`, `--profile`, `--context`, ...). Put anything that needs a shell in a script file inside the checkout and list the script.
+`exec` and `run` are never allowed, in any spelling (`docker exec`, `podman exec`, `docker compose exec|run`, `docker-compose`, `podman compose`, with or without global options before the verb): they run an arbitrary command inside a container, so a listed `compose exec api kill 1` would kill a process no record covers. Compose also needs a real `-p`/`--project-name` naming this project before the subcommand. Global options before the subcommand are read with their values (`--env-file`, `-f`, `--project-directory`, `--profile`, `--context`, ...). Put anything that needs a shell in a script file inside the checkout and list the script.
 
 | Command | Does |
 |---------|------|

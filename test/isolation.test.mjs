@@ -661,6 +661,26 @@ test('Astra repro: route -> sub/bridge/../marker with sub/bridge -> beta/nested 
   for (const f of ['route', 'sub', 'package.json']) fs.rmSync(path.join(alpha, f), { recursive: true, force: true });
 });
 
+test('Astra repro: exec and run are refused entirely, in every spelling', () => {
+  const dir = project('tau', '47195, 47199'), base = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
+  const forms = [
+    ['docker', 'compose', '-p', 'tau', 'exec', 'api', 'kill', '1'], ['docker', 'compose', '-p', 'tau', 'exec', 'api', 'pkill', 'backend'], ['docker', 'compose', '-p', 'tau', 'exec', 'api', 'rm', 'data.db'],
+    ['docker-compose', '-p', 'tau', 'exec', 'api', 'kill', '1'], ['podman', 'compose', '-p', 'tau', 'exec', 'api', 'kill', '1'], ['docker', '-H', 'h', 'compose', '-p', 'tau', 'exec', 'api', 'kill', '1'],
+    ['docker', 'compose', '-p', 'tau', 'run', 'api', 'kill', '1'], ['docker', 'compose', '--env-file', 'e', '-p', 'tau', 'run', 'api'], ['docker', '--context', 'x', 'compose', '-p', 'tau', 'run', 'api'],
+    ['docker', 'exec', 'c', 'kill', '1'], ['docker', '--context', 'x', 'exec', 'c', 'kill', '1'], ['podman', 'exec', 'c', 'pkill', 'backend'], ['docker', '-H', 'h', 'exec', 'c', 'rm', 'data.db'],
+  ];
+  for (const v of forms) {
+    const toml = base.replace(/connect = \[\[.*\]\]\n/, `connect = [${JSON.stringify(v)}]\n`);
+    fs.writeFileSync(path.join(dir, '.eng/project.toml'), toml);
+    assert.match(parseIdentity(toml).errors.join('\n'), /connect\[0\] refused: (compose|docker\/podman) (exec|run) is never allowed/, `validation: ${v.join(' ')}`);
+    const r = eng(dir, 'agent-t', 'connect', 'api', '--', ...v);
+    assert.equal(r.status, 1, `runtime: ${v.join(' ')}: ${out(r)}`);
+    const rules = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { w: `eng connect api -- ${v.join(' ')}`, d: v.join(' ') } }, null, 2) }], toml);
+    assert.ok(rules.some(h => h.rule === 'identity-invalid') && rules.some(h => h.rule === 'not-allowlisted' && /script "w"/.test(h.message)) && rules.some(h => h.rule === 'bare-service-command' && /script "d"/.test(h.message)), `repo check: ${v.join(' ')}`);
+  }
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'nothing reached the (stub) engine');
+});
+
 test('stop never signals a reused pid: the start time must match the record', () => {
   const other = spawn('sleep', ['30'], { stdio: 'ignore' }); started.push(other.pid);
   const file = recordPath(alpha, 'alpha', 'worker');
