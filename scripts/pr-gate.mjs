@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // eng-standard's own merge automation (v0.9.1). Run by .github/workflows/risk-label.yml and self-merge.yml, always
-// from main's code. Uses `gh api` with GH_TOKEN (the workflow's GITHUB_TOKEN). Rules: AGENTS.md "Merge rule".
+// from main's code, on events only (ci finished, verdict comment or status, label, ready, dispatch). Uses `gh api` with
+// GH_TOKEN (the workflow's GITHUB_TOKEN). Rules: AGENTS.md "Merge rule".
 //   node scripts/pr-gate.mjs label <n> [--dry-run]     set risk:high or risk:low from the PR's changed paths
-//   node scripts/pr-gate.mjs merge [--pr <n>] [--dry-run]   squash-merge at most ONE eligible PR, then run ci.yml on main;
-//                                                            on a red main, open the tip's auto-revert instead
+//   node scripts/pr-gate.mjs merge [--pr <n>] [--dry-run]   squash-merge at most ONE eligible PR (the event's PR, --pr, or
+//                                                            every open PR), then run ci.yml on main; on a red main, open
+//                                                            the tip's auto-revert instead
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { selfMergeConfig, decide, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
+import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = YAML.parse(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
@@ -72,7 +74,7 @@ function prState(pr, tip) {
 
 // The post-merge check (ci.yml on main) failed: open the tip's exact inverse as a PR from the bot. The inverse is built from
 // the API, not a checkout: one commit on top of the tip carrying the tip's parent tree. It merges through every rule in
-// decide() (test, verdicts for its head, hold window); while main is red it is the only PR that may merge. Returns that PR
+// decide() (test, verdicts for its head); while main is red it is the only PR that may merge. Returns that PR
 // once it exists and is still the exact inverse, else null (merge nothing this run).
 function autoRevert(tip) {
   const t8 = tip.slice(0, 8), branch = `auto-revert/${tip.slice(0, 12)}`, marker = `<!-- ${REVERT_MARK}${tip} -->`;
@@ -98,7 +100,7 @@ function autoRevert(tip) {
     send('POST', `repos/${R}/git/refs`, { ref: `refs/heads/${branch}`, sha: c.sha });
   }
   let pr;
-  try { pr = JSON.parse(send('POST', `repos/${R}/pulls`, { base: C.base, head: branch, title: `Revert #${shipped.number}: post-merge ${C.check} failed (${t8})`, body: `${marker}\nThe post-merge \`${C.check}\` run failed on ${C.base} at ${tip} after #${shipped.number} merged. This PR is its exact inverse, opened by self-merge. It merges like any PR: \`${C.check}\`, verdicts for its head and the hold window.` })); }
+  try { pr = JSON.parse(send('POST', `repos/${R}/pulls`, { base: C.base, head: branch, title: `Revert #${shipped.number}: post-merge ${C.check} failed (${t8})`, body: `${marker}\nThe post-merge \`${C.check}\` run failed on ${C.base} at ${tip} after #${shipped.number} merged. This PR is its exact inverse, opened by self-merge. It merges like any PR: \`${C.check}\` and verdicts for its head.` })); }
   catch (e) { console.log(`FAIL main ${t8}: ${branch} is pushed but GitHub refused the PR (${e.message.split('\n')[0]}). Matt allows GitHub Actions to create pull requests (Settings > Actions > General), or opens ${branch} as a PR by hand.`); process.exitCode = 1; return null; }
   label(pr.number);
   send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: branch });
@@ -106,27 +108,51 @@ function autoRevert(tip) {
   return null;
 }
 
-function merge() {
-  // Stop the line: never merge onto a red or untested main, except the red tip's own auto-revert. A GITHUB_TOKEN merge
-  // fires no push workflow, so a main tip with no `test` run gets ci.yml dispatched here and is retried on the next run.
+// What this run looks at: --pr / the dispatch input, else the event's PR (self-merge.yml), else every open PR.
+function target() {
+  const only = opt('--pr') || process.env.PR || '', name = process.env.GITHUB_EVENT_NAME, file = process.env.GITHUB_EVENT_PATH;
+  return only ? { prs: [only] } : name && file ? eventTarget(name, JSON.parse(fs.readFileSync(file, 'utf8')), C) : { all: true };
+}
+function prsFor(t) {
+  if (t.all) return pages(`repos/${R}/pulls?state=open&base=${C.base}&per_page=100`);
+  if (!t.sha) return t.prs.map(n => get(`repos/${R}/pulls/${n}`));
+  const prs = get(`repos/${R}/commits/${t.sha}/pulls`).filter(p => p.head.sha === t.sha);
+  if (!prs.length) console.log(`no open PR has head ${t.sha.slice(0, 8)}; nothing to do`);
+  return prs;
+}
+
+function evaluate(p, tip) {
+  const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name) };
+  try { return pr.base === C.base && pr.sameRepo ? decide(pr, prState(p, tip), C) : decide(pr, {}, C); }
+  catch (e) { return { merge: false, reason: `could not read state: ${e.message.split('\n')[0]}` }; }
+}
+
+function mainTip() {
   const tip = get(`repos/${R}/commits/${C.base}`).sha;
-  const t = testRun(tip);
+  return { tip, test: testRun(tip) };
+}
+
+function merge() {
+  const want = target();
+  if (want.skip) return console.log(`${process.env.GITHUB_EVENT_NAME}: ${want.skip}; nothing to do`);
+  // Stop the line: never merge onto a red or untested main, except the red tip's own auto-revert. A GITHUB_TOKEN merge
+  // fires no push workflow, so a main tip with no `test` run gets ci.yml dispatched here; its completion runs this again.
+  const { tip, test: t } = mainTip();
   if (!t) { console.log(`main ${tip.slice(0, 8)}: no ${C.check} run yet; ${dry ? 'would dispatch' : 'dispatching'} ci.yml, merging nothing this run`); if (!dry) send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: C.base }); return; }
-  if (t.status !== 'completed') return console.log(`main ${tip.slice(0, 8)}: ${C.check} still running; merging nothing this run`);
+  if (t.status !== 'completed') return console.log(`main ${tip.slice(0, 8)}: ${C.check} still running; merging nothing this run (its completion runs this again)`);
   let prs;
   if (t.conclusion !== 'success') { const rv = autoRevert(tip); if (!rv) return; prs = [rv]; }
-  else {
-    const only = opt('--pr') || process.env.PR || '';
-    prs = (only ? [get(`repos/${R}/pulls/${only}`)] : pages(`repos/${R}/pulls?state=open&base=${C.base}&per_page=100`))
-      .filter(p => p.state === 'open').sort((x, y) => x.created_at.localeCompare(y.created_at));
-  }
+  else prs = prsFor(want).filter(p => p.state === 'open').sort((x, y) => x.created_at.localeCompare(y.created_at));
   for (const p of prs) {
-    const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name) };
-    let d;
-    try { d = pr.base === C.base && pr.sameRepo ? decide(pr, prState(p, tip), C) : decide(pr, {}, C); } catch (e) { d = { merge: false, reason: `could not read state: ${e.message.split('\n')[0]}` }; }
+    const d = evaluate(p, tip);
     console.log(`#${p.number} ${p.head.sha.slice(0, 8)}: ${d.merge ? (dry ? 'WOULD MERGE' : 'MERGE') : 'skip'}: ${d.reason}`);
     if (!d.merge || dry) continue;
-    if (get(`repos/${R}/issues/${p.number}/labels`).some(l => l.name === C.hold_label)) { console.log(`#${p.number}: ${C.hold_label} added just now; skip`); continue; }
+    // Read everything again just before the merge call: the PR, main's tip and its test, and every rule in decide(). The
+    // merge then pins the head SHA, so a push after this read makes GitHub refuse it.
+    const again = get(`repos/${R}/pulls/${p.number}`), now = mainTip();
+    if (again.state !== 'open' || again.head.sha !== p.head.sha || now.tip !== tip || now.test?.conclusion !== t.conclusion) { console.log(`#${p.number}: the PR, its head or ${C.base} changed during this run; skip (that change's own event runs self-merge again)`); continue; }
+    const d2 = evaluate(again, tip);
+    if (!d2.merge) { console.log(`#${p.number}: refused on re-check: ${d2.reason}`); continue; }
     try {
       send('PUT', `repos/${R}/pulls/${p.number}/merge`, { merge_method: 'squash', sha: p.head.sha, commit_title: `${p.title} (#${p.number})` });
     } catch (e) { console.log(`#${p.number}: merge refused: ${e.message.split('\n')[0]}`); continue; }
@@ -134,7 +160,7 @@ function merge() {
     // Delete the merged branch (fixed rule 18); GitHub then retargets PRs stacked on it to main.
     try { gh(['-X', 'DELETE', `repos/${R}/git/refs/heads/${p.head.ref}`]); } catch (e) { console.log(`  branch ${p.head.ref} not deleted: ${e.message.split('\n')[0]}`); }
     send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: C.base });
-    return console.log(`  dispatched ci.yml on ${C.base} (the post-merge check; a failure opens the auto-revert). One merge per run.`);
+    return console.log(`  dispatched ci.yml on ${C.base} (the post-merge check; its completion runs self-merge, and a failure opens the auto-revert). One merge per run.`);
   }
 }
 

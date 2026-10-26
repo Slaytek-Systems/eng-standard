@@ -27,7 +27,7 @@ ship:
       - ".buildkite/**"
       - ".eng/ci/**"
       - ".githooks/**"
-      - "eng.config.yml"          # this file: the high-risk list, hold window and merge rule
+      - "eng.config.yml"          # this file: the high-risk list and merge rule
       - "AGENTS.md"               # the merge rule
       - "CLAUDE.md"
       - "docs/self-merge.md"      # checker command, undo, settings
@@ -49,10 +49,9 @@ ship:
       - "**/billing/**"
       - "**/billing.*"
     version_only: [package.json, package-lock.json]   # risk:low when the version field is the only change
-  self_merge:                     # .github/workflows/self-merge.yml, every 30 min + workflow_dispatch
+  self_merge:                     # .github/workflows/self-merge.yml: events only (ci done, verdict, label, ready) + workflow_dispatch. No wait.
     base: main
-    hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go
-    hold_minutes: 120             # checks and verdicts green on the head SHA this long before the merge (Matt's window)
+    hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go. There is no hold window.
     check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
     status: verdict               # commit status the independent checker posts (eng verdict ... --pr <n>)
     # verifier_logins: [<login>, <login>]   # once verifiers have their own GitHub identities: only these logins'

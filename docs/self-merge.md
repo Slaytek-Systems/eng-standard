@@ -12,7 +12,7 @@ by identity (26 Oct 2026). Rule summary: [AGENTS.md](../AGENTS.md).
 | Risk label | `.github/workflows/risk-label.yml` → `scripts/pr-gate.mjs label` → `lib/risk.mjs` | On PR open, push, reopen, ready and edit (incl. retarget to main): `risk:high` if any changed path (or a rename's old path) matches `ship.high_risk.paths`, else `risk:low`. `package.json` / `package-lock.json` count only when more than the version changed. Runs main's code (`pull_request_target`, no PR checkout) so a PR cannot relabel itself |
 | Verdict comment | `eng verdict ... --pr <n>` (`bin/eng.mjs`) | Posts an `eng-verdict/v1` PR comment with the record as JSON: head SHA, patch-id, result, by. Self-merge reads verdicts from these comments |
 | Verdict status | `eng verdict ... --pr <n>` / `eng verdict status --pr <n>` (`bin/eng.mjs`) | Posts commit status `verdict` (success/failure) on the PR's exact head SHA from `eng verdict check`. The ruleset requires it |
-| Self-merge | `.github/workflows/self-merge.yml` → `scripts/pr-gate.mjs merge` → `lib/self-merge.mjs` | Every 30 min and on dispatch. Skips everything if main's `test` is running (no run yet: dispatches `ci.yml`). Then squash-merges the oldest eligible PR with `sha=<head>`, deletes its branch, dispatches `ci.yml` on main (the post-merge check) |
+| Self-merge | `.github/workflows/self-merge.yml` → `scripts/pr-gate.mjs merge` → `lib/self-merge.mjs` | On events only (below) and on dispatch. Skips everything if main's `test` is running (no run yet: dispatches `ci.yml`). Then checks the event's PR, reads every rule again, squash-merges it with `sha=<head>`, deletes its branch and dispatches `ci.yml` on main (the post-merge check) |
 | Auto-revert | `scripts/pr-gate.mjs merge` on a red main | Opens `auto-revert/<sha12>` from `github-actions[bot]`: one commit on top of the red tip with the tip's parent tree, so it is the exact inverse. While main is red only that PR is considered, and only while it is still that exact inverse |
 | Undo | `gh pr revert <n>` | Opens a revert PR |
 
@@ -30,16 +30,41 @@ Self-merge merges a PR only when **all** hold:
     identities. A PR is risk:high if its label says so or the files recomputed against
     `ship.high_risk.paths` say so. Path patterns match raw names, newlines included (`glob2re` uses dotAll), for both
     a file's name and a rename's old name.
-- The latest of the `test` check, the `verdict` status and the counted verdict comments went green at least
-  `hold_minutes` ago. A comment's time is its last edit (`max(created_at, updated_at)`), both for which verdict is a
-  verifier's latest and for the window: editing a comment restarts the window.
+- A comment's time is its last edit (`max(created_at, updated_at)`) when deciding which verdict is a verifier's latest.
 
 GitHub lists at most 3,000 files and 250 commits for a PR. When the listed files fall short of the PR's
 `changed_files`, the PR is risk:high; when the listed commits fall short of its `commits`, the authors are unknown and
 the PR is skipped. An incomplete list is never evidence.
 
-A new push gives a new head SHA, so everything must go green again for it and the window restarts. `hold` is checked
-again just before the merge call. Dispatch inputs cannot shorten the window.
+There is no wait (Matt, 26 Oct 2026: "Merge as soon as it's verified; post-merge checks roll back breakage"). A PR
+merges in the first run after its last rule goes green. A new push gives a new head SHA, so everything must go green
+again for it. Just before the merge call the run reads the PR, main's tip and its `test` run, and every rule again. If
+the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict), it merges nothing. The merge call pins
+the head SHA. `ship.self_merge.hold_minutes` no longer exists, and a config that sets it fails with a message saying so.
+
+## Events
+
+Self-merge has no schedule. Each event below starts one run. Runs share one concurrency group with `queue: max`, so they
+run one at a time in arrival order, up to 100 waiting, and a newer run never replaces a waiting one.
+
+| Event | PRs it looks at |
+|---|---|
+| `workflow_run`: `ci` completed on a PR | that PR |
+| `workflow_run`: `ci` completed on main after a push or a manual dispatch | every open PR (main's state changed) |
+| `issue_comment` created or edited, body starts with `<!-- eng-verdict/v1 -->` | that PR |
+| `status` with context `verdict` | the open PR whose head is that SHA |
+| `pull_request_target` labeled, unlabeled, ready_for_review | that PR |
+| `workflow_dispatch` | input `pr`, or every open PR |
+| `workflow_dispatch` from `ci.yml` job `start-self-merge` | every open PR |
+
+`eng verdict --pr` posts the comment before the status, so a run started by the comment can see no `verdict` status
+yet. The status event starts another run that sees both.
+
+A `ci` run that self-merge dispatches with `GITHUB_TOKEN` (the post-merge check on main, or an auto-revert branch)
+fires no `workflow_run`. GitHub does not start workflows from `GITHUB_TOKEN` events, except `workflow_dispatch`. So
+`ci.yml` job `start-self-merge` dispatches self-merge when such a run ends, pass or fail.
+
+Every one of these runs uses main's copy of `self-merge.yml` and main's code. Nothing from a PR is checked out or run.
 
 **Trust policy** (`trusted()` in `lib/self-merge.mjs`, applied inside `decide()` before any verdict counts or
 supersedes another). The repo is public, so anyone can post a comment that looks like a verdict.
@@ -81,8 +106,8 @@ Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is 
 
 ## Post-merge check and auto-revert
 
-Each merge dispatches `ci.yml` on main. When main's `test` is red on the next run and the tip is a squash merge of a
-PR, self-merge creates `auto-revert/<sha12>` through the git data API (a commit whose parent is the tip and whose tree
+Each merge dispatches `ci.yml` on main, and `ci.yml` starts self-merge when that run ends. When main's `test` is red
+and the tip is a squash merge of a PR, self-merge creates `auto-revert/<sha12>` through the git data API (a commit whose parent is the tip and whose tree
 is the tip's parent tree), opens a PR from it as `github-actions[bot]`, sets its risk label (risk-label.yml does not
 run for bot PRs) and dispatches `ci.yml` on the branch. It never reverts a revert and never reverts a tip that is not a
 PR merge; it prints "escalate to Matt" instead. The revert PR gets verdicts like any PR. Unlike PR #20's gate, there is
@@ -94,8 +119,7 @@ names the pushed branch, and Matt either allows it or opens the branch as a PR.
 ## Undo
 
 `gh pr revert <n>` opens a PR that reverts the squash commit. It is classed like the original (a low PR's revert is low)
-and needs `test` plus a `verdict` like any PR. Once both are green Matt can merge it by hand at once instead of waiting
-for the window.
+and needs `test` plus a `verdict` like any PR. Self-merge merges it once both are green, or Matt can merge it by hand.
 
 ## GitHub settings (apply only after this PR merges)
 
@@ -107,7 +131,7 @@ delete the ruleset as the repo admin; that is the only way around it. Merge queu
 R=Mattslayga/eng-standard
 
 # 1. Labels the workflows use (risk:high already exists)
-gh label create risk:low --repo $R --color 0E8A16 --description "Self-merges after test + verdict + hold window"
+gh label create risk:low --repo $R --color 0E8A16 --description "Self-merges after test + verdict"
 gh label create hold     --repo $R --color FBCA04 --description "Stops self-merge for this PR"
 
 # 2. Merge settings: squash only, delete head branches (GitHub then retargets stacked PRs to main)

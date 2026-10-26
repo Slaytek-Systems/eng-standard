@@ -1,17 +1,30 @@
 # Squash-merges at most ONE PR into main per run, only when every rule in lib/self-merge.mjs holds on the current head
 # SHA (head contains main's tip, test green, verdict success, verdict comments for that head: one independent PASS for
-# risk:low, PASSes from N distinct independent identities for risk:high; no hold label, not draft, green for
-# ship.self_merge.hold_minutes). Then dispatches ci.yml on main (a GITHUB_TOKEN merge fires no push workflow); when that
-# post-merge check fails, the next run opens the tip's exact inverse as an auto-revert PR. Rules: AGENTS.md.
+# risk:low, PASSes from N distinct independent identities for risk:high; no hold label, not draft). There is no wait: it
+# merges as soon as the rules hold, and reads them all again just before the merge call. Then dispatches ci.yml on main (a
+# GITHUB_TOKEN merge fires no push workflow); when that post-merge check fails, the next run opens the tip's exact
+# inverse as an auto-revert PR. Rules: AGENTS.md.
+# Events only, no schedule. Each event names one PR (scripts/pr-gate.mjs eventTarget): ci finished on it, a verdict
+# comment or verdict status on it, a label added or removed, ready for review. ci finished on main (the post-merge check)
+# and a dispatch without a PR look at every open PR. A ci run dispatched with GITHUB_TOKEN fires no workflow_run, so
+# ci.yml dispatches this workflow itself when such a run finishes.
+# pull_request_target, issue_comment, status and workflow_run all run main's copy of this file and main's code with the
+# base repository's token. Nothing from a PR is checked out or run.
 # Stop one PR: add the `hold` label. Stop everything: gh workflow disable self-merge.yml
 name: self-merge
 on:
-  schedule:
-    - cron: '7,37 * * * *'          # every 30 min, off the hour (GitHub delays top-of-hour schedules)
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  issue_comment:
+    types: [created, edited]
+  status:
+  pull_request_target:
+    types: [labeled, unlabeled, ready_for_review]
   workflow_dispatch:
     inputs:
       pr:
-        description: Only consider this PR number (every rule still applies; the hold window cannot be shortened)
+        description: Only consider this PR number (every rule still applies)
         required: false
         default: ''
       dry_run:
@@ -19,12 +32,19 @@ on:
         type: boolean
         default: false
 permissions: {}
-concurrency:
-  group: self-merge
-  cancel-in-progress: false
 jobs:
   self-merge:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' && (
+        (github.event_name != 'issue_comment' && github.event_name != 'status') ||
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '<!-- eng-verdict/v1 -->')) ||
+        (github.event_name == 'status' && github.event.context == 'verdict'))
+    # One queue for every self-merge run, so two merges never run at once. queue: max keeps up to 100 waiting runs in
+    # order instead of letting a newer one replace the waiting one, so no PR's event is dropped.
+    concurrency:
+      group: self-merge
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       contents: write               # squash-merge through the API, delete the merged head branch, push the auto-revert
