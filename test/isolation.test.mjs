@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, composeArgvOutOfBounds, argvProblems } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, validateEntry, connectAllowed } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -62,6 +62,7 @@ command = ["node", "server.mjs"]
 port_env = "PORT"
 health = "/version"
 env = { LOG_LEVEL = "debug" }
+connect = [["node", "client.mjs"], ["docker", "compose", "-p", "${id}", "ps"], ["docker", "compose", "-p", "${id}_test", "ps"], ["tool"]]
 
 [[services]]
 name = "worker"
@@ -102,6 +103,11 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { ADMIN_KEY = "abc" }\n', /env.ADMIN_KEY looks like a secret/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["a"]\n[[services]]\nname = "db"\ncommand = ["b"]\n', /duplicate service name/);
   bad('schema = 1\n[project\n', /line 2: expected key = value/);
+  const entries = [`["node", "-e", "process.kill(99999999,9)"]`, `["env", "-S", "sh -c pwd"]`, `["docker", "--context", "x", "stop", "y"]`, `["docker", "compose", "-p", "p", "ps", "--env-file", "-pp"]`,
+    `['sh', '-c', 'docker com""pose -p beta down']`, `["docker", "compose", "-p", "p", "ps", "-vpbeta-project"]`, `['node', 'client.cjs', '"--token"', 'v']`];
+  const errs = parseIdentity(base + `[[services]]\nname = "db"\ncommand = ["db"]\nconnect = [${entries.join(', ')}]\n`).errors.join('\n');
+  for (let k = 0; k < entries.length; k++) assert.match(errs, new RegExp(`connect\\[${k}\\] refused`), `identity validation refuses connect[${k}] ${entries[k]}`);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect = ["node"]\n', /connect must be a list of argv prefixes/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["convex", "dev", "--deployment-name", "anonymous-agent"]\n', /command uses a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--port", "3210"]\n', /command uses the shared default port 3210/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect_env = { URL = "http://127.0.0.1:6791" }\n', /connect_env.URL uses the shared default port 6791/);
@@ -152,7 +158,7 @@ test('refusal diagnostics never echo argv text that can hold a value', () => {
   assert.doesNotMatch(out(r), new RegExp(canary), 'the connect refusal never prints the assignment');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'env', `DB_URL=${canary}`, 'client', '--token', 'x');
   assert.equal(r.status, 1);
-  assert.match(out(r), /refusing; the command carries --token on argv/);
+  assert.match(out(r), /refusing; that command is not listed/);
   assert.doesNotMatch(out(r), new RegExp(canary), 'a leading env assignment is never printed');
   const toml = parseIdentity(`schema = 1\n[project]\nid = "z"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = [DB_URL=${canary}]\n`).errors.join('\n');
   assert.match(toml, /unsupported value/);
@@ -164,19 +170,23 @@ test('refusal diagnostics never echo argv text that can hold a value', () => {
 test('run-service refuses all four bypass classes before starting anything', () => {
   const dir = project('mu', '47160, 47164'), base = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
   const cases = [
-    [`['docker', 'compose', 'down', '--env-file', '-pmu']`, /command refused: a compose command must name this project/],
-    [`['sh', '-c', 'docker com""pose -p beta down']`, /command refused: it runs a shell with -c; commands are argv only/],
-    [`['docker', 'compose', '-p', 'mu', 'down', '-vpbeta-project']`, /command refused: a compose command must name this project/],
-    [`['docker', 'compose', '-p', 'mu', 'down', '-f/tmp/other.yml']`, /command refused: a compose command must name this project/],
-    [`['sh', '-c', 'node client.cjs "--token" "$API_TOKEN"']`, /command refused: it runs a shell with -c/],
-    [`['node', 'client.cjs', '"--token"', '$API_TOKEN']`, /command refused: argument 3 holds quotes, \$ or backticks/],
+    [`['docker', 'compose', 'up', '--env-file', '-pmu']`, /command refused: a compose command must name this project/],
+    [`['sh', '-c', 'docker com""pose -p beta down']`, /command refused: sh must be followed by the script, module or package it runs/],
+    [`['docker', 'compose', '-p', 'mu', 'up', '-vpbeta-project']`, /command refused: a compose command must name this project/],
+    [`['docker', 'compose', '-p', 'mu', 'up', '-f/tmp/other.yml']`, /command refused: a compose command must name this project/],
+    [`['sh', '-c', 'node client.cjs "--token" "$API_TOKEN"']`, /command refused: sh must be followed by the script/],
+    [`['node', 'client.cjs', '"--token"', '$API_TOKEN']`, /command carries --token on argv/],
+    [`['node', '-e', 'process.kill(99999999,9)']`, /command refused: node must be followed by the script/],
+    [`['env', '-S', 'sh -c pwd']`, /command refused: env only launches other commands/],
+    [`['docker', '--context', 'x', 'stop', 'y']`, /command refused: docker\/podman stop is not an approved subcommand/],
+    [`['docker', 'compose', '-p', 'mu', 'down']`, /command refused: compose down is not an approved subcommand/],
   ];
   for (const [cmd, re] of cases) {
     fs.writeFileSync(path.join(dir, '.eng/project.toml'), `${base}\n[[services]]\nname = "bypass"\ncommand = [${cmd.slice(1, -1)}]\n`);
     const r = eng(dir, 'agent-m', 'run-service', 'bypass');
     assert.equal(r.status, 1, `${cmd}: ${out(r)}`);
     assert.match(out(r), re, cmd);
-    assert.doesNotMatch(out(r), /API_TOKEN|beta-project|other\.yml/, 'refusals never echo the command text');
+    assert.doesNotMatch(out(r), /API_TOKEN|beta-project|other\.yml|99999999|pwd/, 'refusals never echo the command text');
     assert.ok(!fs.existsSync(recordPath(dir, 'mu', 'bypass')), 'nothing started');
   }
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'the docker stub was never reached');
@@ -192,60 +202,60 @@ test('run-service refuses a service whose argv carries a secret value starting w
   assert.ok(!fs.existsSync(recordPath(dir, 'delta', 'leaky')), 'nothing started');
 });
 
-test('compose commands must name this project, through eng connect or not', () => {
-  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', w: 'docker compose --env-file "settings -p p" down', x: 'docker com""pose -p beta down', D: 'docker compose down --env-file -pp', A: 'docker compose -p p down -vpbeta-project', B: 'docker compose -p p down -vpother2', C: 'docker compose -p p down -f/tmp/other.yml', y: "npx con''vex dev", z: "/bin/ki''ll 1", r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
+test('repo check: eng connect commands must be listed; direct docker, kill and inline code are warned', () => {
+  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["docker", "compose", "-p", "p", "ps"], ["npx", "convex", "codegen"]]\n';
+  const scripts = {
+    a: 'eng connect x -- docker compose -p p ps', b: 'eng connect x -- docker compose -p p ps --env-file -pp', c: 'eng connect x -- docker compose -p p ps -vpbeta-project',
+    d: 'eng connect x -- docker compose -p p down', e: 'docker compose -p p ps', f: 'docker --context x stop y', g: 'node -e process.kill(99999999,9)', h: "env -S 'sh -c pwd'",
+    i: `sh -c 'docker com""pose -p beta down'`, j: `sh -c 'node client.cjs "--token" "$API_TOKEN"'`, k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen',
+    m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x', q: 'eng connect x -- node -e process.kill(1)', r: 'eng connect y -- docker compose -p p ps',
+    s: 'eng connect x -- docker compose -p p ps -f/tmp/other.yml', t: 'eng run-service x && eng stop x', u: 'docker -H h compose -p p down',
+  };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
   const by = rule => hits.filter(h => h.rule === rule).map(h => h.message.match(/script "(\w)"/)[1]).sort();
-  assert.deepEqual(by('shell-string'), ['r', 'u', 'w', 'x', 'y', 'z'], 'quoted or expanded lines around compose, convex or kill are warned as unreadable');
-  assert.deepEqual(by('bare-kill'), ['z']);
-  assert.deepEqual(by('bare-service-command'), ['A', 'B', 'C', 'D', 'a', 'b', 'd', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u', 'w', 'x', 'y'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
+  assert.deepEqual(by('not-allowlisted'), ['b', 'c', 'd', 'q', 'r', 's'], 'unlisted commands, extra selectors and short clusters after a listed prefix');
+  assert.deepEqual(by('bare-service-command'), ['e', 'f', 'i', 'k', 'o', 'u'], 'docker, podman, compose and convex go through eng connect');
+  assert.deepEqual(by('bare-kill'), ['f', 'i', 'm', 'n', 'o', 'u'], 'stop, kill, rm and down are found after docker global options too');
+  assert.deepEqual(by('inline-code'), ['g', 'h', 'i', 'j', 'q']);
+  assert.deepEqual(by('shell-string'), ['i', 'j'], 'quoted or expanded lines around compose or a secret flag');
+  assert.deepEqual(by('secret-argv'), ['j'], 'a quoted secret flag is still found');
+  assert.equal(hits.filter(h => ['a', 'l', 't'].includes(h.message.match(/script "(\w)"/)?.[1])).length, 0, 'listed and helper commands pass');
   const hook = isolationFindings([{ path: '.githooks/pre-push', text: '#!/bin/sh\ndocker compose -p p ps\ndocker \\\n  compose -p beta down\n' }], id);
-  assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:3'], 'a \\ continuation cannot hide a compose call');
-  const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
-  assert.deepEqual(kills.map(h => `${h.rule}:${h.message.match(/script "(\w)"/)[1]}`).sort(), ['bare-kill:m', 'bare-kill:n', 'bare-kill:o']);
-  const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`)).map(h => h.rule));
+  assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:2', 'bare-service-command:3', 'bare-kill:3'], 'a \\ continuation cannot hide a compose call');
+  const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`).replaceAll('"-p", "p"', `"-p", "${pid}"`)).map(h => h.rule));
   assert.deepEqual(twoIds, [['compose-name'], []], 'alpha-beta names project alpha-beta only, never alpha');
   const secret = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { s: 'tool --secret-key v' } }) }, { path: 'compose.yml', text: 'name: p_x\nservices:\n  a:\n    command: ["tool", "--secret-key", "v"]\n' }], id);
   assert.deepEqual(secret.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:secret-argv']);
 });
 
-test('compose argv: option values are never read as selectors, and a real -p naming the project is required', () => {
-  const out = v => composeArgvOutOfBounds(v, 'alpha');
+test('allowlist entries: exact program and argv prefix; inline code, wrappers, kill and unapproved docker subcommands cannot be listed', () => {
+  const bad = v => validateEntry(v, 'alpha').length > 0;
+  for (const v of [['node', '-e', 'process.kill(99999999,9)'], ['node'], ['python3', '-c', 'x'], ['env', '-S', 'sh -c pwd'], ['env', 'X=1', 'node', 'a.mjs'], ['sh', '-c', 'docker com""pose -p beta down'],
+    ['bash', '-lc', 'x'], ['fish', '--command', 'x'], ['xargs', 'kill'], ['kill', '1'], ['/usr/bin/pkill', 'x'], ['docker', 'stop', 'y'], ['docker', '--context', 'x', 'stop', 'y'], ['docker', '-H', 'h', 'rm', 'y'],
+    ['docker', 'exec', 'other', 'sh'], ['docker', 'com""pose', '-p', 'alpha', 'ps'], ['docker', 'compose', '-p', 'alpha', 'down'], ['docker', 'compose', '-p', 'alpha', 'restart'], ['docker', '--bogus', 'ps']])
+    assert.equal(bad(v), true, `refused: ${JSON.stringify(v)}`);
   for (const opt of ['-f', '--file', '--env-file', '--project-directory', '--profile', '--ansi', '--progress', '--parallel'])
     for (const value of ['-p alpha', 'settings -p alpha', '-palpha', '--project-name=alpha']) {
-      assert.equal(out(['docker', 'compose', opt, value, 'down']), true, `${opt} ${JSON.stringify(value)} alone is no selector`);
-      assert.equal(out(['docker', 'compose', `${opt.startsWith('--') ? opt + '=' + value : opt + value}`, 'down']), true, `${opt} attached ${JSON.stringify(value)}`);
-      assert.equal(out(['docker', 'compose', '-p', 'alpha', opt, value, 'down']), false, `-p alpha with ${opt} ${JSON.stringify(value)} is in bounds`);
+      assert.equal(bad(['docker', 'compose', opt, value, 'ps']), true, `${opt} ${JSON.stringify(value)} alone is no selector`);
+      assert.equal(bad(['docker', 'compose', opt.startsWith('--') ? `${opt}=${value}` : opt + value, 'ps']), true, `${opt} attached ${JSON.stringify(value)}`);
+      assert.equal(bad(['docker', 'compose', '-p', 'alpha', opt, value, 'ps']), false, `-p alpha with ${opt} ${JSON.stringify(value)} before the subcommand`);
     }
-  for (const opt of ['--context', '-c', '-H', '--host', '--config', '--log-level'])
-    assert.equal(out(['docker', opt, '-p alpha', 'compose', 'down']), true, `engine option ${opt} value is no selector`);
-  assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', '-p', 'beta']), true, 'a -p after the subcommand overrides');
-  for (const tail of [['--env-file', '-palpha'], ['--env-file=-palpha'], ['-f', '-p alpha'], ['-fx'], ['--project-directory', 'x'], ['--profile=x'], ['-pbeta'], ['--project-name=alpha'], ['-dp', 'alpha'], ['-vpbeta-project'], ['-vpother2'], ['-f/tmp/other.yml'], ['-dv'], ['-t', '5']]) {
-    assert.equal(out(['docker', 'compose', 'down', ...tail]), true, `no global selector, then ${JSON.stringify(tail)}`);
-    assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', ...tail]), true, `selector-looking or value-taking ${JSON.stringify(tail)} after the subcommand fails closed`);
-  }
-  assert.equal(out(['docker', 'compose', '-p', 'alpha', 'logs', '--tail', '5', 'web']), false, 'ordinary subcommand options are fine');
-  for (const flag of ['-d', '-v', '-q', '-a']) assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', flag]), false, `allowlisted ${flag}`);
-  const refused = v => argvProblems(v, 'alpha').length > 0;
-  for (const script of ['docker com""pose -p beta down', "docker com''pose -p alpha down", 'd"ocker" compose -p alpha down', 'docker compose -p alpha ps', 'node client.cjs "--token" "$API_TOKEN"'])
-    for (const sh of [['sh', '-c'], ['bash', '-lc'], ['/bin/dash', '-c'], ['env', 'X=1', 'zsh', '-c'], ['fish', '--command']]) assert.equal(refused([...sh, script]), true, `${sh.join(' ')} ${script}: argv only`);
-  for (const v of [['node', 'client.cjs', '"--token"', 'x'], ['docker', 'com""pose', '-p', 'alpha', 'up'], ['tool', '$TOKEN'], ['tool', '`id`']]) assert.equal(refused(v), true, `quotes, $ or backticks: ${JSON.stringify(v)}`);
-  assert.equal(refused(['docker', 'compose', '-p', 'alpha', 'down', '-vpbeta-project']), true);
-  assert.equal(refused(['kill', '123']), true); assert.equal(refused(['/usr/bin/pkill', 'x']), true); assert.equal(refused(['docker', 'stop', 'x']), true);
-  assert.equal(refused(['docker', 'compose', '-p', 'alpha', 'up', '-d']), false, 'plain argv with a real selector is fine');
-  assert.equal(refused(['npx', 'convex', 'codegen']), false);
-  assert.equal(out(['docker', 'compose', '-p', 'alpha', '--unknown', 'x', 'down']), true, 'an unclassified option fails closed');
-  assert.equal(out(['docker', '--unknown', 'compose', '-p', 'alpha', 'down']), true);
-  assert.equal(out(['env', 'COMPOSE_PROJECT_NAME=alpha', 'docker', 'compose', 'down']), true, 'the env var alone is not enough');
-  assert.equal(out(['docker', 'compose', '-p', 'alpha', 'up', '-d']), false);
-  assert.equal(out(['docker-compose', '--project-name', 'alpha_test', 'ps']), false);
-  assert.equal(out(['docker', 'ps']), false);
+  for (const opt of ['--context', '-c', '-H', '--host', '--config', '--log-level']) assert.equal(bad(['docker', opt, '-p alpha', 'compose', 'ps']), true, `engine option ${opt} value is no selector`);
+  for (const tail of [['--env-file', '-palpha'], ['--env-file=-palpha'], ['-f', '-p alpha'], ['-fx'], ['--project-directory', 'x'], ['--profile=x'], ['-pbeta'], ['--project-name=alpha'], ['-dp', 'alpha'], ['-vpbeta-project'], ['-vpother2'], ['-f/tmp/other.yml'], ['-dv'], ['-p', 'beta']])
+    assert.equal(bad(['docker', 'compose', '-p', 'alpha', 'ps', ...tail]), true, `${JSON.stringify(tail)} after the subcommand fails closed`);
+  assert.equal(bad(['node', 'client.cjs', '"--token"', 'v']), true, 'a literal quoted secret flag is still a secret flag');
+  for (const v of [['node', 'client.mjs'], ['npx', 'convex', 'codegen'], ['docker', 'compose', '-p', 'alpha', 'ps', '-a'], ['docker', 'compose', '-palpha_x', 'logs', '--tail', '5'], ['docker', 'ps'], ['./scripts/backend.sh', '--port', '{port}']])
+    assert.equal(bad(v), false, `allowed: ${JSON.stringify(v)}`);
+  const list = [['node', 'client.mjs'], ['docker', 'compose', '-p', 'alpha', 'ps']];
+  assert.ok(connectAllowed(['node', 'client.mjs', 'version'], list));
+  assert.ok(connectAllowed(['docker', 'compose', '-p', 'alpha', 'ps', '-a'], list));
+  for (const v of [['node', '-e', 'x'], ['/usr/bin/node', 'client.mjs'], ['./node', 'client.mjs'], ['node', 'client.mjs.bak'], ['docker', 'compose', '-p', 'alpha'], ['env', '-S', 'sh -c pwd']])
+    assert.equal(connectAllowed(v, list), undefined, `not listed: ${JSON.stringify(v)}`);
 });
 
 test('repo check: quoted secret flags and shell strings are warned', () => {
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { q: `sh -c 'node client.cjs "--token" "$API_TOKEN"'`, p: 'node client.cjs --verbose' } }, null, 2) }], null);
-  assert.deepEqual(hits.filter(h => h.file === 'package.json').map(h => h.rule).sort(), ['secret-argv', 'shell-string']);
+  assert.deepEqual(hits.filter(h => h.file === 'package.json').map(h => h.rule).sort(), ['inline-code', 'secret-argv', 'shell-string']);
   assert.doesNotMatch(hits.map(h => h.message).join('\n'), /API_TOKEN/, 'findings print the rule, not the line');
 });
 
@@ -258,8 +268,8 @@ test('repo check: "default" as a name and secret flags split across compose comm
   const hits = isolationFindings([
     { path: 'compose.yml', text: 'name: p_local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
     { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port', c: 'eng connect x -- true && npx convex dev', d: 'eng connect x -- npx convex codegen', e: 'env API_TOKEN=v client' } }, null, 2) },
-  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n');
-  assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:secret-argve']);
+  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["npx", "convex", "codegen"]]\n');
+  assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:not-allowlistedc', 'package.json:secret-argve']);
 });
 
 function repo(files) {
@@ -380,39 +390,29 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
   assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; the command carries --admin-key on argv/);
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'beta-project', 'down');
-  assert.equal(r.status, 1);
-  assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', '-p', 'beta', 'down');
-  assert.match(out(r), /refusing; a compose command must name this project/, 'a later -p cannot redirect compose to another project');
-  for (const script of ['docker compose -p alpha ps; docker compose -p beta down', 'docker compose -p alpha ps', 'docker com""pose -p beta down', 'node client.cjs "--token" "$API_TOKEN"']) {
-    r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', script);
-    assert.equal(r.status, 1, `a shell string is never run: ${script}`);
-    assert.match(out(r), /refusing; it runs a shell with -c; commands are argv only/);
-  }
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.cjs', '"--token"', '$API_TOKEN');
-  assert.match(out(r), /refusing; argument 3 holds quotes, \$ or backticks; commands are argv only/, 'quoted or $ argv elements are refused');
-  for (const cmd of [['docker', 'compose', '-p', 'alpha', '-pbeta', 'down'], ['docker', 'compose', '-p', 'alpha', '--project-name=beta', 'down'],
-    ['sh', '-c', 'docker compose -p alpha ps; docker \\\ncompose -p beta down'], ['sh', '-c', 'docker compose -p "$P" down'], ['sh', '-c', 'eval docker compose -p alpha down']]) {
+  // Only commands listed in connect = [...] run, matched on the exact program and a listed argv prefix.
+  const refusedConnect = [
+    ['node', '-e', 'process.kill(99999999,9)'], ['env', '-S', 'sh -c pwd'], ['docker', '--context', 'x', 'stop', 'y'], ['docker', 'stop', 'y'],
+    ['sh', '-c', 'docker com""pose -p beta down'], ['sh', '-c', 'node client.cjs "--token" "$API_TOKEN"'], ['bash', '-lc', 'docker compose -p alpha ps'],
+    ['docker', 'compose', '-p', 'beta-project', 'down'], ['docker', 'compose', '-p', 'alpha', 'down'], ['/usr/bin/docker', 'compose', '-p', 'alpha', 'ps'],
+    ['docker', 'compose', '-p', 'alpha', 'ps', '--env-file', '-palpha'], ['docker', 'compose', '-p', 'alpha', 'ps', '--env-file=-palpha'],
+    ['docker', 'compose', '-p', 'alpha', 'ps', '-vpbeta-project'], ['docker', 'compose', '-p', 'alpha', 'ps', '-vpother2'], ['docker', 'compose', '-p', 'alpha', 'ps', '-f/tmp/other.yml'],
+    ['docker', 'compose', '-p', 'alpha', 'ps', '-p', 'beta'], ['kill', '1'], ['true'],
+  ];
+  for (const cmd of refusedConnect) {
     r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
-    assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}`);
-    assert.match(out(r), /refusing; (a compose command must name this project|it runs a shell with -c)/);
+    assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}: ${out(r)}`);
+    assert.match(out(r), /connect: refusing; /);
+    assert.doesNotMatch(out(r), /API_TOKEN|beta-project|other\.yml|99999999/, 'refusals never echo the command');
   }
-  for (const cmd of [['docker', 'compose', '-p', 'alpha', 'down', '-vpbeta-project'], ['docker', 'compose', '-p', 'alpha', 'down', '-vpother2'], ['docker', 'compose', '-p', 'alpha', 'down', '-f/tmp/other.yml'], ['docker', 'compose', 'down', '--env-file', '-palpha'], ['sh', '-c', 'docker com""pose -p beta down'], ['sh', '-c', "d'ocker' compose -p alpha down"], ['docker', 'compose', '--env-file', 'settings -p alpha', 'down'], ['docker', 'compose', '-f', '-p alpha', 'down'], ['docker', 'compose', '--project-directory=-palpha', 'down']]) {
-    r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
-    assert.equal(r.status, 1, `a value that looks like a selector is not one: ${JSON.stringify(cmd)}`);
-  }
-  assert.ok(!fs.existsSync(ENGINE_CALLED), 'no refused compose command reached the (stub) container engine');
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', '--env-file', 'settings -p beta', 'ps');
-  assert.equal(r.status, 0, `a real -p naming the project wins over an env file: ${out(r)}`);
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', '-e', 'process.kill(99999999,9)')), /not listed in connect = \[\.\.\.\] for api/);
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', 'ps', '-vpbeta-project')), /a compose command must name this project/, 'extra args after a listed prefix are still checked');
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', '"--token"', 'v')), /refusing; the command carries --token on argv/, 'a literal quoted secret flag is still a secret flag');
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'no refused command reached the (stub) container engine');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha_test', 'ps', '-a');
+  assert.equal(r.status, 0, `a listed compose call runs: ${out(r)}`);
+  assert.match(fs.readFileSync(ENGINE_CALLED, 'utf8'), /docker compose -p alpha_test ps -a/, 'it reached the stub, not a real engine');
   fs.rmSync(ENGINE_CALLED);
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha_test', 'ps');
-  assert.equal(r.status, 0, `an in-bounds compose call runs: ${out(r)}`);
-  assert.match(fs.readFileSync(ENGINE_CALLED, 'utf8'), /docker compose -p alpha_test ps/, 'it reached the stub, not a real engine');
-  fs.rmSync(ENGINE_CALLED);
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', '--context', 'other', 'compose', 'down');
-  assert.equal(r.status, 1);
-  assert.match(out(r), /refusing; a compose command must name this project/, 'a global option before compose does not hide it');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--secret-key', 'v');
   assert.match(out(r), /refusing; the command carries --secret-key on argv/);
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
@@ -426,7 +426,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   // A record for alpha's process placed where beta looks: beta's helper must refuse to signal or connect to it.
   fs.mkdirSync(path.dirname(recordPath(beta, 'beta', 'api')), { recursive: true, mode: 0o700 });
   fs.copyFileSync(recordPath(alpha, 'alpha', 'api'), recordPath(beta, 'beta', 'api'));
-  for (const a of [['stop', 'api'], ['connect', 'api', '--', 'true'], ['run-service', 'api']]) {
+  for (const a of [['stop', 'api'], ['connect', 'api', '--', 'node', 'client.mjs', 'version'], ['run-service', 'api']]) {
     r = eng(beta, 'agent-a', ...a);
     assert.equal(r.status, 1, `${a[0]} from beta: ${out(r)}`);
     assert.match(out(r), /alpha/, `${a[0]} names the foreign project`);
@@ -441,7 +441,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
 
   const own = fs.readFileSync(recordPath(alpha, 'alpha', 'api'), 'utf8');
   fs.writeFileSync(recordPath(alpha, 'alpha', 'api'), JSON.stringify({ ...rec, port: brec.port }), { mode: 0o600 });
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'true');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
   fs.writeFileSync(recordPath(alpha, 'alpha', 'api'), own, { mode: 0o600 });
   assert.equal(r.status, 1, 'alpha cannot reach beta through a port beta now holds');
   assert.match(out(r), new RegExp(`port ${brec.port} is not held by alpha/api`));

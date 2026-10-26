@@ -11,6 +11,7 @@ ports = [41000, 41019]    # inclusive range this project's services pick from; k
 # One table per service. command is argv (no shell): {port} and {state} are filled in. No secret flags on argv:
 # eng run-service loads .eng/secrets/<name>.env (0600, gitignored) into the service's env, or reads KEY=VALUE from
 # stdin with --secrets-stdin. eng connect loads .eng/secrets/<name>.connect.env for the client command.
+# Commands are argv run without a shell: list a script file instead of sh -c or node -e.
 [[services]]
 name = "backend"
 command = ["./scripts/backend.sh", "--port", "{port}", "--data", "{state}/data"]
@@ -19,3 +20,6 @@ health = "/version"               # optional: checked on 127.0.0.1:<port> after 
 ready_timeout_s = 30
 env = { LOG_LEVEL = "info" }
 connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }
+# eng connect runs only these: the program must match exactly and a listed argv must be a prefix of the command.
+# docker/compose entries need an approved subcommand and -p <project id>; stopping and removing go through eng stop.
+connect = [["npx", "convex", "codegen"], ["./scripts/backend-cli.sh", "status"]]
