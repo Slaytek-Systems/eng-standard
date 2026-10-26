@@ -151,9 +151,11 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g'], 'global options before compose do not hide it');
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g', 'j', 'k'], 'global options, a second -p and a path prefix do not hide it');
+  const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
+  assert.deepEqual(kills.map(h => `${h.rule}:${h.message.match(/script "(\w)"/)[1]}`).sort(), ['bare-kill:m', 'bare-kill:n', 'bare-kill:o']);
   const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`)).map(h => h.rule));
   assert.deepEqual(twoIds, [['compose-name'], []], 'alpha-beta names project alpha-beta only, never alpha');
   const secret = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { s: 'tool --secret-key v' } }) }, { path: 'compose.yml', text: 'name: p_x\nservices:\n  a:\n    command: ["tool", "--secret-key", "v"]\n' }], id);
@@ -294,6 +296,8 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'beta-project', 'down');
   assert.equal(r.status, 1);
   assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', '-p', 'beta', 'down');
+  assert.match(out(r), /refusing; a compose command must name this project/, 'a later -p cannot redirect compose to another project');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', '--context', 'other', 'compose', 'down');
   assert.equal(r.status, 1);
   assert.match(out(r), /refusing; a compose command must name this project/, 'a global option before compose does not hide it');
@@ -393,6 +397,17 @@ test('a restart is refused while the previous run left processes in its group, a
   assert.match(r.stdout, /stopped \(SIGTERM to 1 process\(es\)\)/);
   assert.ok(!alive(kid), 'stop reaps the surviving child');
   assert.ok(!fs.existsSync(recordPath(dir, 'theta', 'forked')));
+});
+
+test('concurrent starts from two projects can never record the same port', async () => {
+  const dirs = ['iota', 'kappa'].map(id => { const d = project(id, '47150, 47150'); fs.appendFileSync(path.join(d, '.eng/project.toml'), '\n[[services]]\nname = "sleeper"\ncommand = ["sleep", "60"]\n'); return [d, id]; });
+  const run = ([d], i) => new Promise(res => { const c = spawn(process.execPath, [ENG, 'run-service', 'sleeper'], { cwd: d, env: env(`agent-${i}`) }); let o = ''; c.stdout.on('data', x => o += x); c.stderr.on('data', x => o += x); c.on('close', status => res({ status, o })); });
+  const results = await Promise.all(dirs.map(run));
+  assert.deepEqual(results.map(r => r.status).sort(), [0, 1], results.map(r => r.o).join('\n'));
+  assert.match(results.find(r => r.status === 1).o, /no free port in project.ports \[47150,47150\]/);
+  const [d, id] = dirs[results.findIndex(r => r.status === 0)], i = results.findIndex(r => r.status === 0);
+  assert.equal(readRecord(d, id, 'sleeper').port, 47150);
+  assert.equal(eng(d, `agent-${i}`, 'stop', 'sleeper').status, 0);
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
