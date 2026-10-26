@@ -2,7 +2,7 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.10.1 (26 Oct 2026)
+## Unreleased (26 Oct 2026)
 
 **Google is no longer a verifier provider** (Matt, 26 Oct 2026).
 
