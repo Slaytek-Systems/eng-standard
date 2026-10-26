@@ -347,9 +347,35 @@ test('stop never signals a process named by a record from an earlier boot', () =
   fs.writeFileSync(file, JSON.stringify({ ...rec, boot_id: '00000000-0000-0000-0000-000000000000' }), { mode: 0o600 });
   r = eng(dir, 'agent-e', 'stop', 'sleeper');
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /nothing signalled/);
+  assert.match(r.stdout, /refused to signal anything; stale record from an earlier boot/);
   assert.ok(alive(rec.pid), 'a boot-id mismatch is never treated as the recorded process');
+  assert.ok(!fs.existsSync(file), 'the stale record is cleared');
   process.kill(-rec.pid, 'SIGKILL');
+});
+
+test('a restart is refused while the previous run left processes in its group, and stop reaps them', async () => {
+  const dir = project('theta', '47145, 47149');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "forked"\ncommand = ["sh", "-c", "sleep 60 & exec sleep 61"]\n');
+  let r = eng(dir, 'agent-t', 'run-service', 'forked');
+  assert.equal(r.status, 0, out(r));
+  const rec = readRecord(dir, 'theta', 'forked');
+  const child = () => fs.readdirSync('/proc').filter(d => /^\d+$/.test(d) && Number(d) !== rec.pid).find(d => { try { return fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0').includes(`ENG_RUN_TOKEN=${rec.token}`) && alive(Number(d)); } catch { return false; } });
+  const kid = Number(child());
+  assert.ok(kid, 'the service forked a child into its group');
+  process.kill(rec.pid, 'SIGKILL');
+  await new Promise(res => setTimeout(res, 200));
+  assert.ok(!alive(rec.pid) && alive(kid), 'leader gone, child survives');
+
+  r = eng(dir, 'agent-t', 'run-service', 'forked');
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), new RegExp(`left process\\(es\\) ${kid} running in its group`));
+  assert.ok(fs.existsSync(recordPath(dir, 'theta', 'forked')), 'the record is kept so the survivor stays tracked');
+
+  r = eng(dir, 'agent-t', 'stop', 'forked');
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /stopped \(SIGTERM to 1 process\(es\)\)/);
+  assert.ok(!alive(kid), 'stop reaps the surviving child');
+  assert.ok(!fs.existsSync(recordPath(dir, 'theta', 'forked')));
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
@@ -360,7 +386,7 @@ test('stop never signals a reused pid: the start time must match the record', ()
     boot_id: fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), port: 47111, agent: 'agent-a' }), { mode: 0o600 });
   const r = eng(alpha, 'agent-a', 'stop', 'worker');
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /nothing signalled; pid \d+ start time \d+ does not match the recorded 1 \(the pid was reused\)/);
+  assert.match(r.stdout, /refused to signal anything; pid \d+ start time \d+ does not match the recorded 1 \(the pid was reused\)/);
   assert.ok(alive(other.pid), 'the unrelated process is untouched');
   assert.ok(!fs.existsSync(file), 'stale record removed');
 });
