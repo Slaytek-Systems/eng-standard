@@ -82,6 +82,9 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { ADMIN_KEY = "abc" }\n', /env.ADMIN_KEY looks like a secret/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["a"]\n[[services]]\nname = "db"\ncommand = ["b"]\n', /duplicate service name/);
   bad('schema = 1\n[project\n', /line 2: expected key = value/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["convex", "dev", "--deployment-name", "anonymous-agent"]\n', /command uses a shared default name/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--port", "3210"]\n', /command uses the shared default port 3210/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect_env = { URL = "http://127.0.0.1:6791" }\n', /connect_env.URL uses the shared default port 6791/);
 });
 
 test('argv secrets: flags with values are found; -file flags and --no- switches pass', () => {
@@ -256,6 +259,13 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.status, 0, out(r));
   const brec = readRecord(beta, 'beta', 'api');
   assert.ok(brec.port >= 47115 && brec.port <= 47119 && brec.pid !== rec.pid);
+
+  const own = fs.readFileSync(recordPath(alpha, 'alpha', 'api'), 'utf8');
+  fs.writeFileSync(recordPath(alpha, 'alpha', 'api'), JSON.stringify({ ...rec, port: brec.port }), { mode: 0o600 });
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'true');
+  fs.writeFileSync(recordPath(alpha, 'alpha', 'api'), own, { mode: 0o600 });
+  assert.equal(r.status, 1, 'alpha cannot reach beta through a port beta now holds');
+  assert.match(out(r), new RegExp(`port ${brec.port} is not held by alpha/api`));
 
   fs.copyFileSync(recordPath(alpha, 'alpha', 'api'), recordPath(alpha, 'alpha', 'worker'));
   r = eng(alpha, 'agent-a', 'stop', 'worker');
