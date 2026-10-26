@@ -87,6 +87,8 @@ test('identity file: the starter template parses; default names, default ports, 
 test('argv secrets: flags with values are found; -file flags and --no- switches pass', () => {
   assert.deepEqual(argvSecrets(['x', '--instance-secret', 'v', '--api-key=v', '--token']), ['--instance-secret', '--api-key']);
   assert.deepEqual(argvSecrets(['x', '--token-file', '/run/t', '--no-password', 'pos', '--password=']), []);
+  assert.deepEqual(argvSecrets(['x', '--token', '-fakesecret']), ['--token'], 'a value starting with - is still a value');
+  assert.equal(argvSecrets(['sh', '-c', 'client --token -fakesecret']).length, 1);
   assert.equal(argvSecrets(['bash', '-c', 'exec client --token "$API_TOKEN"']).length, 1, 'a shell wrapper forwarding a secret flag is caught');
   assert.deepEqual(argvSecrets(['env', 'API_TOKEN=v', 'client']), ['API_TOKEN=']);
   assert.deepEqual(argvSecrets(['sh', '-c', 'env LOG=1 API_TOKEN=v client']), ['API_TOKEN= (inside "env ...")']);
@@ -94,10 +96,12 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
 });
 
 test('redactor: a secret split across output chunks is never forwarded, in whole or in part', () => {
+  const short = redactor(['xyz']);
+  assert.equal(short.push('a xy') + short.push('z b') + short.end(), 'a [redacted] b', 'short values are redacted too');
   const r = redactor(['s3cretVALUE', 'ab']);
   const parts = ['x s3cr', 'etVAL', 'UE y s3cretVALUE', ' z s3c'].map(c => r.push(c));
   parts.push(r.end());
-  assert.equal(parts.join(''), 'x [redacted] y [redacted] z s3c');
+  assert.equal(parts.join(''), 'x [redacted] y [redacted] z s3c'.replace('ab', '[redacted]'));
   assert.ok(parts.every(p => !/s3cretV|etVAL|VALUE/.test(p)), 'no chunk carries a fragment longer than the held-back tail');
 });
 
@@ -229,11 +233,11 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
   assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; the command carries --admin-key on argv/);
-  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\n', { mode: 0o600 });
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
+  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN, process.env.PIN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
   assert.equal(r.status, 3, 'connect keeps the command exit code');
-  assert.equal(r.stdout.trim(), 'out [redacted]');
+  assert.equal(r.stdout.trim(), 'out [redacted] [redacted]');
   assert.match(r.stderr, /^err \[redacted\]$/m);
   assert.doesNotMatch(out(r), /t0ken/, 'connect never forwards a loaded secret');
 
