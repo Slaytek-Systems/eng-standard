@@ -1,0 +1,21 @@
+# .eng/project.toml: this checkout's identity on the shared devbox (eng-standard project isolation, docs/project-isolation.md).
+# eng run-service / connect / stop / status read it; eng isolation check validates it. Commit it. Secrets never go here.
+schema = 1
+
+[project]
+id = "my-project"         # unique on the devbox; lower-case letters, digits and dashes; never "default" or "anonymous-agent"
+owner = "my-project"      # the project owner in the workspace registry
+state = ".eng/state"      # inside the checkout; each service gets HOME=<state>/<name> (0700). Add it to .gitignore
+ports = [41000, 41019]    # inclusive range this project's services pick from; keep it clear of 3210, 3211 and 6791
+
+# One table per service. command is argv (no shell): {port} and {state} are filled in. No secret flags on argv:
+# eng run-service loads .eng/secrets/<name>.env (0600, gitignored) into the service's env, or reads KEY=VALUE from
+# stdin with --secrets-stdin. eng connect loads .eng/secrets/<name>.connect.env for the client command.
+[[services]]
+name = "backend"
+command = ["./scripts/backend.sh", "--port", "{port}", "--data", "{state}/data"]
+port_env = "PORT"                 # optional: env var that also carries the port
+health = "/version"               # optional: checked on 127.0.0.1:<port> after start and before and after eng connect
+ready_timeout_s = 30
+env = { LOG_LEVEL = "info" }
+connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }

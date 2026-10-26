@@ -116,6 +116,9 @@ launch:                           # The repo owns its isolated local launch (pst
   mode: "0700"
   base: main                      # ref eng launch checks out (origin/<base> when fetched)
 
+isolation:                        # Devbox project isolation (docs/project-isolation.md): .eng/project.toml + eng run-service/connect/stop/status.
+  mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean.
+
 # renovation:                     # Existing repos only: written by `eng renovate apply` (renovation/README.md in the package). New repos skip it.
 #   version: 0.9.0
 #   completed_steps: []
