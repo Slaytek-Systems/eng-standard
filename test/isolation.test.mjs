@@ -175,8 +175,8 @@ test('run-service refuses all four bypass classes before starting anything', () 
   const cases = [
     [`['docker', 'compose', 'up', '--env-file', '-pmu']`, /command refused: a compose command must name this project/],
     [`['sh', '-c', 'docker com""pose -p beta down']`, /command refused: sh must be followed by the script, module or package it runs/],
-    [`['docker', 'compose', '-p', 'mu', 'up', '-vpbeta-project']`, /command refused: a compose command must name this project/],
-    [`['docker', 'compose', '-p', 'mu', 'up', '-f/tmp/other.yml']`, /command refused: a compose command must name this project/],
+    [`['docker', 'compose', '-p', 'mu', 'up', '-vpbeta-project']`, /command refused: flag <flag> is not allowed for compose up/],
+    [`['docker', 'compose', '-p', 'mu', 'up', '-f/tmp/other.yml']`, /command refused: flag <flag> is not allowed for compose up/],
     [`['sh', '-c', 'node client.cjs "--token" "$API_TOKEN"']`, /command refused: sh must be followed by the script/],
     [`['node', 'client.cjs', '"--token"', '$API_TOKEN']`, /command carries --token on argv/],
     [`['node', '-e', 'process.kill(99999999,9)']`, /command refused: node must be followed by the script/],
@@ -598,18 +598,49 @@ test('Astra repro: a listed destructive compose command is refused everywhere', 
   const listed = `["docker", "compose", "-p", "pi", "up", "--remove-orphans", "--force-recreate"]`;
   fs.writeFileSync(path.join(dir, '.eng/project.toml'), base.replace(/connect = \[\[.*\]\]\n/, `connect = [${listed}]\n`));
   const errs = parseIdentity(fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8')).errors.join('\n');
-  assert.match(errs, /connect\[0\] refused: a destructive docker, podman or compose verb or flag/, 'identity validation refuses it');
+  assert.match(errs, /connect\[0\] refused: flag --remove-orphans is not allowed for compose up/, 'identity validation refuses it');
   const r = eng(dir, 'agent-p', 'connect', 'api', '--', 'docker', 'compose', '-p', 'pi', 'up', '--remove-orphans', '--force-recreate');
   assert.equal(r.status, 1, out(r));
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'it never reached the (stub) engine');
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng connect api -- docker compose -p pi up --remove-orphans --force-recreate' } }) }], fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8'));
   assert.deepEqual(hits.map(h => h.rule).sort(), ['bare-kill', 'identity-invalid', 'not-allowlisted'], 'the repo check flags it');
-  const bad = v => validateEntry(v, 'pi').some(w => /destructive/.test(w));
-  for (const tail of [['stop'], ['kill'], ['rm'], ['down'], ['restart'], ['pause'], ['up', '--remove-orphans'], ['up', '--force-recreate'], ['up', '-V'], ['up', '--renew-anon-volumes'], ['down', '-v'], ['down', '--volumes'], ['down', '--rmi', 'all'], ['run', '--rm', 'web'], ['up', '--abort-on-container-exit'], ['up', '--timeout', '1'], ['logs', 'stop']])
+  const bad = v => validateEntry(v, 'pi').length > 0;
+  for (const tail of [['stop'], ['kill'], ['rm'], ['down'], ['restart'], ['pause'], ['up', '--remove-orphans'], ['up', '--force-recreate'], ['up', '-V'], ['up', '--renew-anon-volumes'], ['down', '-v'], ['down', '--volumes'], ['down', '--rmi', 'all'], ['run', '--rm', 'web'], ['up', '--abort-on-container-exit'], ['up', '--timeout', '1'], ['up', '--abort-on-container-failure'], ['up', '--scale=api=0'], ['up', '--scale', 'api=0'], ['up', '-dV'], ['up', '--pull=always'], ['logs', '--since', '5m'], ['ps', '--filter', 'x'], ['run', 'web']])
     assert.equal(bad(['docker', 'compose', '-p', 'pi', ...tail]), true, `compose ${tail.join(' ')}`);
   for (const v of [['docker', 'system', 'prune'], ['docker', 'rmi', 'x'], ['docker', 'volume', 'rm', 'x'], ['docker', '--context', 'x', 'stop', 'y'], ['podman', 'kill', 'x'], ['docker-compose', '-p', 'pi', 'down']])
     assert.equal(bad(v), true, JSON.stringify(v));
   assert.equal(bad(['docker', 'compose', '-p', 'pi', 'up', '-d']), false, 'a plain up is not destructive');
+});
+
+test('Astra repro: a path placeholder through a dangling symlink into a neighbouring project is refused', () => {
+  const target = path.join(beta, 'planted-by-alpha');
+  fs.symlinkSync(path.relative(alpha, target), path.join(alpha, 'dangling'));
+  fs.symlinkSync('./not-yet', path.join(alpha, 'local-dangling'));
+  for (const v of ['dangling', 'dangling/x', './dangling']) {
+    const r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', v);
+    assert.equal(r.status, 1, `${v}: ${out(r)}`);
+    assert.match(out(r), /not listed/);
+  }
+  assert.ok(!fs.existsSync(target) && !fs.lstatSync(path.join(alpha, 'dangling')).isFile(), 'nothing was created in the neighbouring project');
+  const ok = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', 'local-dangling');
+  assert.notEqual(ok.stdout + ok.stderr, '', 'sanity: the command ran or refused with a message');
+  assert.doesNotMatch(out(ok), /not listed/, 'a dangling link whose target stays inside the checkout is accepted');
+  fs.rmSync(path.join(alpha, 'dangling')); fs.rmSync(path.join(alpha, 'local-dangling'));
+});
+
+test('Astra repro: listed compose up --abort-on-container-failure and --scale=api=0 are refused everywhere', () => {
+  const dir = project('rho', '47190, 47194'), base = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
+  for (const tail of [['--abort-on-container-failure'], ['--scale=api=0']]) {
+    const listed = JSON.stringify(['docker', 'compose', '-p', 'rho', 'up', ...tail]);
+    const toml = base.replace(/connect = \[\[.*\]\]\n/, `connect = [${listed}]\n`);
+    fs.writeFileSync(path.join(dir, '.eng/project.toml'), toml);
+    assert.match(parseIdentity(toml).errors.join('\n'), /connect\[0\] refused: flag --(abort-on-container-failure|scale) is not allowed for compose up/, `validation refuses ${tail}`);
+    const r = eng(dir, 'agent-r', 'connect', 'api', '--', 'docker', 'compose', '-p', 'rho', 'up', ...tail);
+    assert.equal(r.status, 1, `runtime refuses ${tail}: ${out(r)}`);
+    const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { up: `eng connect api -- docker compose -p rho up ${tail.join(' ')}` } }) }], toml).map(h => h.rule);
+    assert.ok(hits.includes('identity-invalid') && hits.includes('not-allowlisted'), `the repo check flags ${tail}: ${hits}`);
+  }
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'the (stub) engine never ran');
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {

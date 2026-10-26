@@ -55,7 +55,7 @@ All four commands run from the checkout root and read `.eng/project.toml`. They 
 
 **Only listed commands run (allowlist).** `eng run-service` runs exactly the service's `command`. `eng connect` runs a command only when an entry in that service's `connect = [...]` equals it as the full argv: the same length, the same program string (no PATH or basename matching: `/usr/bin/docker` does not match `docker`), and every other element identical or a declared `{placeholder}`. An argument that is not listed can never appear, so flag and subcommand variants (`deno eval`, `compose up --remove-orphans --force-recreate`) are refused. Commands run as argv, never through a shell.
 
-Placeholders are declared under `[placeholders]`, each filling one whole argv element. Only three built-in types exist; there are no regex or free-form placeholders, and any other spec is refused as an unknown type: `port` (inside `project.ports`), `path` (every value is resolved against the checkout with symlinks followed, and the result must stay inside it; `/`, `~` and `..` are refused outright), and `service` (a service name from this file). A placeholder value never starts with `-`.
+Placeholders are declared under `[placeholders]`, each filling one whole argv element. Only three built-in types exist; there are no regex or free-form placeholders, and any other spec is refused as an unknown type: `port` (inside `project.ports`), `path` (`/`, `~` and `..` are refused outright; then the value is walked one component at a time from the checkout, and every symlink, dangling or not, is followed to its target; the path is refused as soon as any step leaves the checkout, and a dangling link may only be the last component), and `service` (a service name from this file). A placeholder value never starts with `-`.
 
 Identity-file validation checks every `command` and `connect` entry, so a bad entry is refused before anything starts:
 - a launcher that only runs other commands (`env`, `xargs`, `sudo`, `nohup`, `timeout`, `busybox`, ...) cannot be listed; list the program itself;
@@ -66,9 +66,26 @@ Identity-file validation checks every `command` and `connect` entry, so a bad en
 
 At runtime `eng connect` also runs the entry checks on the concrete argv after placeholders are filled (compose targeting, secret flags).
 
-**Destructive operations are never allowed**, even when listed. Any docker, podman or compose argv that contains a destructive verb or flag is refused by identity validation, refused at runtime, and flagged by the repo check (`bare-kill`). Stopping, killing and removing go through `eng stop` only.
-- Verbs anywhere in the argv: `stop`, `kill`, `rm`, `down`, `restart`, `pause`, `unpause`, `prune`, `rmi`, `remove`, `delete`, `purge`, `scale`, `update`, `wait`, `attach`. A service or argument with one of these names is refused too (fail closed).
-- Flags: `-v`/`--volumes`, `-V`/`--renew-anon-volumes`, `--remove-orphans`, `--force-recreate`, `--always-recreate-deps`, `--rmi`, `--rm`, `--force`, `--prune`, `--purge`, `--abort-on-container-exit`, `--exit-code-from`, `--timeout`/`--time`, `--signal`, `--kill`. Any other single-dash flag after the compose subcommand is refused as well, except `-d`, `-q` and `-a`. Put anything that needs a shell in a script file inside the checkout and list the script.
+**Docker, podman and compose: approved subcommands and an allowlist of flags.** Only these subcommands can be listed, and after each one only these flags may appear; every other flag, in any form (long, short, a cluster such as `-dV`, `--flag=value`), is refused by identity validation, refused at runtime and flagged by the repo check. There is no blocklist: anything not in this table is refused, so nothing that stops, removes, recreates, scales or aborts can be listed. Stopping goes through `eng stop` only.
+
+| Command | Flags allowed after the subcommand |
+|---------|------------------------------------|
+| `docker ps` | `-a`, `-q`, `--all`, `--quiet`, `--no-trunc` |
+| `docker images` | `-a`, `-q`, `--all`, `--quiet` |
+| `docker version`, `docker info` | none |
+| `compose up` | `-d`, `--detach`, `--build`, `--no-build`, `--no-deps`, `--wait`, `--quiet-pull`, `--no-color`, `--no-log-prefix` |
+| `compose ps` | `-a`, `-q`, `--all`, `--quiet`, `--services` |
+| `compose logs` | `--no-color`, `--no-log-prefix`, `--timestamps`, `--follow`, `--tail N` (digits or `all`) |
+| `compose config` | `-q`, `--quiet`, `--services`, `--images` |
+| `compose build` | `--pull`, `--no-cache`, `-q`, `--quiet` |
+| `compose pull` | `-q`, `--quiet`, `--ignore-pull-failures` |
+| `compose images` | `-q`, `--quiet` |
+| `compose top`, `compose port` | none |
+| `compose version` | `--short` |
+| `compose ls` | `-a`, `-q`, `--all`, `--quiet` |
+| `compose exec` | `-T`, `--no-TTY` (any `-` argument to the inner command is refused too) |
+
+Compose also needs a real `-p`/`--project-name` naming this project before the subcommand. Global options before the subcommand are read with their values (`--env-file`, `-f`, `--project-directory`, `--profile`, `--context`, ...). Put anything that needs a shell in a script file inside the checkout and list the script.
 
 | Command | Does |
 |---------|------|
