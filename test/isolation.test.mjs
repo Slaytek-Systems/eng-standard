@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, composeArgvOutOfBounds } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, composeArgvOutOfBounds, argvProblems } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -32,12 +32,23 @@ const h = s => s ? crypto.createHash('sha256').update(s).digest('hex') : null;
 http.createServer((q, r) => r.end(JSON.stringify({ project: process.env.ENG_PROJECT, home: process.env.HOME, log: process.env.LOG_LEVEL,
   convex: Object.keys(process.env).filter(k => k.startsWith('CONVEX_')), secret: h(process.env.API_SECRET) }))).listen(Number(process.env.PORT), '127.0.0.1');
 `;
+// Clients and forking services are scripts, so every command the helper runs is plain argv (no shell, no quotes).
+const CLIENT = `const [mode, ...vars] = process.argv.slice(2);
+if (mode === 'version') { const j = await (await fetch(process.env.ENG_SERVICE_URL + '/version')).json(); console.log(j.project, process.env.CONVEX_URL === undefined); }
+if (mode === 'print') { console.log('out', ...vars.map(v => process.env[v])); console.error('err', process.env[vars[0]]); process.exit(3); }
+`;
+const FORK = `import { spawn } from 'node:child_process';
+spawn('sleep', ['60'], { stdio: 'ignore' }).unref();
+if (process.argv[2] === 'exit') setTimeout(() => process.exit(0), 100); else setInterval(() => {}, 1000);
+`;
 function project(id, ports) {
   const dir = path.join(root, id);
   fs.mkdirSync(path.join(dir, '.eng/secrets'), { recursive: true });
   execSync('git init -q -b main', { cwd: dir });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.eng/secrets/\n.eng/state/\n');
   fs.writeFileSync(path.join(dir, 'server.mjs'), SERVER);
+  fs.writeFileSync(path.join(dir, 'client.mjs'), CLIENT);
+  fs.writeFileSync(path.join(dir, 'fork.mjs'), FORK);
   fs.writeFileSync(path.join(dir, '.eng/project.toml'), `schema = 1
 [project]
 id = "${id}"
@@ -150,6 +161,27 @@ test('refusal diagnostics never echo argv text that can hold a value', () => {
   assert.equal(programName('node'), 'node');
 });
 
+test('run-service refuses all four bypass classes before starting anything', () => {
+  const dir = project('mu', '47160, 47164'), base = fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8');
+  const cases = [
+    [`['docker', 'compose', 'down', '--env-file', '-pmu']`, /command refused: a compose command must name this project/],
+    [`['sh', '-c', 'docker com""pose -p beta down']`, /command refused: it runs a shell with -c; commands are argv only/],
+    [`['docker', 'compose', '-p', 'mu', 'down', '-vpbeta-project']`, /command refused: a compose command must name this project/],
+    [`['docker', 'compose', '-p', 'mu', 'down', '-f/tmp/other.yml']`, /command refused: a compose command must name this project/],
+    [`['sh', '-c', 'node client.cjs "--token" "$API_TOKEN"']`, /command refused: it runs a shell with -c/],
+    [`['node', 'client.cjs', '"--token"', '$API_TOKEN']`, /command refused: argument 3 holds quotes, \$ or backticks/],
+  ];
+  for (const [cmd, re] of cases) {
+    fs.writeFileSync(path.join(dir, '.eng/project.toml'), `${base}\n[[services]]\nname = "bypass"\ncommand = [${cmd.slice(1, -1)}]\n`);
+    const r = eng(dir, 'agent-m', 'run-service', 'bypass');
+    assert.equal(r.status, 1, `${cmd}: ${out(r)}`);
+    assert.match(out(r), re, cmd);
+    assert.doesNotMatch(out(r), /API_TOKEN|beta-project|other\.yml/, 'refusals never echo the command text');
+    assert.ok(!fs.existsSync(recordPath(dir, 'mu', 'bypass')), 'nothing started');
+  }
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'the docker stub was never reached');
+});
+
 test('run-service refuses a service whose argv carries a secret value starting with -', () => {
   const dir = project('delta', '47125, 47129');
   fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "leaky"\ncommand = ["node", "server.mjs", "--token", "-fakesecret"]\n');
@@ -162,9 +194,12 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', w: 'docker compose --env-file "settings -p p" down', x: 'docker com""pose -p beta down', A: 'docker compose -p p down -vpbeta-project', B: 'docker compose -p p down -vpother2', C: 'docker compose -p p down -f/tmp/other.yml', y: "npx con''vex dev", z: "/bin/ki''ll 1", r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', w: 'docker compose --env-file "settings -p p" down', x: 'docker com""pose -p beta down', D: 'docker compose down --env-file -pp', A: 'docker compose -p p down -vpbeta-project', B: 'docker compose -p p down -vpother2', C: 'docker compose -p p down -f/tmp/other.yml', y: "npx con''vex dev", z: "/bin/ki''ll 1", r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['A', 'B', 'C', 'a', 'b', 'd', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u', 'w', 'x', 'y', 'z'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
+  const by = rule => hits.filter(h => h.rule === rule).map(h => h.message.match(/script "(\w)"/)[1]).sort();
+  assert.deepEqual(by('shell-string'), ['r', 'u', 'w', 'x', 'y', 'z'], 'quoted or expanded lines around compose, convex or kill are warned as unreadable');
+  assert.deepEqual(by('bare-kill'), ['z']);
+  assert.deepEqual(by('bare-service-command'), ['A', 'B', 'C', 'D', 'a', 'b', 'd', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u', 'w', 'x', 'y'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
   const hook = isolationFindings([{ path: '.githooks/pre-push', text: '#!/bin/sh\ndocker compose -p p ps\ndocker \\\n  compose -p beta down\n' }], id);
   assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:3'], 'a \\ continuation cannot hide a compose call');
   const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
@@ -192,15 +227,26 @@ test('compose argv: option values are never read as selectors, and a real -p nam
   }
   assert.equal(out(['docker', 'compose', '-p', 'alpha', 'logs', '--tail', '5', 'web']), false, 'ordinary subcommand options are fine');
   for (const flag of ['-d', '-v', '-q', '-a']) assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', flag]), false, `allowlisted ${flag}`);
-  for (const script of ['docker com""pose -p beta down', "docker com''pose -p alpha down", 'd"ocker" compose -p alpha down', "doc'ker' compose -p alpha down", 'docker compose -p "alpha" down', 'docker ${C}pose -p beta down'])
-    assert.equal(out(['sh', '-c', script]), true, `quoted or expanded words in a shell string fail closed: ${script}`);
-  assert.equal(out(['sh', '-c', 'docker compose -p alpha ps']), false, 'a plain shell string with a real selector is fine');
+  const refused = v => argvProblems(v, 'alpha').length > 0;
+  for (const script of ['docker com""pose -p beta down', "docker com''pose -p alpha down", 'd"ocker" compose -p alpha down', 'docker compose -p alpha ps', 'node client.cjs "--token" "$API_TOKEN"'])
+    for (const sh of [['sh', '-c'], ['bash', '-lc'], ['/bin/dash', '-c'], ['env', 'X=1', 'zsh', '-c'], ['fish', '--command']]) assert.equal(refused([...sh, script]), true, `${sh.join(' ')} ${script}: argv only`);
+  for (const v of [['node', 'client.cjs', '"--token"', 'x'], ['docker', 'com""pose', '-p', 'alpha', 'up'], ['tool', '$TOKEN'], ['tool', '`id`']]) assert.equal(refused(v), true, `quotes, $ or backticks: ${JSON.stringify(v)}`);
+  assert.equal(refused(['docker', 'compose', '-p', 'alpha', 'down', '-vpbeta-project']), true);
+  assert.equal(refused(['kill', '123']), true); assert.equal(refused(['/usr/bin/pkill', 'x']), true); assert.equal(refused(['docker', 'stop', 'x']), true);
+  assert.equal(refused(['docker', 'compose', '-p', 'alpha', 'up', '-d']), false, 'plain argv with a real selector is fine');
+  assert.equal(refused(['npx', 'convex', 'codegen']), false);
   assert.equal(out(['docker', 'compose', '-p', 'alpha', '--unknown', 'x', 'down']), true, 'an unclassified option fails closed');
   assert.equal(out(['docker', '--unknown', 'compose', '-p', 'alpha', 'down']), true);
   assert.equal(out(['env', 'COMPOSE_PROJECT_NAME=alpha', 'docker', 'compose', 'down']), true, 'the env var alone is not enough');
   assert.equal(out(['docker', 'compose', '-p', 'alpha', 'up', '-d']), false);
   assert.equal(out(['docker-compose', '--project-name', 'alpha_test', 'ps']), false);
   assert.equal(out(['docker', 'ps']), false);
+});
+
+test('repo check: quoted secret flags and shell strings are warned', () => {
+  const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { q: `sh -c 'node client.cjs "--token" "$API_TOKEN"'`, p: 'node client.cjs --verbose' } }, null, 2) }], null);
+  assert.deepEqual(hits.filter(h => h.file === 'package.json').map(h => h.rule).sort(), ['secret-argv', 'shell-string']);
+  assert.doesNotMatch(hits.map(h => h.message).join('\n'), /API_TOKEN/, 'findings print the rule, not the line');
 });
 
 test('repo check: compose block-scalar commands are scanned across lines', () => {
@@ -300,7 +346,7 @@ test('run-service refuses a symlinked state dir and starts nothing when it canno
   await new Promise(res => setTimeout(res, 300));
   for (let p = 47120; p <= 47124; p++) await assert.rejects(fetch(`http://127.0.0.1:${p}/version`), `no unrecorded service left on ${p}`);
 
-  fs.appendFileSync(path.join(gamma, '.eng/project.toml'), '\n[[services]]\nname = "orphan"\ncommand = ["sh", "-c", "sleep 60 & sleep 0.1"]\nhealth = "/never"\n');
+  fs.appendFileSync(path.join(gamma, '.eng/project.toml'), '\n[[services]]\nname = "orphan"\ncommand = ["node", "fork.mjs", "exit"]\nhealth = "/never"\n');
   const o = eng(gamma, 'agent-g', 'run-service', 'orphan');
   assert.equal(o.status, 1, out(o));
   assert.match(out(o), /exited during startup; stopping what it left in its process group/);
@@ -329,7 +375,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.match(r.stdout, /output not kept \(secrets loaded\)/);
   assert.match(out(eng(alpha, 'agent-a', 'run-service', 'api')), /alpha\/api is already running/);
 
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "fetch(process.env.ENG_SERVICE_URL + '/version').then(r => r.json()).then(j => console.log(j.project, process.env.CONVEX_URL === undefined))");
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
   assert.equal(r.status, 0, out(r));
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
@@ -339,16 +385,18 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', '-p', 'beta', 'down');
   assert.match(out(r), /refusing; a compose command must name this project/, 'a later -p cannot redirect compose to another project');
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', 'docker compose -p alpha ps; docker compose -p beta down');
-  assert.equal(r.status, 1, 'every compose call in a compound command must name this project');
-  assert.match(out(r), /refusing; a compose command must name this project/);
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', 'docker compose -p alpha ps && docker compose down');
-  assert.equal(r.status, 1, 'a later compose call with no selector is refused');
+  for (const script of ['docker compose -p alpha ps; docker compose -p beta down', 'docker compose -p alpha ps', 'docker com""pose -p beta down', 'node client.cjs "--token" "$API_TOKEN"']) {
+    r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', script);
+    assert.equal(r.status, 1, `a shell string is never run: ${script}`);
+    assert.match(out(r), /refusing; it runs a shell with -c; commands are argv only/);
+  }
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.cjs', '"--token"', '$API_TOKEN');
+  assert.match(out(r), /refusing; argument 3 holds quotes, \$ or backticks; commands are argv only/, 'quoted or $ argv elements are refused');
   for (const cmd of [['docker', 'compose', '-p', 'alpha', '-pbeta', 'down'], ['docker', 'compose', '-p', 'alpha', '--project-name=beta', 'down'],
     ['sh', '-c', 'docker compose -p alpha ps; docker \\\ncompose -p beta down'], ['sh', '-c', 'docker compose -p "$P" down'], ['sh', '-c', 'eval docker compose -p alpha down']]) {
     r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
     assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}`);
-    assert.match(out(r), /refusing; a compose command must name this project/);
+    assert.match(out(r), /refusing; (a compose command must name this project|it runs a shell with -c)/);
   }
   for (const cmd of [['docker', 'compose', '-p', 'alpha', 'down', '-vpbeta-project'], ['docker', 'compose', '-p', 'alpha', 'down', '-vpother2'], ['docker', 'compose', '-p', 'alpha', 'down', '-f/tmp/other.yml'], ['docker', 'compose', 'down', '--env-file', '-palpha'], ['sh', '-c', 'docker com""pose -p beta down'], ['sh', '-c', "d'ocker' compose -p alpha down"], ['docker', 'compose', '--env-file', 'settings -p alpha', 'down'], ['docker', 'compose', '-f', '-p alpha', 'down'], ['docker', 'compose', '--project-directory=-palpha', 'down']]) {
     r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
@@ -368,7 +416,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--secret-key', 'v');
   assert.match(out(r), /refusing; the command carries --secret-key on argv/);
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
-  r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN, process.env.PIN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'print', 'ADMIN_TOKEN', 'PIN');
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
   assert.equal(r.status, 3, 'connect keeps the command exit code');
   assert.equal(r.stdout.trim(), 'out [redacted] [redacted]');
@@ -440,7 +488,7 @@ test('stop never signals a process named by a record from an earlier boot', () =
 
 test('a restart is refused while the previous run left processes in its group, and stop reaps them', async () => {
   const dir = project('theta', '47145, 47149');
-  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "forked"\ncommand = ["sh", "-c", "sleep 60 & exec sleep 61"]\n');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "forked"\ncommand = ["node", "fork.mjs", "stay"]\n');
   let r = eng(dir, 'agent-t', 'run-service', 'forked');
   assert.equal(r.status, 0, out(r));
   const rec = readRecord(dir, 'theta', 'forked');
