@@ -79,6 +79,7 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base.replace('schema = 1\n', ''), /schema must be 1/);
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--token", "-fakesecret"]\n', /carries --token on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { ADMIN_KEY = "abc" }\n', /env.ADMIN_KEY looks like a secret/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["a"]\n[[services]]\nname = "db"\ncommand = ["b"]\n', /duplicate service name/);
   bad('schema = 1\n[project\n', /line 2: expected key = value/);
@@ -101,11 +102,28 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
 test('redactor: a secret split across output chunks is never forwarded, in whole or in part', () => {
   const short = redactor(['xyz']);
   assert.equal(short.push('a xy') + short.push('z b') + short.end(), 'a [redacted] b', 'short values are redacted too');
+  const one = redactor(['Q']);
+  assert.equal(one.push('aQb') + one.push('Q') + one.end(), 'a[redacted]b[redacted]', 'a 1-character value is redacted');
   const r = redactor(['s3cretVALUE', 'ab']);
   const parts = ['x s3cr', 'etVAL', 'UE y s3cretVALUE', ' z s3c'].map(c => r.push(c));
   parts.push(r.end());
   assert.equal(parts.join(''), 'x [redacted] y [redacted] z s3c'.replace('ab', '[redacted]'));
   assert.ok(parts.every(p => !/s3cretV|etVAL|VALUE/.test(p)), 'no chunk carries a fragment longer than the held-back tail');
+});
+
+test('repo check: a secret flag value starting with - is still a secret on the command line', () => {
+  const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { boot: 'client --token -fakesecret', file: 'client --token-file -' } }, null, 2) }], null);
+  assert.deepEqual(hits.filter(h => h.rule === 'secret-argv').map(h => h.message.match(/script "(\w+)"/)[1]), ['boot']);
+});
+
+test('run-service refuses a service whose argv carries a secret value starting with -', () => {
+  const dir = project('delta', '47125, 47129');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "leaky"\ncommand = ["node", "server.mjs", "--token", "-fakesecret"]\n');
+  const r = eng(dir, 'agent-d', 'run-service', 'leaky');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /command carries --token on argv/);
+  assert.doesNotMatch(out(r), /fakesecret/, 'the refusal never prints the value');
+  assert.ok(!fs.existsSync(recordPath(dir, 'delta', 'leaky')), 'nothing started');
 });
 
 test('repo check: compose block-scalar commands are scanned across lines', () => {
