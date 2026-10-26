@@ -81,6 +81,7 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--token", "-fakesecret"]\n', /carries --token on argv/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--secret-key", "v"]\n', /carries --secret-key on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { ADMIN_KEY = "abc" }\n', /env.ADMIN_KEY looks like a secret/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["a"]\n[[services]]\nname = "db"\ncommand = ["b"]\n', /duplicate service name/);
   bad('schema = 1\n[project\n', /line 2: expected key = value/);
@@ -93,6 +94,7 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
   assert.deepEqual(argvSecrets(['x', '--instance-secret', 'v', '--api-key=v', '--token']), ['--instance-secret', '--api-key']);
   assert.deepEqual(argvSecrets(['x', '--token-file', '/run/t', '--no-password', 'pos', '--password=']), []);
   assert.deepEqual(argvSecrets(['x', '--token', '-fakesecret']), ['--token'], 'a value starting with - is still a value');
+  assert.deepEqual(argvSecrets(['x', '--secret-key', 'v', '--signing-key=v', '--passphrase', 'v']), ['--secret-key', '--signing-key', '--passphrase']);
   assert.equal(argvSecrets(['sh', '-c', 'client --token -fakesecret']).length, 1);
   assert.equal(argvSecrets(['bash', '-c', 'exec client --token "$API_TOKEN"']).length, 1, 'a shell wrapper forwarding a secret flag is caught');
   assert.deepEqual(argvSecrets(['env', 'API_TOKEN=v', 'client']), ['API_TOKEN=']);
@@ -143,9 +145,11 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p-local up -d', d: 'COMPOSE_PROJECT_NAME=p-local docker compose ps', e: 'eng connect x -- docker compose --project-name=p-local logs' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p-local up -d', d: 'COMPOSE_PROJECT_NAME=p-local docker compose ps', e: 'eng connect x -- docker compose --project-name=p-local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p-local ps', i: 'docker --context x ps' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b']);
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g'], 'global options before compose do not hide it');
+  const secret = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { s: 'tool --secret-key v' } }) }, { path: 'compose.yml', text: 'name: p-x\nservices:\n  a:\n    command: ["tool", "--secret-key", "v"]\n' }], id);
+  assert.deepEqual(secret.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:secret-argv']);
 });
 
 test('repo check: compose block-scalar commands are scanned across lines', () => {
@@ -282,6 +286,11 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'beta-project', 'down');
   assert.equal(r.status, 1);
   assert.match(out(r), /refusing; a compose command must name this project \(-p alpha/, 'connect will not run a compose command aimed at another project');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', '--context', 'other', 'compose', 'down');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /refusing; a compose command must name this project/, 'a global option before compose does not hide it');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--secret-key', 'v');
+  assert.match(out(r), /refusing; the command carries --secret-key on argv/);
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN, process.env.PIN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
