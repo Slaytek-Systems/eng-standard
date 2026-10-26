@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
+import { pathWithoutSymlinks } from '../lib/isolation-cli.mjs';
 import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, validateEntry, connectMatch, placeholderOk } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
@@ -622,9 +623,7 @@ test('Astra repro: a path placeholder through a dangling symlink into a neighbou
     assert.match(out(r), /not listed/);
   }
   assert.ok(!fs.existsSync(target) && !fs.lstatSync(path.join(alpha, 'dangling')).isFile(), 'nothing was created in the neighbouring project');
-  const ok = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', 'local-dangling');
-  assert.notEqual(ok.stdout + ok.stderr, '', 'sanity: the command ran or refused with a message');
-  assert.doesNotMatch(out(ok), /not listed/, 'a dangling link whose target stays inside the checkout is accepted');
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', 'local-dangling')), /not listed/, 'any symlink is refused, even one pointing inside');
   fs.rmSync(path.join(alpha, 'dangling')); fs.rmSync(path.join(alpha, 'local-dangling'));
 });
 
@@ -641,6 +640,25 @@ test('Astra repro: listed compose up --abort-on-container-failure and --scale=ap
     assert.ok(hits.includes('identity-invalid') && hits.includes('not-allowlisted'), `the repo check flags ${tail}: ${hits}`);
   }
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'the (stub) engine never ran');
+});
+
+test('Astra repro: route -> sub/bridge/../marker with sub/bridge -> beta/nested is refused, and no marker appears in beta', () => {
+  fs.mkdirSync(path.join(beta, 'nested'), { recursive: true }); fs.mkdirSync(path.join(alpha, 'sub'), { recursive: true });
+  fs.symlinkSync(path.join(beta, 'nested'), path.join(alpha, 'sub/bridge'));
+  fs.symlinkSync('sub/bridge/../marker', path.join(alpha, 'route'));
+  for (const v of ['route', 'sub/bridge', 'sub/bridge/x', 'sub/bridge/../marker', './route']) {
+    const r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', v);
+    assert.equal(r.status, 1, `${v}: ${out(r)}`);
+    assert.match(out(r), /not listed/);
+  }
+  assert.ok(!fs.existsSync(path.join(beta, 'marker')) && !fs.existsSync(path.join(beta, 'nested/marker')), 'no marker in beta');
+  assert.equal(pathWithoutSymlinks(fs.realpathSync(alpha), 'sub/x'), true, 'a plain directory path is fine');
+  assert.equal(pathWithoutSymlinks(fs.realpathSync(alpha), 'route'), false);
+  fs.writeFileSync(path.join(alpha, 'package.json'), JSON.stringify({ scripts: { leak: 'eng connect api -- node client.mjs read route', fine: 'eng connect api -- node client.mjs read client.mjs' } }, null, 2));
+  const r = eng(alpha, null, 'isolation', 'check');
+  assert.match(r.stdout, /package\.json:\d+: \[not-allowlisted\].*\(script "leak"\)/, 'the repo check flags a path through a symlink');
+  assert.doesNotMatch(r.stdout, /\(script "fine"\)/);
+  for (const f of ['route', 'sub', 'package.json']) fs.rmSync(path.join(alpha, f), { recursive: true, force: true });
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
