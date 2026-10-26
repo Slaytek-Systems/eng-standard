@@ -18,7 +18,6 @@ Source: Core note nd718ymz8781g132npfwcn49198h03zr. The block between the `verba
 
 ## Interpretation (not Matt's words)
 
-- The goal is trust, not confidence. Trust comes from the checks the system runs, not from how sure an agent sounds.
 - Verification is the foundation: pstack, E2E, bend2, checks and linters. Where each check runs (local, a cloud runner, an ephemeral sandbox) is a per-repo choice in `eng.config.yml`.
 - Automation and speed are earned. A repo gains autonomy only after its checks have shown it can be trusted, and loses it after a crash.
 - Matt's words are kept exactly. A paraphrase can drift, and drift spreads to every agent that reads it. That is why the block above is hash-checked.
