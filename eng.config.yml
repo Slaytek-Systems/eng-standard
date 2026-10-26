@@ -49,7 +49,7 @@ ship:
       - "**/billing/**"
       - "**/billing.*"
     version_only: [package.json, package-lock.json]   # risk:low when the version field is the only change
-  self_merge:                     # .github/workflows/self-merge.yml: events only (ci done, verdict, label, ready) + workflow_dispatch. No wait.
+  self_merge:                     # .github/workflows/self-merge.yml: events only (ci done, verdict, label, ready, retarget) + dispatch. No wait.
     base: main
     hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go. There is no hold window.
     check: test                   # GitHub Actions check run (.github/workflows/ci.yml)

@@ -6,9 +6,9 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 **Self-merge runs on events and merges without a wait** (Matt, 26 Oct 2026: "No wait. Merge as soon as it's verified; post-merge checks roll back breakage.").
 
-- `self-merge.yml` has no schedule. The 30-minute cron from PR #17 is gone. It runs when `ci` finishes, on a verdict comment or `verdict` status, when a label is added or removed, when a PR is marked ready, and on dispatch. Each event looks at its own PR. Runs queue one at a time (`queue: max`), so two merges never run at once and no event is dropped.
+- `self-merge.yml` has no schedule. The 30-minute cron from PR #17 is gone. It runs when `ci` finishes, on a verdict comment or `verdict` status, when a label is added or removed, when a PR is marked ready or retargeted to main, and on dispatch. Each event looks at its own PR. Runs queue one at a time (`queue: max`, up to 100 waiting), so two merges never run at once and a newer run never replaces a waiting one.
 - The hold window is gone. `ship.self_merge.hold_minutes` fails config validation with a removal message. The `hold` label still stops a PR, and the run reads every rule again just before the merge call.
-- `ci.yml` job `start-self-merge` starts self-merge when a dispatched run ends, because a `GITHUB_TOKEN`-dispatched run fires no `workflow_run`. The post-merge check and auto-revert are otherwise unchanged.
+- `ci.yml` job `start-self-merge` starts self-merge when a dispatched run ends, because a `GITHUB_TOKEN`-dispatched run fires no `workflow_run`. The post-merge check and auto-revert are otherwise unchanged. An auto-revert whose inverse restores a `ci.yml` without that job says in its PR body how to start self-merge by hand.
 
 **Verifier independence is judged by identity** (approved by Matt, 26 Oct 2026). Models and providers are not part of the engineering standard. Supersedes PR #23.
 

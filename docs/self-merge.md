@@ -45,7 +45,9 @@ the head SHA. `ship.self_merge.hold_minutes` no longer exists, and a config that
 ## Events
 
 Self-merge has no schedule. Each event below starts one run. Runs share one concurrency group with `queue: max`, so they
-run one at a time in arrival order, up to 100 waiting, and a newer run never replaces a waiting one.
+run one at a time in arrival order, up to 100 waiting, and a newer run never replaces a waiting one. GitHub cancels a run
+that arrives while 100 are waiting. It shows as cancelled in Actions; `gh workflow run self-merge.yml -f pr=<n>` runs
+that PR again.
 
 | Event | PRs it looks at |
 |---|---|
@@ -53,7 +55,7 @@ run one at a time in arrival order, up to 100 waiting, and a newer run never rep
 | `workflow_run`: `ci` completed on main after a push or a manual dispatch | every open PR (main's state changed) |
 | `issue_comment` created or edited, body starts with `<!-- eng-verdict/v1 -->` | that PR |
 | `status` with context `verdict` | the open PR whose head is that SHA |
-| `pull_request_target` labeled, unlabeled, ready_for_review | that PR |
+| `pull_request_target` labeled, unlabeled, ready_for_review, or edited with a base change (retargeted) | that PR |
 | `workflow_dispatch` | input `pr`, or every open PR |
 | `workflow_dispatch` from `ci.yml` job `start-self-merge` | every open PR |
 
@@ -62,7 +64,12 @@ yet. The status event starts another run that sees both.
 
 A `ci` run that self-merge dispatches with `GITHUB_TOKEN` (the post-merge check on main, or an auto-revert branch)
 fires no `workflow_run`. GitHub does not start workflows from `GITHUB_TOKEN` events, except `workflow_dispatch`. So
-`ci.yml` job `start-self-merge` dispatches self-merge when such a run ends, pass or fail.
+`ci.yml` job `start-self-merge` dispatches self-merge when such a run ends, pass or fail. That job comes from the
+dispatched branch's own `ci.yml`. GitHub fires no `workflow_run`, `check_run` or `check_suite` event for a run that
+Actions created, so no trusted callback exists apart from it without a timer or a non-`GITHUB_TOKEN` credential. One
+case has no callback: an auto-revert whose inverse restores a `ci.yml` without `start-self-merge` (the revert of the PR
+that added it). Self-merge then says so in the revert PR's body. If its verdicts land before its `test` finishes, run
+`gh workflow run self-merge.yml -f pr=<n>` once `test` is green.
 
 Every one of these runs uses main's copy of `self-merge.yml` and main's code. Nothing from a PR is checked out or run.
 

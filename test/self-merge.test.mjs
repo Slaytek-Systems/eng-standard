@@ -278,6 +278,25 @@ test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from
   assert.deepEqual(lbl, ['POST', `${R}/issues/9/labels`, { labels: ['risk:high'] }]);
   assert.deepEqual(ci, ['POST', `${R}/actions/workflows/ci.yml/dispatches`, { ref: `auto-revert/${TIP.slice(0, 12)}` }]);
   assert.equal(r.sent.length, 5, 'nothing merged');
+  assert.match(pull[2].body, /cannot start self-merge when its `test` run ends.*gh workflow run self-merge\.yml -f pr=/s, 'an inverse whose ci.yml has no start-self-merge job says how to start self-merge');
+});
+
+test('rule 6: an inverse whose ci.yml still starts self-merge needs no manual step in its PR body', () => {
+  const r = gate({
+    [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'failure'),
+    [`GET ${R}/git/commits/${TIP}`]: { message: 'feat: x (#5)', parents: [{ sha: PARENT }], tree: { sha: 'tip-tree' } },
+    [`GET ${R}/git/commits/${PARENT}`]: { tree: { sha: 'parent-tree' } },
+    [`GET ${R}/contents/.github/workflows/ci.yml?ref=${PARENT}`]: 'jobs:\n  test: {}\n  start-self-merge:\n    needs: test\n',
+    [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
+    [`GET ${R}/pulls?state=open&base=main&head=o:auto-revert/${TIP.slice(0, 12)}`]: [],
+    [`POST ${R}/git/commits`]: { sha: HEAD }, [`POST ${R}/git/refs`]: {},
+    [`POST ${R}/pulls`]: { number: 9 }, [`GET ${R}/pulls/9`]: { number: 9, labels: [], base: { sha: TIP }, head: { sha: HEAD } },
+    [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }],
+    [`POST ${R}/issues/9/labels`]: {}, [`POST ${R}/actions/workflows/ci.yml/dispatches`]: {},
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const pull = r.sent.find(c => c[1] === `${R}/pulls`);
+  assert.doesNotMatch(pull[2].body, /gh workflow run/);
 });
 
 // One risk:high PR (#3) that meets every rule on head SHA, with PASSes from two identities.
@@ -349,6 +368,18 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
     r = gate({ ...routes, ...over }, comment);
     assert.equal(merged(r), false, why); assert.match(r.stdout, want, why);
   }
+});
+
+test('self-merge.yml has no schedule; one queued concurrency group; retargets and verdict events only', () => {
+  const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge.yml', import.meta.url), 'utf8')), job = wf.jobs['self-merge'];
+  assert.deepEqual(Object.keys(wf.on).sort(), ['issue_comment', 'pull_request_target', 'status', 'workflow_dispatch', 'workflow_run']);
+  assert.deepEqual(job.concurrency, { group: 'self-merge', 'cancel-in-progress': false, queue: 'max' });
+  assert.match(job.if, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base/, 'an edit runs only when the base changed');
+  assert.match(job.if, /startsWith\(github\.event\.comment\.body, '<!-- eng-verdict\/v1 -->'\)/);
+  assert.match(job.if, /github\.event\.context == 'verdict'/);
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')).jobs['start-self-merge'];
+  assert.equal(ci.if, "always() && github.event_name == 'workflow_dispatch'");
+  assert.match(ci.steps[0].run, /gh workflow run self-merge\.yml .*--ref main/);
 });
 
 test('round-1 P1: a raw newline in a current or previous filename still matches risk:high patterns', () => {

@@ -83,6 +83,10 @@ function autoRevert(tip) {
   const shipped = get(`repos/${R}/commits/${tip}/pulls`).find(p => p.merged_at && p.base.ref === C.base);
   if (!shipped || tc.parents.length !== 1) { console.log(`main ${t8}: ${C.check} failed and the tip is not a squash merge of a PR; revert by hand (gh pr revert <n>); merging nothing`); return null; }
   const want = { sha: tip, parentTree: get(`repos/${R}/git/commits/${tc.parents[0].sha}`).tree.sha };
+  // A ci run dispatched with GITHUB_TOKEN fires no workflow_run, so only the inverse's own ci.yml can start self-merge when
+  // its test ends (job start-self-merge). An inverse that restores a ci.yml without that job says so on the PR.
+  const callback = String(raw('.github/workflows/ci.yml', tc.parents[0].sha) || '').includes('start-self-merge:');
+  const manual = callback ? '' : `\n\nThis revert restores a \`ci.yml\` that cannot start self-merge when its \`${C.check}\` run ends. If the verdicts are posted before \`${C.check}\` finishes, run \`gh workflow run self-merge.yml -f pr=<this PR>\` once it is green.`;
   const facts = p => { const h = get(`repos/${R}/git/commits/${p.head.sha}`); return { user: p.user?.login, ref: p.head.ref, body: p.body, headParents: h.parents.map(x => x.sha), headTree: h.tree.sha }; };
   const open = get(`repos/${R}/pulls?state=open&base=${C.base}&head=${R.split('/')[0]}:${branch}`)[0];
   if (open) {
@@ -100,7 +104,7 @@ function autoRevert(tip) {
     send('POST', `repos/${R}/git/refs`, { ref: `refs/heads/${branch}`, sha: c.sha });
   }
   let pr;
-  try { pr = JSON.parse(send('POST', `repos/${R}/pulls`, { base: C.base, head: branch, title: `Revert #${shipped.number}: post-merge ${C.check} failed (${t8})`, body: `${marker}\nThe post-merge \`${C.check}\` run failed on ${C.base} at ${tip} after #${shipped.number} merged. This PR is its exact inverse, opened by self-merge. It merges like any PR: \`${C.check}\` and verdicts for its head.` })); }
+  try { pr = JSON.parse(send('POST', `repos/${R}/pulls`, { base: C.base, head: branch, title: `Revert #${shipped.number}: post-merge ${C.check} failed (${t8})`, body: `${marker}\nThe post-merge \`${C.check}\` run failed on ${C.base} at ${tip} after #${shipped.number} merged. This PR is its exact inverse, opened by self-merge. It merges like any PR: \`${C.check}\` and verdicts for its head.${manual}` })); }
   catch (e) { console.log(`FAIL main ${t8}: ${branch} is pushed but GitHub refused the PR (${e.message.split('\n')[0]}). Matt allows GitHub Actions to create pull requests (Settings > Actions > General), or opens ${branch} as a PR by hand.`); process.exitCode = 1; return null; }
   label(pr.number);
   send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: branch });

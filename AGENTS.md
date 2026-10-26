@@ -7,9 +7,9 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 
 - **Self-merge.** `.github/workflows/self-merge.yml` runs main's code only and squash-merges at most one PR into
   `main` per run. It runs on events only, never on a schedule: `ci` finished, a verdict comment or `verdict` status, a
-  label added or removed, ready for review, or a manual dispatch. Runs queue one at a time. There is no wait: a PR
-  merges as soon as every condition below holds on its current head SHA, and each one is read again just before the
-  merge call:
+  label added or removed, ready for review, retargeted to main, or a manual dispatch. Runs queue one at a time. There
+  is no wait: a PR merges as soon as every condition below holds on its current head SHA, and each one is read again
+  just before the merge call:
   - The head contains main's tip (ancestry check). A behind branch is updated and its new head verified again.
   - The `test` check is green and the `verdict` status is success.
   - **Independence is identity.** A verifier counts only when its identity (`--by`, and its GitHub login when

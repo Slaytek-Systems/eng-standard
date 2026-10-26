@@ -5,7 +5,7 @@
 # GITHUB_TOKEN merge fires no push workflow); when that post-merge check fails, the next run opens the tip's exact
 # inverse as an auto-revert PR. Rules: AGENTS.md.
 # Events only, no schedule. Each event names one PR (scripts/pr-gate.mjs eventTarget): ci finished on it, a verdict
-# comment or verdict status on it, a label added or removed, ready for review. ci finished on main (the post-merge check)
+# comment or verdict status on it, a label added or removed, ready for review, retargeted. ci finished on main (the post-merge check)
 # and a dispatch without a PR look at every open PR. A ci run dispatched with GITHUB_TOKEN fires no workflow_run, so
 # ci.yml dispatches this workflow itself when such a run finishes.
 # pull_request_target, issue_comment, status and workflow_run all run main's copy of this file and main's code with the
@@ -20,7 +20,7 @@ on:
     types: [created, edited]
   status:
   pull_request_target:
-    types: [labeled, unlabeled, ready_for_review]
+    types: [labeled, unlabeled, ready_for_review, edited]   # edited: only a retarget to main runs (job if)
   workflow_dispatch:
     inputs:
       pr:
@@ -36,11 +36,13 @@ jobs:
   self-merge:
     if: >-
       github.ref == 'refs/heads/main' && (
-        (github.event_name != 'issue_comment' && github.event_name != 'status') ||
+        (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base)) ||
+        (github.event_name != 'pull_request_target' && github.event_name != 'issue_comment' && github.event_name != 'status') ||
         (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '<!-- eng-verdict/v1 -->')) ||
         (github.event_name == 'status' && github.event.context == 'verdict'))
     # One queue for every self-merge run, so two merges never run at once. queue: max keeps up to 100 waiting runs in
-    # order instead of letting a newer one replace the waiting one, so no PR's event is dropped.
+    # order instead of letting a newer one replace the waiting one. GitHub cancels a run that arrives when 100 are
+    # waiting; it shows as cancelled, and gh workflow run self-merge.yml -f pr=<n> runs that PR again.
     concurrency:
       group: self-merge
       cancel-in-progress: false
