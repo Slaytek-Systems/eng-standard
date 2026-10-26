@@ -16,6 +16,7 @@ import { validateRenovation, compareBaseline, lintFindings, baselinePath, PROVID
 import { renovate, launch } from '../lib/renovate-cli.mjs';
 import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
+import { trustErrors } from '../lib/trust.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -54,6 +55,7 @@ function configErrors(c) {
   errs.push(...validateFlake(c.e2e));
   errs.push(...validateRenovation(c.renovation));
   errs.push(...validateAuto(c.merge));
+  errs.push(...trustErrors(c.trust));
   return errs;
 }
 

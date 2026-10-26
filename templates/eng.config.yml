@@ -203,6 +203,23 @@ constraints:
       message: "Focused test hides the rest of the suite. Remove .only."
       proven_by: { incident: "sandbox: test.only committed", fixture: .eng/rule-proofs/no-focused-tests }
 
+# PROPOSAL (not live): trust levels. Nothing enforces them yet; uncomment to declare them. Validated by eng (lib/trust.mjs).
+# See docs/trust-levels.md and principles/slow-down-to-speed-up.md.
+# trust:
+#   level: draft-only               # draft-only -> merge-on-verifier-pass -> deploy-on-own
+#   promote:                        # measured evidence since the last level change; any crash below resets it
+#     merge-on-verifier-pass: { consecutive_verifier_passes: 10, min_days: 14 }
+#     deploy-on-own: { consecutive_verifier_passes: 25, min_days: 30 }
+#   demote:                         # automatic, on any one event: one-level | draft-only
+#     failed_check: one-level       # a declared check failed on the default branch
+#     revert: draft-only
+#     rollback: draft-only
+#   checks:                         # what this repo runs and where. runner is an adapter name only, no vendor logic.
+#     - { name: pstack, runs: local }
+#     - { name: e2e, runs: sandbox, runner: boat }
+#     - { name: bend2, runs: local }
+#     - { name: lint, runs: cloud, runner: buildkite }
+
 gates:
   skipped_is_failed: true         # Schema constant.
   required: [drift, stack, lint, fallow, rules, typecheck, test, launch, verify, verdict, laws, conform, e2e]
