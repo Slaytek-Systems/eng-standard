@@ -75,6 +75,7 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base.replace('state = ".eng/state"\n', ''), /project.state .* must be a path inside the checkout/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect_env = { ENG_SERVICE_URL = "http://elsewhere" }\n', /connect_env.ENG_SERVICE_URL is set by eng/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { HOME = "/tmp" }\n', /env.HOME is set by eng/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nport_env = "HOME"\n', /port_env HOME is set by eng/);
   bad(base.replace('schema = 1\n', ''), /schema must be 1/);
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
@@ -87,14 +88,17 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
   assert.deepEqual(argvSecrets(['x', '--instance-secret', 'v', '--api-key=v', '--token']), ['--instance-secret', '--api-key']);
   assert.deepEqual(argvSecrets(['x', '--token-file', '/run/t', '--no-password', 'pos', '--password=']), []);
   assert.equal(argvSecrets(['bash', '-c', 'exec client --token "$API_TOKEN"']).length, 1, 'a shell wrapper forwarding a secret flag is caught');
+  assert.deepEqual(argvSecrets(['env', 'API_TOKEN=v', 'client']), ['API_TOKEN=']);
+  assert.deepEqual(argvSecrets(['sh', '-c', 'env LOG=1 API_TOKEN=v client']), ['API_TOKEN= (inside "env ...")']);
+  assert.deepEqual(argvSecrets(['env', 'LOG_LEVEL=debug', 'client']), []);
 });
 
 test('repo check: "default" as a name and secret flags split across compose command lines', () => {
   const hits = isolationFindings([
     { path: 'compose.yml', text: 'name: p-local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
-    { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port' } }, null, 2) },
+    { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port', c: 'eng connect x -- true && npx convex dev', d: 'eng connect x -- npx convex codegen', e: 'env API_TOKEN=v client' } }, null, 2) },
   ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n');
-  assert.deepEqual(hits.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:default-name']);
+  assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:secret-argve']);
 });
 
 function repo(files) {
@@ -177,6 +181,14 @@ test('run-service refuses a symlinked state dir and starts nothing when it canno
   assert.equal(r.status, 1, out(r));
   await new Promise(res => setTimeout(res, 300));
   for (let p = 47120; p <= 47124; p++) await assert.rejects(fetch(`http://127.0.0.1:${p}/version`), `no unrecorded service left on ${p}`);
+
+  fs.appendFileSync(path.join(gamma, '.eng/project.toml'), '\n[[services]]\nname = "orphan"\ncommand = ["sh", "-c", "sleep 60 & sleep 0.1"]\n');
+  const o = eng(gamma, 'agent-g', 'run-service', 'orphan');
+  assert.equal(o.status, 1, out(o));
+  assert.match(out(o), /exited during startup; stopping what it left in its process group/);
+  await new Promise(res => setTimeout(res, 200));
+  const left = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d)).filter(d => { try { const e = fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0'); return e.includes('ENG_PROJECT=gamma') && e.includes('ENG_SERVICE=orphan') && alive(Number(d)); } catch { return false; } });
+  assert.deepEqual(left, [], 'a child that outlives the service leader is stopped too');
 });
 
 test('two synthetic projects: own records, scrubbed env, secrets off argv, cross-project and non-starter refusals', async () => {
@@ -221,6 +233,13 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   const brec = readRecord(beta, 'beta', 'api');
   assert.ok(brec.port >= 47115 && brec.port <= 47119 && brec.pid !== rec.pid);
 
+  fs.copyFileSync(recordPath(alpha, 'alpha', 'api'), recordPath(alpha, 'alpha', 'worker'));
+  r = eng(alpha, 'agent-a', 'stop', 'worker');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /record is for service api, not worker/);
+  assert.ok(alive(rec.pid), 'a record copied to another service name stops nothing');
+  fs.rmSync(recordPath(alpha, 'alpha', 'worker'));
+
   r = eng(alpha, 'agent-b', 'stop', 'api');
   assert.equal(r.status, 1);
   assert.match(out(r), /was started by agent-a, not agent-b. Only the starter may stop it/);
@@ -230,7 +249,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
 
   r = eng(alpha, 'agent-a', 'stop', 'api');
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /alpha\/api pid \d+ stopped \(SIGTERM\); verified gone; record removed/);
+  assert.match(r.stdout, /alpha\/api pid \d+ stopped \(SIGTERM to 1 process\(es\)\); verified gone; record removed/);
   assert.ok(!alive(rec.pid)); assert.ok(alive(brec.pid), 'stopping alpha leaves beta running');
   assert.ok(!fs.existsSync(recordPath(alpha, 'alpha', 'api')));
 

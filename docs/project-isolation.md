@@ -41,7 +41,7 @@ connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }  # optional, for eng c
 
 `command` is argv, run without a shell. `{port}` and `{state}` are filled in. The parser takes a TOML subset: tables, `[[services]]`, strings, integers, booleans, and arrays and inline tables on one line. It rejects anything else with the line number.
 
-Validation fails on: a missing or default id or owner, a missing state path, a state path that starts with `/`, `~` or `$` or contains `..`, a port range outside 1024 to 65535 or containing a default port, an unnamed, duplicate or default-named service, a secret flag in `command`, and a secret-looking key (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*API_KEY*`, `*ADMIN_KEY*`, ...) in `env` or `connect_env`, and any key eng sets itself (`HOME`, `ENG_STATE`, `ENG_PORT`, `ENG_PROJECT`, `ENG_SERVICE`, `ENG_SERVICE_URL`, `ENG_SERVICE_PORT`, the service's `port_env`). Secrets files may not set those keys either, and eng sets them last.
+Validation fails on: a missing or default id or owner, a missing state path, a state path that starts with `/`, `~` or `$` or contains `..`, a port range outside 1024 to 65535 or containing a default port, an unnamed, duplicate or default-named service, a secret flag in `command`, and a secret-looking key (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*API_KEY*`, `*ADMIN_KEY*`, ...) in `env` or `connect_env`, and any key eng sets itself (`HOME`, `PATH`, `ENG_STATE`, `ENG_PORT`, `ENG_PROJECT`, `ENG_SERVICE`, `ENG_SERVICE_URL`, `ENG_SERVICE_PORT`, `ENG_RUN_TOKEN`, the service's `port_env`). `port_env` itself may not name one of those keys. Secrets files may not set those keys either, and eng sets them last.
 
 ## The helper
 
@@ -51,7 +51,7 @@ All four commands run from the checkout root and read `.eng/project.toml`. They 
 |---------|------|
 | `eng run-service <svc> [--secrets-stdin]` | Picks the first free port in `project.ports`, makes `<state>/<svc>` (0700) and uses it as `HOME`, scrubs inherited `CONVEX_*`, loads secrets, starts the command in its own process group, writes the ownership record, then waits until the process is still the same one and the health path answers 2xx. The state path may not contain a symlink and must resolve inside the checkout. The ownership directory is created before the service starts, and any failure after the start stops the service. Output goes to `<state>/<svc>/service.log` (0600) only when no secrets were loaded; otherwise it is discarded, because raw output can echo a secret |
 | `eng connect <svc> -- <cmd...>` | Checks the record and health, runs the command with `ENG_SERVICE_URL`, `ENG_SERVICE_PORT`, `connect_env` and `.eng/secrets/<svc>.connect.env`, with `CONVEX_*` scrubbed. Then checks the record and health again and reports the target it touched. Exits with the command's code, or 1 when the target changed |
-| `eng stop <svc>` | Refuses unless the record is this project's, this owner's and this checkout's, and the caller started it. Sends SIGTERM to the service's process group, waits up to 10 s, then SIGKILL. Verifies the process is gone and removes the record. A record whose PID is gone or reused is removed without sending any signal |
+| `eng stop <svc>` | Refuses unless the record is for this service, project, owner and checkout, and the caller started it. Sends SIGTERM to the recorded process and every member of its process group that carries the run's `ENG_RUN_TOKEN` (so children that outlive the leader are stopped too), waits up to 10 s, then SIGKILL. Verifies they are gone and removes the record. A record with no matching process left is removed without sending any signal |
 | `eng status` | Lists this project's records from every checkout: ok, unhealthy or stale, with PID, port and starting agent |
 
 ### Ownership records
@@ -64,7 +64,7 @@ All four commands run from the checkout root and read `.eng/project.toml`. They 
   "state": "/abs/checkout/.eng/state/backend", "agent": "<thread id>", "started_at": "2026-10-26T..." }
 ```
 
-`start_time` is field 22 of `/proc/<pid>/stat`, and `boot_id` comes from `/proc/sys/kernel/random/boot_id`. Together with the PID they name one process; a reused PID never matches. The record is created with an exclusive link, so two concurrent starts of one service cannot both record.
+`start_time` is field 22 of `/proc/<pid>/stat`, and `boot_id` comes from `/proc/sys/kernel/random/boot_id`. Together with the PID they name one process; a reused PID never matches. `token` is a random per-run value the service and its children get as `ENG_RUN_TOKEN`. eng signals a group member only if its environment carries it, and only if it started after the leader. A failed start stops every such member. The record is created with an exclusive link, so two concurrent starts of one service cannot both record.
 
 ### Agent identity
 
@@ -86,9 +86,9 @@ For an image whose stock entrypoint puts a secret on argv (the Convex local back
 | `default-name` | package scripts, hooks, compose, shell scripts, `.env*.example` | `anonymous-agent`, and `default` where it names a project, deployment, container or compose project (`name: default`, `--project-name default`, `COMPOSE_PROJECT_NAME=default`) |
 | `default-port` | package scripts, hooks, compose, shell scripts | 3210, 3211, 6791 as literals. `${VAR:-3210}` counts as an override |
 | `compose-unnamed`, `compose-name` | `compose*.yml`, `docker-compose*.yml` | no top-level `name:`, or one without the project id |
-| `bare-service-command` | package scripts, hooks | `convex <sub>` (also through npx, bunx, pnpm, yarn), `docker compose`, `podman compose`, unless the line goes through `eng connect` or `eng run-service` |
+| `bare-service-command` | package scripts, hooks | `convex <sub>` (also through npx, bunx, pnpm, yarn), `docker compose`, `podman compose`, unless that command (split on `&&`, `||`, `;`, `|`) is itself an `eng connect` or `eng run-service` invocation |
 | `bare-kill` | package scripts, hooks | `kill`, `pkill`, `killall`, `docker`/`podman` `stop`, `kill`, `rm` |
-| `secret-argv` | package scripts, hooks, compose, shell scripts | a flag ending in secret, password, token, api-key, admin-key, access-key or private-key, with a value (`--instance-secret x`, `--token=x`). Also inside one argument (`bash -c 'client --token "$T"'`) and across a multi-line compose `command:` or `entrypoint:` list. `-file` and `--no-` flags pass |
+| `secret-argv` | package scripts, hooks, compose, shell scripts | a flag ending in secret, password, token, api-key, admin-key, access-key or private-key, with a value (`--instance-secret x`, `--token=x`). Also `env NAME=value` with a secret-looking name, and both forms inside one argument (`bash -c 'client --token "$T"'`) and across a multi-line compose `command:` or `entrypoint:` list. `-file` and `--no-` flags pass |
 
 Hooks are `.githooks/*`, `.husky/*`, `lefthook.yml` and `.pre-commit-config.yaml`. Findings print the file, line and rule, never the line's text.
 
