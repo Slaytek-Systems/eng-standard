@@ -199,6 +199,9 @@ test('eng isolation check: warns on every default and bare command by default, f
   r = eng(dir, null, 'isolation', 'check', '--config-from', `HEAD; touch ${marker}; #`);
   assert.equal(r.status, 1);
   assert.ok(!fs.existsSync(marker), '--config-from is never run through a shell');
+  r = eng(dir, null, 'isolation', 'check', '--config-from', 'DB_URL=cfg-canary-value');
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(out(r), /cfg-canary-value/, 'a bad ref and git\'s echo of it are never printed');
 });
 
 test('eng isolation check: a repo that wraps its commands and names its state passes', () => {
@@ -242,7 +245,7 @@ test('run-service refuses a symlinked state dir and starts nothing when it canno
   await new Promise(res => setTimeout(res, 300));
   for (let p = 47120; p <= 47124; p++) await assert.rejects(fetch(`http://127.0.0.1:${p}/version`), `no unrecorded service left on ${p}`);
 
-  fs.appendFileSync(path.join(gamma, '.eng/project.toml'), '\n[[services]]\nname = "orphan"\ncommand = ["sh", "-c", "sleep 60 & sleep 0.1"]\n');
+  fs.appendFileSync(path.join(gamma, '.eng/project.toml'), '\n[[services]]\nname = "orphan"\ncommand = ["sh", "-c", "sleep 60 & sleep 0.1"]\nhealth = "/never"\n');
   const o = eng(gamma, 'agent-g', 'run-service', 'orphan');
   assert.equal(o.status, 1, out(o));
   assert.match(out(o), /exited during startup; stopping what it left in its process group/);
@@ -333,6 +336,20 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   r = eng(beta, 'agent-b', 'stop', 'api');
   assert.equal(r.status, 0, out(r));
   assert.ok(!alive(brec.pid));
+});
+
+test('stop never signals a process named by a record from an earlier boot', () => {
+  const dir = project('eta', '47140, 47144');
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), '\n[[services]]\nname = "sleeper"\ncommand = ["sleep", "60"]\n');
+  let r = eng(dir, 'agent-e', 'run-service', 'sleeper');
+  assert.equal(r.status, 0, out(r));
+  const file = recordPath(dir, 'eta', 'sleeper'), rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...rec, boot_id: '00000000-0000-0000-0000-000000000000' }), { mode: 0o600 });
+  r = eng(dir, 'agent-e', 'stop', 'sleeper');
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /nothing signalled/);
+  assert.ok(alive(rec.pid), 'a boot-id mismatch is never treated as the recorded process');
+  process.kill(-rec.pid, 'SIGKILL');
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
