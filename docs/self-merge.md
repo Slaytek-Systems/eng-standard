@@ -46,8 +46,9 @@ supersedes another). The repo is public, so anyone can post a comment that looks
 - When `ship.self_merge.verifier_logins` (login to provider, in main's `eng.config.yml`) is set, only those logins
   count. The provider is the login's, whatever the comment claims, and each login is one verifier for superseding.
 - Without it, a verifier is its `by` field and its provider is its `provider` field, else its family's provider. A
-  provider that is not a known one (openai, anthropic, google, xai), or that contradicts the family, counts as none. Lookups are own-property only, so a family
-  or login such as `constructor` or `__proto__` resolves to no provider.
+  provider that is not a known one (openai, anthropic, xai, deepseek, moonshot, zhipu), or that contradicts the family,
+  counts as none. Google is not a known provider, so a google or gemini verdict counts toward no provider. Lookups are
+  own-property only, so a family or login such as `constructor` or `__proto__` resolves to no provider.
 
 **Residual.** eng-standard has no `verifier_logins` yet. Every agent posts through Matt's account, so a comment with
 write access can claim any `by`, family and provider. Separate verifier identities listed in `verifier_logins` close
@@ -70,7 +71,7 @@ npm ci && npm test                      # plus the review its brief asks for
 node bin/eng.mjs verdict PASS --by <id> --family <family> --provider <provider> --evidence <evidence> --pr <n>     # or FAIL
 ```
 
-A risk:high PR needs this from two verifiers on two providers (for example openai and google when the authors are
+A risk:high PR needs this from two verifiers on two providers (for example openai and xai when the authors are
 claude). `--pr` records the verdict (git note bound to the patch-id), posts it as an `eng-verdict/v1` PR comment, and
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when

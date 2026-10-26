@@ -845,7 +845,7 @@ function verdictsFor(pid) {
 function independentVerdicts(cfg, pid) { const { ids, fams } = codeAuthors(cfg); return verdictsFor(pid).filter(v => !ids.has(v.by) && !fams.has(v.family)).sort(byTime); }
 function verdictRecord(result) {
   const cfg = loadConfig(); clean();
-  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <agent-id> --family <model-family> [--provider openai|anthropic|google|xai] [--model <m>] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
+  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <agent-id> --family <model-family> [--provider openai|anthropic|xai|deepseek|moonshot|zhipu] [--model <m>] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
   const by = arg('--by'), family = arg('--family'), provider = arg('--provider');
   if (!by || !family) die('verdict: --by <agent-id> and --family <model-family> are required');
   if (provider && !PROVIDERS.includes(provider)) die(`verdict: --provider must be one of ${PROVIDERS.join(', ')} (the model provider, not the harness)`);

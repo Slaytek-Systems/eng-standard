@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.10.1 (26 Oct 2026)
+
+**Google is no longer a verifier provider** (Matt, 26 Oct 2026).
+
+- `FAMILY_PROVIDER` (`lib/self-merge.mjs`) drops `gemini` and `google`. A verdict with family gemini or google, or provider google, now counts toward no provider for risk:low or risk:high. `ship.self_merge.verifier_logins` and `merge.auto.verifier_logins` refuse a login mapped to google.
+- New providers: `deepseek` (family deepseek), `moonshot` (family kimi) and `zhipu` (family glm). `eng verdict --provider` accepts openai, anthropic, xai, deepseek, moonshot or zhipu (`PROVIDERS` in `lib/renovate.mjs`).
+- Docs, config comments and tests use openai with deepseek or xai as the example provider pair.
+- The `risk:high` label description now matches the gate: PASSes on the exact head from two providers other than the authors'.
+
 ## 0.10.0 (24 Oct 2026)
 
 **`eng merge`: the v0.10.0 merge rule as a capability for consuming repos** (Matt, 24 Oct 2026: the rule at 10:31 AM AEDT, option 2 at 11:22 AM AEDT). eng-standard itself keeps the v0.9.1 two-provider `self-merge.yml` (Option A, 3:03 PM AEDT) as its one merge path; see "Reconciled with 0.9.1" below.

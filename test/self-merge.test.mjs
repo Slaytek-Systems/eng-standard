@@ -7,6 +7,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { PROVIDERS } from '../lib/renovate.mjs';
 import { selfMergeConfig, decide, verdictBody, parseVerdicts, authorsFrom, isAutoRevert, trusted, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -53,9 +54,9 @@ const pr = (o = {}) => ({ number: 1, base: 'main', draft: false, sameRepo: true,
 const authors = authorsFrom(['feat\n\nAgent: builder-1\nAgent-Family: claude'], ['t@t']);
 const V = (o = {}) => ({ sha: SHA, patch_id: 'p1', result: 'PASS', by: 'gpt-checker', family: 'gpt', provider: 'openai', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', ...o });
 const OUT = { login: 'unrelated-outsider', association: 'NONE' };
-const GEM = V({ by: 'gemini-checker', family: 'gemini', provider: 'google' });
+const DS = V({ by: 'deepseek-checker', family: 'deepseek', provider: 'deepseek' });
 const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, status: { state: 'success', created_at: '2026-10-19T04:30:00Z' }, verdicts: [V()], authors, ...o });
-const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), GEM], ...o });
+const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), DS], ...o });
 const at = min => T0 + min * 60_000;
 
 test('self-merge: default window is 2 hours from the later of test and verdict going green', () => {
@@ -141,13 +142,13 @@ test('rule 2: risk:high (label, recomputed, or a gate/auth/billing path) needs P
   for (const f of ['scripts/pr-gate.mjs', 'lib/self-merge.mjs', '.github/workflows/self-merge.yml', 'src/auth/login.ts', 'lib/auth.mjs', 'app/billing/plan.ts'])
     assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
   assert.equal(decide(H, hi(), C, late).merge, true);
-  assert.match(decide(H, hi(), C, late).reason, /risk:high: PASS from openai \+ google/);
+  assert.match(decide(H, hi(), C, late).reason, /risk:high: PASS from openai \+ deepseek/);
   const cases = [
     [H, hi({ verdicts: [V()] }), 'one provider'],
     [H, hi({ verdicts: [V(), V({ by: 'gpt-2' })] }), 'two verifiers, same provider'],
     [H, hi({ verdicts: [V(), V({ by: 'c2', family: 'claude-x', provider: 'anthropic' })] }), 'the authors\' provider does not count'],
-    [H, hi({ verdicts: [V(), V({ ...GEM, sha: 'b'.repeat(40) })] }), 'second PASS is for another head'],
-    [H, hi({ verdicts: [V(), V({ by: 'liar', family: 'gpt', provider: 'google' })] }), 'a provider that contradicts the family'],
+    [H, hi({ verdicts: [V(), V({ ...DS, sha: 'b'.repeat(40) })] }), 'second PASS is for another head'],
+    [H, hi({ verdicts: [V(), V({ by: 'liar', family: 'gpt', provider: 'deepseek' })] }), 'a provider that contradicts the family'],
     [pr(), hi({ verdicts: [V()] }), 'labelled low, files recomputed high'],
   ];
   for (const [p, s, why] of cases) { const d = decide(p, s, C, late); assert.equal(d.merge, false, why); assert.match(d.reason, /two providers/, why); }
@@ -165,7 +166,7 @@ test('rule 4: a missing, stale or FAIL verdict refuses; each verifier\'s latest 
   assert.match(no(st({ verdicts: [V(), V({ by: 'v2', result: 'FAIL', comment_at: '2026-10-19T04:10:00Z' }), V({ by: 'v3', comment_at: '2026-10-19T04:20:00Z' })] })).reason, /FAIL by v2/, 'a later PASS by another verifier cannot outvote a FAIL');
   assert.equal(no(st({ verdicts: [V({ result: 'FAIL' }), V({ comment_at: '2026-10-19T04:10:00Z' })] })).merge, true, 'the same verifier re-reviewing clears its own FAIL');
   assert.equal(no(st({ verdicts: [V({ result: 'PASS+NOTES' })] })).merge, true);
-  assert.match(decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [V(), GEM, V({ ...GEM, result: 'FAIL', comment_at: '2026-10-19T04:30:00Z' })] }), C, late).reason, /FAIL by gemini-checker/);
+  assert.match(decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [V(), DS, V({ ...DS, result: 'FAIL', comment_at: '2026-10-19T04:30:00Z' })] }), C, late).reason, /FAIL by deepseek-checker/);
 });
 
 test('rule 5: hold and draft still stop a merge; the window also counts from the latest counted verdict', () => {
@@ -177,7 +178,7 @@ test('rule 5: hold and draft still stop a merge; the window also counts from the
 });
 
 test('verdict comments round-trip with head SHA and provider; other comments are ignored', () => {
-  const rec = { sha: SHA, patch_id: 'p1', result: 'PASS', by: 'g1', family: 'gemini', provider: 'google', at: '2026-10-19T04:00:00Z' };
+  const rec = { sha: SHA, patch_id: 'p1', result: 'PASS', by: 'x1', family: 'grok', provider: 'xai', at: '2026-10-19T04:00:00Z' };
   const got = parseVerdicts([{ body: 'LGTM', created_at: 'x' }, { body: verdictBody(rec), created_at: '2026-10-19T04:01:00Z' }, { body: `${verdictBody(rec).split('```')[0]}` }]);
   assert.deepEqual(got, [{ ...rec, login: null, association: null, comment_at: '2026-10-19T04:01:00.000Z' }]);
   const [w] = parseVerdicts([{ body: verdictBody(rec), user: { login: 'x' }, author_association: 'NONE', created_at: 'y' }]);
@@ -238,7 +239,7 @@ test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from
 
 test('rules 2 and 6: a risk:high PR with two-provider PASSes on its head merges, then the post-merge check runs on main', () => {
   const asComment = v => ({ body: verdictBody(v), user: { login: v.login }, author_association: v.association, created_at: v.comment_at });
-  const comments = [V(), GEM].map(asComment);
+  const comments = [V(), DS].map(asComment);
   const p = { number: 3, state: 'open', title: 'fix: gate', draft: false, created_at: '2026-10-19T03:00:00Z', labels: [{ name: 'risk:high' }], base: { ref: 'main', sha: TIP }, head: { sha: SHA, ref: 'feat/x', repo: { full_name: 'o/r' } } };
   const routes = {
     [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'success'), ...runs(SHA, 'success'),
@@ -253,7 +254,7 @@ test('rules 2 and 6: a risk:high PR with two-provider PASSes on its head merges,
   };
   let r = gate(routes);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: PASS from openai \+ google/);
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: PASS from openai \+ deepseek/);
   assert.deepEqual(r.sent.map(c => c.slice(0, 2)), [['PUT', `${R}/pulls/3/merge`], ['DELETE', `${R}/git/refs/heads/feat/x`], ['POST', `${R}/actions/workflows/ci.yml/dispatches`]]);
   assert.deepEqual(r.sent[0][2], { merge_method: 'squash', sha: SHA, commit_title: 'fix: gate (#3)' });
   assert.deepEqual(r.sent[2][2], { ref: 'main' });
@@ -261,7 +262,7 @@ test('rules 2 and 6: a risk:high PR with two-provider PASSes on its head merges,
   assert.match(r.stdout, /skip: head aaaaaaaa does not contain main's tip/); assert.equal(r.sent.length, 0);
   r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: comments.slice(0, 1) });
   assert.match(r.stdout, /skip: risk:high needs PASSes/); assert.equal(r.sent.length, 0);
-  r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: [V(), { ...GEM, ...OUT }].map(asComment) });
+  r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: [V(), { ...DS, ...OUT }].map(asComment) });
   assert.match(r.stdout, /skip: risk:high needs PASSes .* have openai$/m, 'an outsider\'s comment cannot supply the second provider'); assert.equal(r.sent.length, 0);
   const lowDocs = { ...routes, [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [{ ...p, labels: [{ name: 'risk:low' }] }], [`GET ${R}/issues/3/labels`]: [{ name: 'risk:low' }], [`GET ${R}/issues/3/comments?per_page=100`]: comments.slice(0, 1) };
   for (const files of [[{ filename: '.github/workflows/de\nploy.yml', status: 'modified' }], [{ filename: 'src/policy.mjs', previous_filename: 'src/auth/a\nb.ts', status: 'renamed' }]]) {
@@ -282,25 +283,25 @@ test('round-1 P1: a raw newline in a current or previous filename still matches 
 });
 
 test('round-1 P1: only trusted commenters count, before any verdict counts or supersedes another', () => {
-  const late = at(600), H = pr({ labels: ['risk:high'] }), FAIL = V({ by: 'gem-r', family: 'gemini', provider: 'google', result: 'FAIL', comment_at: '2026-10-19T04:01:00Z' });
-  assert.match(decide(H, hi({ verdicts: [V(), { ...GEM, ...OUT }] }), C, late).reason, /have openai$/, 'an outsider cannot supply the second provider');
-  assert.match(decide(H, hi({ verdicts: [{ ...V(), ...OUT }, { ...GEM, ...OUT }] }), C, late).reason, /no independent verdict comment/, 'nor both');
-  assert.match(decide(pr(), st({ verdicts: [FAIL, V({ comment_at: '2026-10-19T04:02:00Z' }), { ...FAIL, ...OUT, result: 'PASS', comment_at: '2026-10-19T04:03:00Z' }] }), C, late).reason, /FAIL by gem-r/, 'an outsider reusing a failing verifier\'s `by` cannot clear its FAIL');
+  const late = at(600), H = pr({ labels: ['risk:high'] }), FAIL = V({ by: 'ds-r', family: 'deepseek', provider: 'deepseek', result: 'FAIL', comment_at: '2026-10-19T04:01:00Z' });
+  assert.match(decide(H, hi({ verdicts: [V(), { ...DS, ...OUT }] }), C, late).reason, /have openai$/, 'an outsider cannot supply the second provider');
+  assert.match(decide(H, hi({ verdicts: [{ ...V(), ...OUT }, { ...DS, ...OUT }] }), C, late).reason, /no independent verdict comment/, 'nor both');
+  assert.match(decide(pr(), st({ verdicts: [FAIL, V({ comment_at: '2026-10-19T04:02:00Z' }), { ...FAIL, ...OUT, result: 'PASS', comment_at: '2026-10-19T04:03:00Z' }] }), C, late).reason, /FAIL by ds-r/, 'an outsider reusing a failing verifier\'s `by` cannot clear its FAIL');
   for (const association of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'NONE', null]) assert.equal(trusted([V({ association })], null).length, 0, String(association));
   assert.equal(trusted([V({ family: 'invented-family', provider: 'invented-provider' })], null)[0].provider, null, 'google note (a): an unknown family does not let an unknown provider through');
-  assert.equal(trusted([V({ family: 'invented-family', provider: 'google' })], null)[0].provider, 'google');
-  for (const v of [V({ by: 'x', family: 'invented-family', provider: 'invented-provider' }), V({ by: 'x', family: 'gemini', provider: 'invented-provider' })])
+  assert.equal(trusted([V({ family: 'invented-family', provider: 'xai' })], null)[0].provider, 'xai');
+  for (const v of [V({ by: 'x', family: 'invented-family', provider: 'invented-provider' }), V({ by: 'x', family: 'deepseek', provider: 'invented-provider' })])
     assert.match(decide(H, hi({ verdicts: [V(), v] }), C, late).reason, /have openai$/, 'an unknown provider is no provider');
 });
 
 test('round-1 P1: with ship.self_merge.verifier_logins only listed logins count, with the login\'s provider', () => {
-  const CL = selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai', 'gemini-bot': 'google' } } } }), late = at(600), H = pr({ labels: ['risk:high'] });
-  const gpt = V({ login: 'gpt-bot', association: 'COLLABORATOR' }), gem = V({ by: 'g', family: 'gemini', provider: 'google', login: 'gemini-bot', association: 'COLLABORATOR' });
-  assert.equal(decide(H, hi({ verdicts: [gpt, gem] }), CL, late).merge, true);
-  assert.match(decide(H, hi({ verdicts: [gpt, { ...gem, login: 'Mattslayga' }] }), CL, late).reason, /have openai$/, 'an unlisted login does not count, even the owner');
-  assert.match(decide(H, hi({ verdicts: [gpt, { ...gpt, by: 'other', family: 'gemini', provider: 'google' }] }), CL, late).reason, /have openai$/, 'the provider is the login\'s, not the claim');
-  assert.match(decide(H, hi({ verdicts: [gpt, gem, { ...gem, by: 'someone-else', result: 'FAIL', comment_at: '2026-10-19T04:05:00Z' }] }), CL, late).reason, /FAIL/, 'a login\'s latest verdict supersedes only its own');
-  assert.match(decide(H, hi({ verdicts: [gpt, { ...gem, association: 'NONE' }] }), CL, late).reason, /have openai$/, 'a listed login still needs write access');
+  const CL = selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai', 'ds-bot': 'deepseek' } } } }), late = at(600), H = pr({ labels: ['risk:high'] });
+  const gpt = V({ login: 'gpt-bot', association: 'COLLABORATOR' }), ds = V({ by: 'd', family: 'deepseek', provider: 'deepseek', login: 'ds-bot', association: 'COLLABORATOR' });
+  assert.equal(decide(H, hi({ verdicts: [gpt, ds] }), CL, late).merge, true);
+  assert.match(decide(H, hi({ verdicts: [gpt, { ...ds, login: 'Mattslayga' }] }), CL, late).reason, /have openai$/, 'an unlisted login does not count, even the owner');
+  assert.match(decide(H, hi({ verdicts: [gpt, { ...gpt, by: 'other', family: 'deepseek', provider: 'deepseek' }] }), CL, late).reason, /have openai$/, 'the provider is the login\'s, not the claim');
+  assert.match(decide(H, hi({ verdicts: [gpt, ds, { ...ds, by: 'someone-else', result: 'FAIL', comment_at: '2026-10-19T04:05:00Z' }] }), CL, late).reason, /FAIL/, 'a login\'s latest verdict supersedes only its own');
+  assert.match(decide(H, hi({ verdicts: [gpt, { ...ds, association: 'NONE' }] }), CL, late).reason, /have openai$/, 'a listed login still needs write access');
   for (const bad of [{ a: 'devin' }, [], {}, 'x']) assert.throws(() => selfMergeConfig({ ship: { self_merge: { verifier_logins: bad } } }), /verifier_logins/, JSON.stringify(bad));
   assert.equal(C.verifier_logins, null, 'eng-standard has no verifier logins yet: the shared-account residual');
 });
@@ -337,10 +338,10 @@ test('round-2 P1: prototype names never resolve to a provider, as a family or as
   const CL = selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai' } } } });
   for (const login of PROTO) {
     assert.equal(trusted([V({ login })], CL.verifier_logins).length, 0, `login ${login}`);
-    assert.match(decide(H, hi({ verdicts: [V({ login: 'gpt-bot' }), V({ by: 'g', family: 'gemini', provider: 'google', login })] }), CL, late).reason, /have openai$/, `login ${login}`);
+    assert.match(decide(H, hi({ verdicts: [V({ login: 'gpt-bot' }), V({ by: 'x', family: 'grok', provider: 'xai', login })] }), CL, late).reason, /have openai$/, `login ${login}`);
   }
-  const own = JSON.parse('{"gpt-bot":"openai","__proto__":"google"}');
-  assert.deepEqual(trusted([V({ login: '__proto__' })], selfMergeConfig({ ship: { self_merge: { verifier_logins: own } } }).verifier_logins).map(v => v.provider), ['google'], 'an own __proto__ key is a real login');
+  const own = JSON.parse('{"gpt-bot":"openai","__proto__":"xai"}');
+  assert.deepEqual(trusted([V({ login: '__proto__' })], selfMergeConfig({ ship: { self_merge: { verifier_logins: own } } }).verifier_logins).map(v => v.provider), ['xai'], 'an own __proto__ key is a real login');
 });
 
 test('round-2 P1: an edited verdict comment counts from its edit, for ordering and the hold window', () => {
@@ -352,4 +353,20 @@ test('round-2 P1: an edited verdict comment counts from its edit, for ordering a
   assert.equal(decide(pr(), st({ verdicts: edited }), C, at(600) + 119 * 60_000).merge, true);
   const order = parseVerdicts([c(V({ result: 'FAIL' }), '2026-10-19T04:00:00Z', '2026-10-19T04:30:00Z'), c(V(), '2026-10-19T04:10:00Z', '2026-10-19T04:10:00Z')]);
   assert.match(decide(pr(), st({ verdicts: order }), C, at(600)).reason, /FAIL by gpt-checker/, 'the verifier\'s most recently edited verdict is its latest');
+});
+
+test('google is not a provider: a google or gemini verdict counts toward no provider', () => {
+  const late = at(600), H = pr({ labels: ['risk:high'] });
+  for (const g of [{ family: 'gemini', provider: 'google' }, { family: 'gemini' }, { family: 'google' }, { family: 'Gemini', provider: 'google' }, { family: 'invented-family', provider: 'google' }]) {
+    const v = { ...V({ by: 'g-checker', ...g }), ...(g.provider ? {} : { provider: undefined }) };
+    assert.equal(trusted([v], null)[0].provider, null, JSON.stringify(g));
+    assert.match(decide(H, hi({ verdicts: [V(), v] }), C, late).reason, /have openai$/, JSON.stringify(g));
+  }
+  assert.throws(() => selfMergeConfig({ ship: { self_merge: { verifier_logins: { 'gpt-bot': 'openai', 'gemini-bot': 'google' } } } }), /verifier_logins/);
+  assert.deepEqual([...authorsFrom(['x\n\nAgent-Family: gemini']).providers], []);
+  assert.equal(PROVIDERS.includes('google'), false, 'eng verdict --provider google is refused');
+  for (const [family, provider] of [['deepseek', 'deepseek'], ['kimi', 'moonshot'], ['glm', 'zhipu'], ['grok', 'xai']]) {
+    assert.match(decide(H, hi({ verdicts: [V(), V({ by: `${family}-checker`, family, provider })] }), C, late).reason, new RegExp(`PASS from openai \\+ ${provider}`), family);
+    assert.equal(trusted([{ ...V({ family }), provider: undefined }], null)[0].provider, provider, `family ${family} maps to ${provider}`);
+  }
 });

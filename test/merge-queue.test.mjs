@@ -50,21 +50,23 @@ test('second provider: gate, auth and billing paths need PASSes from two provide
     const one = gateDecision({ bind: head(), files: [f], verdicts: [V(), V({ by: 'verifier-3' })], authors, q });
     assert.equal(one.pass, false, f); assert.equal(one.need, 'second-provider');
   }
-  const two = gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'gemini-1', family: 'gemini', provider: 'google' })], authors, q });
-  assert.equal(two.pass, true, two.reasons.join()); assert.match(two.reasons.at(-1), /openai \+ google/);
+  const two = gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'deepseek-1', family: 'deepseek', provider: 'deepseek' })], authors, q });
+  assert.equal(two.pass, true, two.reasons.join()); assert.match(two.reasons.at(-1), /openai \+ deepseek/);
   assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'c2', family: 'claude-x', provider: 'anthropic' })], authors, q }).pass, false, 'the author provider does not count as the second');
+  assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: trusted([V(), V({ by: 'gemini-1', family: 'gemini', provider: 'google' })].map(v => ({ ...v, association: 'OWNER' })), null), authors, q }).pass, false, 'a google verdict does not count as the second provider');
+  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'google' } } }).join(), /verifier_logins/);
 });
 
 test('verifier identity: with verifier_logins only listed logins count, with their own provider (round-1 P1: impersonation)', () => {
   const comments = [{ user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-gpt' })), created_at: '2026-10-24T01:00:00Z' },
-    { user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-gemini', family: 'gemini', provider: 'google' })), created_at: '2026-10-24T01:01:00Z' }];
+    { user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-grok', family: 'grok', provider: 'xai' })), created_at: '2026-10-24T01:01:00Z' }];
   const claimed = gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: parseVerdicts(comments), authors, q });
   assert.equal(claimed.pass, true, 'self-declared mode trusts the claims (eng doctor flags this mode)');
-  const logins = { 'gpt-verifier-bot': 'openai', 'gemini-verifier-bot': 'google' };
+  const logins = { 'gpt-verifier-bot': 'openai', 'grok-verifier-bot': 'xai' };
   assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: trusted(parseVerdicts(comments), logins), authors, q }).need, 'verdict', 'claims from an unlisted login are ignored');
-  const real = [{ user: { login: 'gpt-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ provider: 'xai' })), created_at: '2026-10-24T01:00:00Z' }, { user: { login: 'gemini-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ by: 'g', family: 'gemini' })), created_at: '2026-10-24T01:01:00Z' }];
+  const real = [{ user: { login: 'gpt-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ provider: 'xai' })), created_at: '2026-10-24T01:00:00Z' }, { user: { login: 'grok-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ by: 'g', family: 'grok' })), created_at: '2026-10-24T01:01:00Z' }];
   const t = trusted(parseVerdicts(real), logins);
-  assert.deepEqual(t.map(v => v.provider), ['openai', 'google'], 'the provider comes from the login, not the claim');
+  assert.deepEqual(t.map(v => v.provider), ['openai', 'xai'], 'the provider comes from the login, not the claim');
   assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: t, authors, q }).pass, true);
   assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'devin' } } }).join(), /verifier_logins/);
 });
@@ -204,7 +206,7 @@ test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files
   comments([V({ patch_id: pr.patch, sha: pr.head })]);
   r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: pr.evq });
   assert.equal(r.status, 1); assert.match(r.stdout, /need PASSes from two providers/);
-  comments([V({ patch_id: pr.patch, sha: pr.head }), V({ patch_id: pr.patch, sha: pr.head, by: 'gemini-1', family: 'gemini', provider: 'google' })]);
+  comments([V({ patch_id: pr.patch, sha: pr.head }), V({ patch_id: pr.patch, sha: pr.head, by: 'deepseek-1', family: 'deepseek', provider: 'deepseek' })]);
   assert.equal(eng(['merge', 'gate'], { GITHUB_EVENT_PATH: pr.evq }).status, 0);
   setMode('strict');
 });
@@ -248,10 +250,10 @@ test('eng merge gate reads authors from the PR\'s git history, not only the capp
   const head = git('rev-parse HEAD'), patch = pidOf(`origin/main ${head}`), evp = path.join(dir, '.gh/event-many.json');
   fs.writeFileSync(evp, JSON.stringify({ pull_request: { number: 7, head: { sha: head } } }));
   put('repos/o/r/pulls/7', { number: 7, labels: [], body: '', user: { login: 'builder' }, head: { sha: head, ref: 'feat' }, base: { ref: 'main' } });
-  comments([V({ patch_id: patch, sha: head }), V({ patch_id: patch, sha: head, by: 'gemini-1', family: 'gemini', provider: 'google' })]);
+  comments([V({ patch_id: patch, sha: head }), V({ patch_id: patch, sha: head, by: 'deepseek-1', family: 'deepseek', provider: 'deepseek' })]);
   const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
   assert.equal(r.status, 1, 'the API listed only the claude commit, but a gpt author wrote the head, so the gpt PASS cannot be the second provider');
-  assert.match(r.stdout, /need PASSes from two providers other than the authors' \(have google\)/);
+  assert.match(r.stdout, /need PASSes from two providers other than the authors' \(have deepseek\)/);
 });
 
 test('eng merge gate counts verdicts like self-merge (PR #21): outsiders, prototype families and edits', () => {

@@ -49,7 +49,7 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
     stuck_minutes: 30             # red or missing required check, no activity this long = `stuck` label
     verdict_wait_minutes: 30      # no verdict this long after the head was pushed = restart the owner
     restart_webhook_env: ENG_RESTART_WEBHOOK   # repo secret: URL that restarts the owning job; unset = comment only
-    # verifier_logins: { <github-login>: openai, <github-login>: google }   # bind verdicts to verifier identities. Unset: verdicts are self-declared (one shared GitHub identity); eng doctor flags it
+    # verifier_logins: { <github-login>: openai, <github-login>: xai }   # bind verdicts to verifier identities. Unset: verdicts are self-declared (one shared GitHub identity); eng doctor flags it
 
 ship:
   verifier: fresh-context agent; family different from every author; provider recorded (eng verdict --provider ... --pr <n>)

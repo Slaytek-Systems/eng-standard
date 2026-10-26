@@ -66,7 +66,7 @@ renovation:
 The builder and the verifier are different sessions with fresh context. The verifier records its model provider:
 
 ```sh
-eng verdict PASS --by <id> --family <family> --provider openai|anthropic|google|xai --model <m> --session <id> --pr <n>
+eng verdict PASS --by <id> --family <family> --provider openai|anthropic|xai|deepseek|moonshot|zhipu --model <m> --session <id> --pr <n>
 ```
 
 The record binds the head SHA, the merge-base, the base tip, the head tree (the diff fingerprint) and the patch-id (`refs/notes/eng-verdict`). An adapter turns it into the repo's own format. Adapter 1 is `core-edge.ship-receipt/v1`: a COMMENT review body with the `<!-- core-edge.ship-receipt/v1 -->` marker. Its `diff_fingerprint` is the head tree SHA and its `base_sha` is the base tip. A rebase therefore always needs a new receipt draft. The verdict itself carries over when the patch-id is unchanged and `verdict_carry` is `patch-id`. The lead or the lead's lane posts the draft; the pack never does.
