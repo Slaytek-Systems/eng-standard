@@ -3,7 +3,8 @@ on:
   pull_request:
   push:
     branches: [main]
-  # self-merge.yml dispatches this on main after each merge: a GITHUB_TOKEN merge fires no push event.
+  # self-merge.yml dispatches this on main after each merge (a GITHUB_TOKEN merge fires no push event) and on an
+  # auto-revert branch. Such a run fires no workflow_run either, so job start-self-merge below starts self-merge when it ends.
   workflow_dispatch:
 # One run per workflow+ref. Superseded PR runs are cancelled; main runs never are (post-merge backstop).
 concurrency:
@@ -20,3 +21,15 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: node bin/eng.mjs --help
+  start-self-merge:
+    # The post-merge check on main, or an auto-revert branch's test, just finished: self-merge reads the result now (a red
+    # main opens the auto-revert; a green one lets the next PR merge). Pass or fail, never on pull_request.
+    needs: test
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run self-merge.yml --repo "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

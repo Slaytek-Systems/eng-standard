@@ -6,7 +6,10 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 ## Merge rule (approved by Matt, 19 Oct 2026, 3:55 PM AEDT; independence by identity 26 Oct 2026)
 
 - **Self-merge.** `.github/workflows/self-merge.yml` runs main's code only and squash-merges at most one PR into
-  `main` per run. Every condition below must hold on the PR's current head SHA:
+  `main` per run. It runs on events only, never on a schedule: `ci` finished, a verdict comment or `verdict` status, a
+  label added or removed, ready for review, retargeted to main, or a manual dispatch. Runs queue one at a time. There
+  is no wait: a PR merges as soon as every condition below holds on its current head SHA, and each one is read again
+  just before the merge call:
   - The head contains main's tip (ancestry check). A behind branch is updated and its new head verified again.
   - The `test` check is green and the `verdict` status is success.
   - **Independence is identity.** A verifier counts only when its identity (`--by`, and its GitHub login when
@@ -18,9 +21,9 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     billing paths. `.github/workflows/risk-label.yml` sets the label on every push, and self-merge recomputes it.
   - No verdict, a verdict for another head, or a FAIL refuses the merge. Each verifier's latest verdict counts, and
     any FAIL blocks.
-  - No `hold` label and not draft. Everything has been green for the hold window (`ship.self_merge.hold_minutes`,
-    default 120).
-- **Post-merge check.** After each merge self-merge runs `ci.yml` on `main`. If it fails, the next run opens the merged
+  - No `hold` label and not draft.
+- **Post-merge check.** After each merge self-merge runs `ci.yml` on `main`. When it finishes, `ci.yml` starts
+  self-merge again. If it failed, that run opens the merged
   commit's exact inverse as an `auto-revert/<sha12>` PR from `github-actions[bot]`. While main is red it is the only PR
   that may merge, and it still needs every condition above.
 - **Nobody bypasses anything**, Matt included: no `--admin`, no `--no-verify`, no merging around a red or missing check.
