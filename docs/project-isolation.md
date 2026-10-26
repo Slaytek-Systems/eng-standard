@@ -4,6 +4,8 @@ Every project on the devbox runs as one Unix user (`dev`) with one home folder. 
 
 This standard gives each repo three things: an identity file, a helper that starts and stops services only with proof of ownership, and a repo check. The check warns by default. One config switch makes it fail.
 
+**Threat model.** This helper prevents accidental cross-project actions by agents acting in good faith: a tool that picks up another project's default state, a hook that reaches the wrong backend, a reviewer that stops a run it did not start. It is not a security boundary against a hostile agent. Every project still runs as the same Unix user, so an agent that means harm can bypass the helper entirely. Real separation needs per-project OS users or containers; that is a devbox-ops follow-up.
+
 It builds on the devbox-ops `project-boundary` sandbox (devbox-ops PR6 and PR7). The workspace registry stays the source of the project owner, and the sandbox stays the strongest layer where it is active. Nothing here changes the sandbox pilot or its settings.
 
 ## The five rules
@@ -29,6 +31,9 @@ owner = "core-edge"       # the owner in the workspace registry
 state = ".eng/state"      # required; inside the checkout; add it to .gitignore
 ports = [41000, 41019]    # inclusive; must not include 3210, 3211 or 6791
 
+[placeholders]           # the only variable parts of a connect entry: type port | path | service, or regex
+dump = { type = "path" }
+
 [[services]]
 name = "backend"
 command = ["./scripts/backend.sh", "--port", "{port}", "--data", "{state}/data"]
@@ -37,7 +42,7 @@ health = "/version"       # optional: HTTP path on 127.0.0.1:<port>
 ready_timeout_s = 30      # optional, default 30
 env = { LOG_LEVEL = "info" }                               # optional, non-secret
 connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }  # optional, for eng connect
-connect = [["npx", "convex", "codegen"]]                   # what eng connect may run (argv prefixes)
+connect = [["npx", "convex", "codegen"], ["./scripts/cli.sh", "restore", "{dump}"]]  # what eng connect may run: full argv
 ```
 
 `command` is argv, run without a shell. `{port}` and `{state}` are filled in. The parser takes a TOML subset: tables, `[[services]]`, strings, integers, booleans, and arrays and inline tables on one line. It rejects anything else with the line number.
@@ -48,7 +53,9 @@ Validation fails on: a missing or default id or owner, a missing state path, a s
 
 All four commands run from the checkout root and read `.eng/project.toml`. They need Linux `/proc`.
 
-**Only listed commands run (allowlist).** `eng run-service` runs exactly the service's `command`. `eng connect` runs a command only when an entry in that service's `connect = [...]` matches it: the program must be the same string (no PATH or basename matching: `/usr/bin/docker` does not match `docker`), and the listed argv must be a prefix of the command. Anything not listed is refused. Commands run as argv, never through a shell.
+**Only listed commands run (allowlist).** `eng run-service` runs exactly the service's `command`. `eng connect` runs a command only when an entry in that service's `connect = [...]` equals it as the full argv: the same length, the same program string (no PATH or basename matching: `/usr/bin/docker` does not match `docker`), and every other element identical or a declared `{placeholder}`. An argument that is not listed can never appear, so flag and subcommand variants (`deno eval`, `compose up --remove-orphans --force-recreate`) are refused. Commands run as argv, never through a shell.
+
+Placeholders are declared under `[placeholders]`, each filling one whole argv element, with a strict type: `port` (inside `project.ports`), `path` (resolved against the checkout; no `/`, `~` or `..`, and every existing part's real path stays inside, so a symlink cannot escape), `service` (a service name from this file), or `regex = "..."` (the whole value must match). A placeholder value never starts with `-`.
 
 Identity-file validation checks every `command` and `connect` entry, so a bad entry is refused before anything starts:
 - a launcher that only runs other commands (`env`, `xargs`, `sudo`, `nohup`, `timeout`, `busybox`, ...) cannot be listed; list the program itself;
@@ -57,7 +64,7 @@ Identity-file validation checks every `command` and `connect` entry, so a bad en
 - docker and podman need an approved subcommand (`compose`, `ps`, `version`, `info`, `images`); compose needs an approved subcommand (`up`, `ps`, `logs`, `config`, `exec`, `run`, `build`, `pull`, `images`, `top`, `port`, `version`, `ls`, `events`) and a real `-p`/`--project-name` naming this project before it. Stopping and removing (`stop`, `kill`, `rm`, `down`, `restart`, `pause`) go through `eng stop` only;
 - no secret-looking flag with a value.
 
-At runtime `eng connect` also checks the whole requested argv, extra arguments included: compose project targeting (a selector-looking value or short-option cluster after the subcommand is refused) and secret flags (a literal `"--token"` still counts). Put anything that needs a shell in a script file inside the checkout and list the script.
+At runtime `eng connect` also runs the entry checks on the concrete argv after placeholders are filled (compose targeting, secret flags). Put anything that needs a shell in a script file inside the checkout and list the script.
 
 | Command | Does |
 |---------|------|
@@ -120,7 +127,7 @@ For an image whose stock entrypoint puts a secret on argv (the Convex local back
 | `default-port` | package scripts, hooks, compose, shell scripts | 3210, 3211, 6791 as literals. `${VAR:-3210}` counts as an override |
 | `compose-unnamed`, `compose-name` | `compose*.yml`, `docker-compose*.yml` | no top-level `name:`, or one that is not the project id or `<id>_<suffix>` (ids never contain `_`, so `alpha-beta` cannot be read as project `alpha`) |
 | `bare-service-command` | package scripts, hooks | `convex <sub>` (also through npx, bunx, pnpm, yarn, or by path such as `./node_modules/.bin/convex`), `docker`, `podman`, `docker-compose` or `podman-compose` run directly instead of through `eng connect <svc> -- <listed command>` or `eng run-service` |
-| `not-allowlisted` | package scripts, hooks | an `eng connect <svc> -- <cmd>` whose command is not on that service's `connect` list, or fails its checks (selector-looking values or short-option clusters after the compose subcommand, secret flags) |
+| `not-allowlisted` | package scripts, hooks | an `eng connect <svc> -- <cmd>` whose argv does not equal an entry on that service's `connect` list (placeholders checked by type; symlinks cannot be resolved statically) |
 | `inline-code` | package scripts, hooks | inline code or a split string (`node -e`, `python -c`, `deno eval`, `sh -c`, `env -S`) |
 | `shell-string` | package scripts, hooks | a line that is opaque to a static read (a shell with `-c`, quotes, `$`, backticks or backslashes) and touches docker, podman, compose, convex, kill or a secret flag: run it as argv through `eng connect` instead |
 | `bare-kill` | package scripts, hooks | `kill`, `pkill`, `killall` (also by path), and docker/podman/compose `stop`, `kill`, `rm`, `down`, `restart`, `pause`, found after global options too (`docker --context x stop y`) |

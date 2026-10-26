@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, validateEntry, connectAllowed } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor, programName, portLockName, validateEntry, connectMatch, placeholderOk } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -15,7 +15,7 @@ const STATE = path.join(root, 'xdg-state');
 // docker and podman stubs come first on PATH, so no test can reach a real container engine; the stub records any call.
 const FAKEBIN = path.join(root, 'fakebin'), ENGINE_CALLED = path.join(root, 'engine-called');
 fs.mkdirSync(FAKEBIN);
-for (const b of ['docker', 'podman', 'docker-compose', 'podman-compose']) fs.writeFileSync(path.join(FAKEBIN, b), `#!/bin/sh\necho "$0 $*" >> '${ENGINE_CALLED}'\n`, { mode: 0o700 });
+for (const b of ['docker', 'podman', 'docker-compose', 'podman-compose', 'deno']) fs.writeFileSync(path.join(FAKEBIN, b), `#!/bin/sh\necho "$0 $*" >> '${ENGINE_CALLED}'\n`, { mode: 0o700 });
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 const started = [];
 const env = agent => ({ ...process.env, PATH: `${FAKEBIN}:${process.env.PATH}`, XDG_STATE_HOME: STATE, XDG_CACHE_HOME: path.join(root, 'xdg-cache'), ENG_AGENT_ID: agent ?? '', T3_THREAD_ID: '',
@@ -56,13 +56,16 @@ owner = "${id}-lead"
 state = ".eng/state"
 ports = [${ports}]
 
+[placeholders]
+file = { type = "path" }
+
 [[services]]
 name = "api"
 command = ["node", "server.mjs"]
 port_env = "PORT"
 health = "/version"
 env = { LOG_LEVEL = "debug" }
-connect = [["node", "client.mjs"], ["docker", "compose", "-p", "${id}", "ps"], ["docker", "compose", "-p", "${id}_test", "ps"], ["tool"]]
+connect = [["node", "client.mjs", "version"], ["node", "client.mjs", "print", "ADMIN_TOKEN", "PIN"], ["node", "client.mjs", "read", "{file}"], ["docker", "compose", "-p", "${id}", "ps"], ["docker", "compose", "-p", "${id}_test", "ps", "-a"], ["docker", "compose", "-p", "${id}", "up"]]
 
 [[services]]
 name = "worker"
@@ -107,7 +110,7 @@ test('identity file: the starter template parses; default names, default ports, 
     `['sh', '-c', 'docker com""pose -p beta down']`, `["docker", "compose", "-p", "p", "ps", "-vpbeta-project"]`, `['node', 'client.cjs', '"--token"', 'v']`];
   const errs = parseIdentity(base + `[[services]]\nname = "db"\ncommand = ["db"]\nconnect = [${entries.join(', ')}]\n`).errors.join('\n');
   for (let k = 0; k < entries.length; k++) assert.match(errs, new RegExp(`connect\\[${k}\\] refused`), `identity validation refuses connect[${k}] ${entries[k]}`);
-  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect = ["node"]\n', /connect must be a list of argv prefixes/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect = ["node"]\n', /connect must be a list of full argv arrays/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["convex", "dev", "--deployment-name", "anonymous-agent"]\n', /command uses a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--port", "3210"]\n', /command uses the shared default port 3210/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect_env = { URL = "http://127.0.0.1:6791" }\n', /connect_env.URL uses the shared default port 6791/);
@@ -203,8 +206,9 @@ test('run-service refuses a service whose argv carries a secret value starting w
 });
 
 test('repo check: eng connect commands must be listed; direct docker, kill and inline code are warned', () => {
-  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["docker", "compose", "-p", "p", "ps"], ["npx", "convex", "codegen"]]\n';
+  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["docker", "compose", "-p", "p", "ps"], ["docker", "compose", "-p", "p", "up"], ["npx", "convex", "codegen"]]\n';
   const scripts = {
+    v: 'eng connect x -- docker compose -p p up --remove-orphans --force-recreate', w: 'eng connect x -- deno eval Deno.kill(1)', y: 'eng connect x -- docker compose -p p up',
     a: 'eng connect x -- docker compose -p p ps', b: 'eng connect x -- docker compose -p p ps --env-file -pp', c: 'eng connect x -- docker compose -p p ps -vpbeta-project',
     d: 'eng connect x -- docker compose -p p down', e: 'docker compose -p p ps', f: 'docker --context x stop y', g: 'node -e process.kill(99999999,9)', h: "env -S 'sh -c pwd'",
     i: `sh -c 'docker com""pose -p beta down'`, j: `sh -c 'node client.cjs "--token" "$API_TOKEN"'`, k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen',
@@ -213,13 +217,13 @@ test('repo check: eng connect commands must be listed; direct docker, kill and i
   };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
   const by = rule => hits.filter(h => h.rule === rule).map(h => h.message.match(/script "(\w)"/)[1]).sort();
-  assert.deepEqual(by('not-allowlisted'), ['b', 'c', 'd', 'q', 'r', 's'], 'unlisted commands, extra selectors and short clusters after a listed prefix');
+  assert.deepEqual(by('not-allowlisted'), ['b', 'c', 'd', 'q', 'r', 's', 'v', 'w'], 'only full listed argv passes: extra flags, selectors and clusters never do');
   assert.deepEqual(by('bare-service-command'), ['e', 'f', 'i', 'k', 'o', 'u'], 'docker, podman, compose and convex go through eng connect');
   assert.deepEqual(by('bare-kill'), ['f', 'i', 'm', 'n', 'o', 'u'], 'stop, kill, rm and down are found after docker global options too');
-  assert.deepEqual(by('inline-code'), ['g', 'h', 'i', 'j', 'q']);
-  assert.deepEqual(by('shell-string'), ['i', 'j'], 'quoted or expanded lines around compose or a secret flag');
+  assert.deepEqual(by('inline-code'), ['g', 'h', 'i', 'j', 'q', 'w']);
+  assert.deepEqual(by('shell-string'), ['i', 'j', 'w'], 'quoted or expanded lines around compose or a secret flag');
   assert.deepEqual(by('secret-argv'), ['j'], 'a quoted secret flag is still found');
-  assert.equal(hits.filter(h => ['a', 'l', 't'].includes(h.message.match(/script "(\w)"/)?.[1])).length, 0, 'listed and helper commands pass');
+  assert.equal(hits.filter(h => ['a', 'l', 't', 'y'].includes(h.message.match(/script "(\w)"/)?.[1])).length, 0, 'listed and helper commands pass');
   const hook = isolationFindings([{ path: '.githooks/pre-push', text: '#!/bin/sh\ndocker compose -p p ps\ndocker \\\n  compose -p beta down\n' }], id);
   assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:2', 'bare-service-command:3', 'bare-kill:3'], 'a \\ continuation cannot hide a compose call');
   const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`).replaceAll('"-p", "p"', `"-p", "${pid}"`)).map(h => h.rule));
@@ -228,9 +232,9 @@ test('repo check: eng connect commands must be listed; direct docker, kill and i
   assert.deepEqual(secret.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:secret-argv']);
 });
 
-test('allowlist entries: exact program and argv prefix; inline code, wrappers, kill and unapproved docker subcommands cannot be listed', () => {
+test('allowlist entries: the full argv with typed placeholders; inline code, wrappers, kill and unapproved docker subcommands cannot be listed', () => {
   const bad = v => validateEntry(v, 'alpha').length > 0;
-  for (const v of [['node', '-e', 'process.kill(99999999,9)'], ['node'], ['python3', '-c', 'x'], ['env', '-S', 'sh -c pwd'], ['env', 'X=1', 'node', 'a.mjs'], ['sh', '-c', 'docker com""pose -p beta down'],
+  for (const v of [['deno', 'eval'], ['bun', 'repl'], ['node', '-e', 'process.kill(99999999,9)'], ['node'], ['python3', '-c', 'x'], ['env', '-S', 'sh -c pwd'], ['env', 'X=1', 'node', 'a.mjs'], ['sh', '-c', 'docker com""pose -p beta down'],
     ['bash', '-lc', 'x'], ['fish', '--command', 'x'], ['xargs', 'kill'], ['kill', '1'], ['/usr/bin/pkill', 'x'], ['docker', 'stop', 'y'], ['docker', '--context', 'x', 'stop', 'y'], ['docker', '-H', 'h', 'rm', 'y'],
     ['docker', 'exec', 'other', 'sh'], ['docker', 'com""pose', '-p', 'alpha', 'ps'], ['docker', 'compose', '-p', 'alpha', 'down'], ['docker', 'compose', '-p', 'alpha', 'restart'], ['docker', '--bogus', 'ps']])
     assert.equal(bad(v), true, `refused: ${JSON.stringify(v)}`);
@@ -246,11 +250,18 @@ test('allowlist entries: exact program and argv prefix; inline code, wrappers, k
   assert.equal(bad(['node', 'client.cjs', '"--token"', 'v']), true, 'a literal quoted secret flag is still a secret flag');
   for (const v of [['node', 'client.mjs'], ['npx', 'convex', 'codegen'], ['docker', 'compose', '-p', 'alpha', 'ps', '-a'], ['docker', 'compose', '-palpha_x', 'logs', '--tail', '5'], ['docker', 'ps'], ['./scripts/backend.sh', '--port', '{port}']])
     assert.equal(bad(v), false, `allowed: ${JSON.stringify(v)}`);
-  const list = [['node', 'client.mjs'], ['docker', 'compose', '-p', 'alpha', 'ps']];
-  assert.ok(connectAllowed(['node', 'client.mjs', 'version'], list));
-  assert.ok(connectAllowed(['docker', 'compose', '-p', 'alpha', 'ps', '-a'], list));
-  for (const v of [['node', '-e', 'x'], ['/usr/bin/node', 'client.mjs'], ['./node', 'client.mjs'], ['node', 'client.mjs.bak'], ['docker', 'compose', '-p', 'alpha'], ['env', '-S', 'sh -c pwd']])
-    assert.equal(connectAllowed(v, list), undefined, `not listed: ${JSON.stringify(v)}`);
+  const list = [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', '{file}'], ['node', 'client.mjs', 'tail', '{n}'], ['node', 'client.mjs', 'ping', '{svc}', '{p}'], ['deno', 'eval']];
+  const ph = { file: { type: 'path' }, n: { regex: '[0-9]{1,3}' }, svc: { type: 'service' }, p: { type: 'port' } };
+  const ctx = { ports: [41000, 41010], services: ['api', 'db'], inside: v => !v.startsWith('link') };
+  const match = v => connectMatch(v, list, ph, ctx);
+  for (const v of [['node', 'client.mjs', 'version'], ['docker', 'compose', '-p', 'alpha', 'up'], ['node', 'client.mjs', 'read', 'data/x.json'], ['node', 'client.mjs', 'tail', '25'], ['node', 'client.mjs', 'ping', 'db', '41003']])
+    assert.ok(match(v), `listed: ${JSON.stringify(v)}`);
+  for (const v of [['node', 'client.mjs', 'version', '--x'], ['node', 'client.mjs'], ['node', '-e', 'x'], ['/usr/bin/node', 'client.mjs', 'version'], ['./node', 'client.mjs', 'version'],
+    ['docker', 'compose', '-p', 'alpha', 'up', '--remove-orphans', '--force-recreate'], ['deno', 'eval', 'Deno.kill(1)'], ['env', '-S', 'sh -c pwd'],
+    ['node', 'client.mjs', 'read', '../other/x'], ['node', 'client.mjs', 'read', '/etc/passwd'], ['node', 'client.mjs', 'read', '~/x'], ['node', 'client.mjs', 'read', 'link/x'], ['node', 'client.mjs', 'read', '--token'],
+    ['node', 'client.mjs', 'tail', '1000'], ['node', 'client.mjs', 'tail', '5; kill 1'], ['node', 'client.mjs', 'ping', 'beta', '41003'], ['node', 'client.mjs', 'ping', 'db', '3210'], ['node', 'client.mjs', 'ping', 'db', '-1']])
+    assert.equal(match(v), undefined, `not listed: ${JSON.stringify(v)}`);
+  assert.equal(placeholderOk('-x', { regex: '.*' }, ctx), false, 'a placeholder value never starts with -');
 });
 
 test('repo check: quoted secret flags and shell strings are warned', () => {
@@ -389,7 +400,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.status, 0, out(r));
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
-  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; the command carries --admin-key on argv/);
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; that command is not listed/);
   // Only commands listed in connect = [...] run, matched on the exact program and a listed argv prefix.
   const refusedConnect = [
     ['node', '-e', 'process.kill(99999999,9)'], ['env', '-S', 'sh -c pwd'], ['docker', '--context', 'x', 'stop', 'y'], ['docker', 'stop', 'y'],
@@ -398,7 +409,10 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
     ['docker', 'compose', '-p', 'alpha', 'ps', '--env-file', '-palpha'], ['docker', 'compose', '-p', 'alpha', 'ps', '--env-file=-palpha'],
     ['docker', 'compose', '-p', 'alpha', 'ps', '-vpbeta-project'], ['docker', 'compose', '-p', 'alpha', 'ps', '-vpother2'], ['docker', 'compose', '-p', 'alpha', 'ps', '-f/tmp/other.yml'],
     ['docker', 'compose', '-p', 'alpha', 'ps', '-p', 'beta'], ['kill', '1'], ['true'],
+    ['docker', 'compose', '-p', 'alpha', 'up', '--remove-orphans', '--force-recreate'], ['deno', 'eval', 'Deno.kill(99999999)'], ['node', 'client.mjs', 'version', '--extra'],
+    ['node', 'client.mjs', 'read', '../beta/server.mjs'], ['node', 'client.mjs', 'read', '/etc/hostname'], ['node', 'client.mjs', 'read', '--token'], ['node', 'client.mjs', 'read', 'escape/server.mjs'],
   ];
+  fs.symlinkSync(beta, path.join(alpha, 'escape'));
   for (const cmd of refusedConnect) {
     r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
     assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}: ${out(r)}`);
@@ -406,15 +420,17 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
     assert.doesNotMatch(out(r), /API_TOKEN|beta-project|other\.yml|99999999/, 'refusals never echo the command');
   }
   assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', '-e', 'process.kill(99999999,9)')), /not listed in connect = \[\.\.\.\] for api/);
-  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', 'ps', '-vpbeta-project')), /a compose command must name this project/, 'extra args after a listed prefix are still checked');
-  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', '"--token"', 'v')), /refusing; the command carries --token on argv/, 'a literal quoted secret flag is still a secret flag');
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha', 'ps', '-vpbeta-project')), /not listed/, 'an argument that is not listed can never appear');
+  assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', '"--token"', 'v')), /not listed/);
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'read', 'client.mjs');
+  assert.equal(r.status, 0, `a path placeholder inside the checkout is accepted: ${out(r)}`);
   assert.ok(!fs.existsSync(ENGINE_CALLED), 'no refused command reached the (stub) container engine');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'docker', 'compose', '-p', 'alpha_test', 'ps', '-a');
   assert.equal(r.status, 0, `a listed compose call runs: ${out(r)}`);
   assert.match(fs.readFileSync(ENGINE_CALLED, 'utf8'), /docker compose -p alpha_test ps -a/, 'it reached the stub, not a real engine');
   fs.rmSync(ENGINE_CALLED);
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--secret-key', 'v');
-  assert.match(out(r), /refusing; the command carries --secret-key on argv/);
+  assert.match(out(r), /refusing; that command is not listed/);
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\nPIN=q7z\n', { mode: 0o600 });
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'print', 'ADMIN_TOKEN', 'PIN');
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
@@ -539,6 +555,24 @@ test('a paused lock holder keeps the port lock: no start can break it by age', a
   r = spawnSync(process.execPath, [ENG, 'run-service', 'sleeper'], { cwd: dir, encoding: 'utf8', env: waitEnv });
   assert.equal(r.status, 0, `the kernel frees the lock when its holder exits: ${out(r)}`);
   assert.equal(eng(dir, 'agent-l', 'stop', 'sleeper').status, 0);
+});
+
+test('a listed ["deno", "eval"] cannot be used to kill another project\'s service', async () => {
+  const victim = project('sigma', '47165, 47169');
+  fs.appendFileSync(path.join(victim, '.eng/project.toml'), '\n[[services]]\nname = "sleeper"\ncommand = ["sleep", "60"]\n');
+  assert.equal(eng(victim, 'agent-s', 'run-service', 'sleeper').status, 0);
+  const pid = readRecord(victim, 'sigma', 'sleeper').pid;
+  for (const [id, list] of [['nu', '[["deno", "eval"]]'], ['xi', '[["deno", "run", "client.ts"]]']]) {
+    const dir = project(id, id === 'nu' ? '47170, 47174' : '47175, 47179');
+    fs.writeFileSync(path.join(dir, '.eng/project.toml'), fs.readFileSync(path.join(dir, '.eng/project.toml'), 'utf8').replace(/connect = \[\[.*\]\]\n/, `connect = ${list}\n`));
+    for (const cmd of [['deno', 'eval', `Deno.kill(${pid}, "SIGKILL")`], ['deno', 'eval'], ['deno', 'run', 'client.ts', '--allow-run', `kill.ts`]]) {
+      const r = eng(dir, `agent-${id}`, 'connect', 'api', '--', ...cmd);
+      assert.equal(r.status, 1, `${id} ${JSON.stringify(cmd)}: ${out(r)}`);
+    }
+  }
+  assert.ok(alive(pid), 'the other project\'s service is untouched');
+  assert.ok(!fs.existsSync(ENGINE_CALLED), 'deno never ran');
+  assert.equal(eng(victim, 'agent-s', 'stop', 'sleeper').status, 0);
 });
 
 test('stop never signals a reused pid: the start time must match the record', () => {
