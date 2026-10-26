@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -91,6 +91,19 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
   assert.deepEqual(argvSecrets(['env', 'API_TOKEN=v', 'client']), ['API_TOKEN=']);
   assert.deepEqual(argvSecrets(['sh', '-c', 'env LOG=1 API_TOKEN=v client']), ['API_TOKEN= (inside "env ...")']);
   assert.deepEqual(argvSecrets(['env', 'LOG_LEVEL=debug', 'client']), []);
+});
+
+test('redactor: a secret split across output chunks is never forwarded, in whole or in part', () => {
+  const r = redactor(['s3cretVALUE', 'ab']);
+  const parts = ['x s3cr', 'etVAL', 'UE y s3cretVALUE', ' z s3c'].map(c => r.push(c));
+  parts.push(r.end());
+  assert.equal(parts.join(''), 'x [redacted] y [redacted] z s3c');
+  assert.ok(parts.every(p => !/s3cretV|etVAL|VALUE/.test(p)), 'no chunk carries a fragment longer than the held-back tail');
+});
+
+test('repo check: compose block-scalar commands are scanned across lines', () => {
+  for (const style of ['>-', '|'])
+    assert.deepEqual(isolationFindings([{ path: 'compose.yml', text: `name: p-x\nservices:\n  a:\n    command: ${style}\n      backend\n      --instance-secret\n      abc\n` }], null).map(h => h.rule), ['identity-missing', 'secret-argv'], style);
 });
 
 test('repo check: "default" as a name and secret flags split across compose command lines', () => {
@@ -216,6 +229,13 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.stdout.trim(), 'alpha true');
   assert.match(r.stderr, /touched alpha\/api pid \d+ port \d+ \(verified before and after/);
   assert.match(out(eng(alpha, 'agent-a', 'connect', 'api', '--', 'tool', '--admin-key', 'abc')), /refusing; the command carries --admin-key on argv/);
+  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'ADMIN_TOKEN=alpha-admin-t0ken\n', { mode: 0o600 });
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "console.log('out', process.env.ADMIN_TOKEN); console.error('err', process.env.ADMIN_TOKEN); process.exit(3)");
+  fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env'));
+  assert.equal(r.status, 3, 'connect keeps the command exit code');
+  assert.equal(r.stdout.trim(), 'out [redacted]');
+  assert.match(r.stderr, /^err \[redacted\]$/m);
+  assert.doesNotMatch(out(r), /t0ken/, 'connect never forwards a loaded secret');
 
   // A record for alpha's process placed where beta looks: beta's helper must refuse to signal or connect to it.
   fs.mkdirSync(path.dirname(recordPath(beta, 'beta', 'api')), { recursive: true, mode: 0o700 });
