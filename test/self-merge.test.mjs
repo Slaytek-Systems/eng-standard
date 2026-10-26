@@ -390,8 +390,9 @@ test('verifier_providers: trust comes only from config; a missing config falls b
   assert.match(decide(H, hi({ verdicts: [V(), DS2] }), custom, late).reason, /have openai$/, 'a provider the repo does not list does not count');
   assert.match(decide(H, hi({ verdicts: [V(), V({ by: 'liar', family: 'acme-1', provider: 'openai' })] }), custom, late).reason, /have openai$/, 'a provider that contradicts the family is none');
   assert.deepEqual([...verifierProviders({ verifier_providers: { trusted: ['openai'] } }).families], [...verifierProviders(null).families], 'an omitted families map falls back to the default');
-  for (const bad of [null, [], 'x', { trusted: null }, { trusted: [] }, { trusted: 'openai' }, { trusted: [''] }, { families: null }, { families: [] }, { families: { gpt: '' } }])
+  for (const bad of [null, [], 'x', { trusted: null }, { trusted: [] }, { trusted: 'openai' }, { trusted: [''] }, { families: null }, { families: [] }, { families: { gpt: '' } }, new Date(0), { families: new Date(0) }])
     assert.throws(() => selfMergeConfig({ verifier_providers: bad }), /verifier_providers/, `${JSON.stringify(bad)} fails closed instead of falling back to the default`);
+  assert.throws(() => selfMergeConfig(YAML.parse('verifier_providers: { families: !!timestamp 2026-10-26 }')), /verifier_providers.families/, 'a YAML timestamp is not a families mapping');
   assert.throws(() => autoConfig({ merge: { auto: { second_provider_paths: ['x'] } }, verifier_providers: { trusted: null } }), /verifier_providers/, 'eng merge gate fails closed too');
   for (const family of ['constructor', '__proto__', 'toString']) assert.equal(verifierProviders(null).families.get(family), undefined, family);
 });
