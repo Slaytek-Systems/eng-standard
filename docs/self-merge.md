@@ -47,7 +47,9 @@ supersedes another). The repo is public, so anyone can post a comment that looks
   the providers whose verdicts count. `families` maps a model family to its provider. Unset, the code falls back to
   the default (`DEFAULT_VERIFIER_PROVIDERS` in `lib/self-merge.mjs`): openai, xai, deepseek, moonshot, zhipu and
   anthropic, with families gpt/codex, grok, deepseek, kimi, glm and claude. Google is not on it, so a google or gemini
-  verdict counts toward no provider. `eng verdict --provider` records any string; only this config decides trust.
+  verdict counts toward no provider. Only an omitted key falls back: a `verifier_providers`, `trusted` or `families`
+  that is present but null or malformed is a config error, so a typo cannot widen trust. `eng verdict --provider`
+  records any string; only this config decides trust.
 - When `ship.self_merge.verifier_logins` (login to provider, in main's `eng.config.yml`) is set, only those logins
   count. The provider is the login's, whatever the comment claims, and each login is one verifier for superseding. A
   login mapped to a provider not in `trusted` is a config error.

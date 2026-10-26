@@ -7,6 +7,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { autoConfig } from '../lib/merge-queue.mjs';
 import { selfMergeConfig, decide, verdictBody, parseVerdicts, authorsFrom, isAutoRevert, trusted, verifierProviders, DEFAULT_VERIFIER_PROVIDERS, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -389,7 +390,8 @@ test('verifier_providers: trust comes only from config; a missing config falls b
   assert.match(decide(H, hi({ verdicts: [V(), DS2] }), custom, late).reason, /have openai$/, 'a provider the repo does not list does not count');
   assert.match(decide(H, hi({ verdicts: [V(), V({ by: 'liar', family: 'acme-1', provider: 'openai' })] }), custom, late).reason, /have openai$/, 'a provider that contradicts the family is none');
   assert.deepEqual([...verifierProviders({ verifier_providers: { trusted: ['openai'] } }).families], [...verifierProviders(null).families], 'an omitted families map falls back to the default');
-  for (const bad of [[], 'x', { trusted: [] }, { trusted: 'openai' }, { trusted: [''] }, { families: [] }, { families: { gpt: '' } }])
-    assert.throws(() => selfMergeConfig({ verifier_providers: bad }), /verifier_providers/, JSON.stringify(bad));
+  for (const bad of [null, [], 'x', { trusted: null }, { trusted: [] }, { trusted: 'openai' }, { trusted: [''] }, { families: null }, { families: [] }, { families: { gpt: '' } }])
+    assert.throws(() => selfMergeConfig({ verifier_providers: bad }), /verifier_providers/, `${JSON.stringify(bad)} fails closed instead of falling back to the default`);
+  assert.throws(() => autoConfig({ merge: { auto: { second_provider_paths: ['x'] } }, verifier_providers: { trusted: null } }), /verifier_providers/, 'eng merge gate fails closed too');
   for (const family of ['constructor', '__proto__', 'toString']) assert.equal(verifierProviders(null).families.get(family), undefined, family);
 });
