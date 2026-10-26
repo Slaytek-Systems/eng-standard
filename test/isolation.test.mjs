@@ -162,9 +162,9 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', w: 'docker compose --env-file "settings -p p" down', r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps', j: 'docker compose -p p_local -p beta down', q: 'docker compose -p p_local ps; docker compose down', s: 'docker compose -p p -pbeta down', t: 'docker compose -p p --project-name=beta down', u: 'docker compose -p $PROJECT up', v: 'docker compose --project-name=p_x -pp up', w: 'docker compose --env-file "settings -p p" down', x: 'docker com""pose -p beta down', y: "npx con''vex dev", z: "/bin/ki''ll 1", r: "sh -c 'docker compose -p p ps && docker compose -p beta down'", k: './node_modules/.bin/convex dev', l: './node_modules/.bin/eng connect x -- npx convex codegen' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
-  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'd', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u', 'w'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
+  assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'd', 'f', 'g', 'j', 'k', 'q', 'r', 's', 't', 'u', 'w', 'x', 'y', 'z'], 'global options, a second -p, a later compose call in a compound command and a path prefix do not hide it');
   const hook = isolationFindings([{ path: '.githooks/pre-push', text: '#!/bin/sh\ndocker compose -p p ps\ndocker \\\n  compose -p beta down\n' }], id);
   assert.deepEqual(hook.map(h => `${h.rule}:${h.line}`), ['bare-service-command:3'], 'a \\ continuation cannot hide a compose call');
   const kills = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { m: '/bin/kill 123', n: '/usr/bin/pkill -f x', o: '/usr/bin/docker stop x' } }, null, 2) }], id);
@@ -186,6 +186,14 @@ test('compose argv: option values are never read as selectors, and a real -p nam
   for (const opt of ['--context', '-c', '-H', '--host', '--config', '--log-level'])
     assert.equal(out(['docker', opt, '-p alpha', 'compose', 'down']), true, `engine option ${opt} value is no selector`);
   assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', '-p', 'beta']), true, 'a -p after the subcommand overrides');
+  for (const tail of [['--env-file', '-palpha'], ['--env-file=-palpha'], ['-f', '-p alpha'], ['-fx'], ['--project-directory', 'x'], ['--profile=x'], ['-pbeta'], ['--project-name=alpha'], ['-dp', 'alpha']]) {
+    assert.equal(out(['docker', 'compose', 'down', ...tail]), true, `no global selector, then ${JSON.stringify(tail)}`);
+    assert.equal(out(['docker', 'compose', '-p', 'alpha', 'down', ...tail]), true, `selector-looking or value-taking ${JSON.stringify(tail)} after the subcommand fails closed`);
+  }
+  assert.equal(out(['docker', 'compose', '-p', 'alpha', 'logs', '--tail', '5', 'web']), false, 'ordinary subcommand options are fine');
+  for (const script of ['docker com""pose -p beta down', "docker com''pose -p alpha down", 'd"ocker" compose -p alpha down', "doc'ker' compose -p alpha down", 'docker compose -p "alpha" down', 'docker ${C}pose -p beta down'])
+    assert.equal(out(['sh', '-c', script]), true, `quoted or expanded words in a shell string fail closed: ${script}`);
+  assert.equal(out(['sh', '-c', 'docker compose -p alpha ps']), false, 'a plain shell string with a real selector is fine');
   assert.equal(out(['docker', 'compose', '-p', 'alpha', '--unknown', 'x', 'down']), true, 'an unclassified option fails closed');
   assert.equal(out(['docker', '--unknown', 'compose', '-p', 'alpha', 'down']), true);
   assert.equal(out(['env', 'COMPOSE_PROJECT_NAME=alpha', 'docker', 'compose', 'down']), true, 'the env var alone is not enough');
@@ -341,7 +349,7 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
     assert.equal(r.status, 1, `refused: ${JSON.stringify(cmd)}`);
     assert.match(out(r), /refusing; a compose command must name this project/);
   }
-  for (const cmd of [['docker', 'compose', '--env-file', 'settings -p alpha', 'down'], ['docker', 'compose', '-f', '-p alpha', 'down'], ['docker', 'compose', '--project-directory=-palpha', 'down']]) {
+  for (const cmd of [['docker', 'compose', 'down', '--env-file', '-palpha'], ['sh', '-c', 'docker com""pose -p beta down'], ['sh', '-c', "d'ocker' compose -p alpha down"], ['docker', 'compose', '--env-file', 'settings -p alpha', 'down'], ['docker', 'compose', '-f', '-p alpha', 'down'], ['docker', 'compose', '--project-directory=-palpha', 'down']]) {
     r = eng(alpha, 'agent-a', 'connect', 'api', '--', ...cmd);
     assert.equal(r.status, 1, `a value that looks like a selector is not one: ${JSON.stringify(cmd)}`);
   }
