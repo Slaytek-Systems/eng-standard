@@ -38,6 +38,7 @@ function project(id, ports) {
 [project]
 id = "${id}"
 owner = "${id}-lead"
+state = ".eng/state"
 ports = [${ports}]
 
 [[services]]
@@ -66,11 +67,14 @@ test('identity file: the starter template parses; default names, default ports, 
   const tpl = parseIdentity(fs.readFileSync(path.join(PKG, 'templates/isolation/project.toml'), 'utf8'));
   assert.deepEqual(tpl.errors, []);
   assert.equal(tpl.identity.services[0].name, 'backend');
-  const base = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nports = [41000, 41010]\n';
+  const base = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n';
   const bad = (text, re) => assert.match(parseIdentity(text).errors.join('\n'), re, text);
   bad(base.replace('"p"', '"anonymous-agent"'), /project.id "anonymous-agent" is a shared default name/);
   bad(base.replace('[41000, 41010]', '[3200, 3300]'), /includes the shared default port\(s\) 3210, 3211/);
-  bad(base + 'state = "~/.convex"\n', /must be a path inside the checkout/);
+  bad(base.replace('".eng/state"', '"~/.convex"'), /must be a path inside the checkout/);
+  bad(base.replace('state = ".eng/state"\n', ''), /project.state .* must be a path inside the checkout/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nconnect_env = { ENG_SERVICE_URL = "http://elsewhere" }\n', /connect_env.ENG_SERVICE_URL is set by eng/);
+  bad(base + '[[services]]\nname = "db"\ncommand = ["db"]\nenv = { HOME = "/tmp" }\n', /env.HOME is set by eng/);
   bad(base.replace('schema = 1\n', ''), /schema must be 1/);
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
@@ -82,6 +86,15 @@ test('identity file: the starter template parses; default names, default ports, 
 test('argv secrets: flags with values are found; -file flags and --no- switches pass', () => {
   assert.deepEqual(argvSecrets(['x', '--instance-secret', 'v', '--api-key=v', '--token']), ['--instance-secret', '--api-key']);
   assert.deepEqual(argvSecrets(['x', '--token-file', '/run/t', '--no-password', 'pos', '--password=']), []);
+  assert.equal(argvSecrets(['bash', '-c', 'exec client --token "$API_TOKEN"']).length, 1, 'a shell wrapper forwarding a secret flag is caught');
+});
+
+test('repo check: "default" as a name and secret flags split across compose command lines', () => {
+  const hits = isolationFindings([
+    { path: 'compose.yml', text: 'name: p-local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
+    { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port' } }, null, 2) },
+  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n');
+  assert.deepEqual(hits.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:default-name']);
 });
 
 function repo(files) {
@@ -117,6 +130,11 @@ test('eng isolation check: warns on every default and bare command by default, f
 
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), cfg.replace(/mode: fail/, 'mode: loud'));
   assert.match(out(eng(dir, null, 'isolation', 'check')), /isolation.mode must be warn or fail/);
+
+  const marker = path.join(root, 'injected');
+  r = eng(dir, null, 'isolation', 'check', '--config-from', `HEAD; touch ${marker}; #`);
+  assert.equal(r.status, 1);
+  assert.ok(!fs.existsSync(marker), '--config-from is never run through a shell');
 });
 
 test('eng isolation check: a repo that wraps its commands and names its state passes', () => {
@@ -140,6 +158,25 @@ test('run-service refuses without an agent identity and with a loose secrets fil
   assert.equal(r.status, 1);
   assert.match(out(r), /has mode 644; secrets files must be 0600/);
   assert.ok(!fs.existsSync(recordPath(alpha, 'alpha', 'api')), 'no record after a refusal');
+
+  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.env'), 'API_SECRET=alpha-s3cret-value\nHOME=/tmp/shared\n', { mode: 0o600 });
+  assert.match(out(eng(alpha, 'agent-a', 'run-service', 'api')), /secrets may not set HOME; eng sets them/);
+  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.env'), 'API_SECRET=alpha-s3cret-value\n', { mode: 0o600 });
+});
+
+test('run-service refuses a symlinked state dir and starts nothing when it cannot record ownership', async () => {
+  const gamma = project('gamma', '47120, 47124'), outside = fs.mkdtempSync(path.join(root, 'outside-'));
+  fs.symlinkSync(outside, path.join(gamma, '.eng/state'));
+  assert.match(out(eng(gamma, 'agent-g', 'run-service', 'api')), /\.eng\/state is a symlink/);
+  assert.deepEqual(fs.readdirSync(outside), [], 'nothing written through the symlink');
+  fs.rmSync(path.join(gamma, '.eng/state'));
+
+  const ro = path.join(root, 'ro-state'); fs.mkdirSync(ro, { mode: 0o500 });
+  const r = spawnSync(process.execPath, [ENG, 'run-service', 'api'], { cwd: gamma, encoding: 'utf8', env: { ...env('agent-g'), XDG_STATE_HOME: ro } });
+  fs.chmodSync(ro, 0o700);
+  assert.equal(r.status, 1, out(r));
+  await new Promise(res => setTimeout(res, 300));
+  for (let p = 47120; p <= 47124; p++) await assert.rejects(fetch(`http://127.0.0.1:${p}/version`), `no unrecorded service left on ${p}`);
 });
 
 test('two synthetic projects: own records, scrubbed env, secrets off argv, cross-project and non-starter refusals', async () => {
@@ -158,6 +195,8 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(seen.home, path.join(fs.realpathSync(alpha), '.eng/state/api'));
   assert.doesNotMatch(fs.readFileSync(`/proc/${rec.pid}/cmdline`, 'utf8'), /s3cret/, 'secret not on argv');
   assert.doesNotMatch(out(r), /s3cret/);
+  assert.ok(!fs.existsSync(path.join(alpha, '.eng/state/api/service.log')), 'raw output is not persisted when secrets are loaded');
+  assert.match(r.stdout, /output not kept \(secrets loaded\)/);
   assert.match(out(eng(alpha, 'agent-a', 'run-service', 'api')), /alpha\/api is already running/);
 
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', process.execPath, '-e', "fetch(process.env.ENG_SERVICE_URL + '/version').then(r => r.json()).then(j => console.log(j.project, process.env.CONVEX_URL === undefined))");
