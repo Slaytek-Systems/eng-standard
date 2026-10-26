@@ -1,5 +1,5 @@
 // Merge rule v0.10.0 (option 2): strict mode (up to date + PASS bound to the exact head) by default, merge queue (PASS bound
-// to the queued patch-id) where the repo supports it; second provider for gate/auth/billing; auto-revert provenance;
+// to the queued patch-id) where the repo supports it; N distinct identities for gate/auth/billing; auto-revert provenance;
 // verifier identity; stuck and restart; and the eng merge / eng verdict --pr CLI against a fake gh.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,9 +18,9 @@ const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const ROOTCFG = path.resolve(new URL('../templates/merge-auto/eng.config.yml', import.meta.url).pathname);
 const q = autoConfig(YAML.parse(fs.readFileSync(ROOTCFG, 'utf8')));
 const qq = { ...q, mode: 'queue' };
-const authors = authorsFrom(['feat\n\nAgent: builder-1\nAgent-Family: claude'], ['t@t']);
+const authors = authorsFrom(['feat\n\nAgent: builder-1'], ['t@t']);
 const H = 'a'.repeat(40);
-const V = (o = {}) => ({ patch_id: 'p1', sha: H, result: 'PASS', by: 'verifier-1', family: 'gpt', provider: 'openai', at: '2026-10-24T01:00:00Z', ...o });
+const V = (o = {}) => ({ patch_id: 'p1', sha: H, result: 'PASS', by: 'verifier-1', at: '2026-10-24T01:00:00Z', ...o });
 const head = (o = {}) => ({ kind: 'head', sha: H, upToDate: true, ...o });
 const patch = { kind: 'patch', patchId: 'p1' };
 
@@ -36,8 +36,8 @@ test('strict (default): the PASS must be for the exact head and the branch must 
 test('queue: the PASS binds the patch-id; author verdicts never count; the latest independent verdict decides', () => {
   let d = gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [], authors, q: qq });
   assert.equal(d.need, 'verdict');
-  d = gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [V({ by: 'builder-1' }), V({ family: 'claude', by: 'x' }), V({ patch_id: 'p0' })], authors, q: qq });
-  assert.equal(d.pass, false); assert.match(d.reasons.join(), /builder-1 \(gpt\) wrote or shares a family/);
+  d = gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [V({ by: 'builder-1' }), V({ by: 't@t' }), V({ patch_id: 'p0' })], authors, q: qq });
+  assert.equal(d.pass, false); assert.match(d.reasons.join(), /builder-1 is an author of this change.*t@t is an author of this change/);
   assert.equal(gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [V({ sha: 'c'.repeat(40) })], authors, q: qq }).pass, true, 'queue mode binds the patch, not the head');
   d = gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [V(), V({ by: 'verifier-2', result: 'FAIL' })], authors, q: qq });
   assert.equal(d.need, 'fix'); assert.equal(d.fail.by, 'verifier-2');
@@ -45,28 +45,34 @@ test('queue: the PASS binds the patch-id; author verdicts never count; the lates
   assert.equal(gateDecision({ bind: patch, files: ['docs/a.md'], verdicts: [V({ result: 'FAIL' }), V()], authors, q: qq }).pass, true, 'the same verifier re-reviewing after a fix can clear its FAIL');
 });
 
-test('second provider: gate, auth and billing paths need PASSes from two providers other than the authors', () => {
+test('high-risk paths: gate, auth and billing paths need PASSes from N distinct independent identities', () => {
+  assert.equal(q.high_risk_verifiers, 2);
   for (const f of ['.github/workflows/ci.yml', 'bin/eng.mjs', 'eng.config.yml', 'src/auth/login.ts', 'app/billing/plan.ts', 'lib/merge-queue.mjs', 'lib/hygiene.mjs']) {
-    const one = gateDecision({ bind: head(), files: [f], verdicts: [V(), V({ by: 'verifier-3' })], authors, q });
-    assert.equal(one.pass, false, f); assert.equal(one.need, 'second-provider');
+    const one = gateDecision({ bind: head(), files: [f], verdicts: [V(), V({ at: '2026-10-24T01:05:00Z' })], authors, q });
+    assert.equal(one.pass, false, f); assert.equal(one.need, 'verifiers', 'one identity twice is one verifier');
   }
-  const two = gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'gemini-1', family: 'gemini', provider: 'google' })], authors, q });
-  assert.equal(two.pass, true, two.reasons.join()); assert.match(two.reasons.at(-1), /openai \+ google/);
-  assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'c2', family: 'claude-x', provider: 'anthropic' })], authors, q }).pass, false, 'the author provider does not count as the second');
+  const two = gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'verifier-2' })], authors, q });
+  assert.equal(two.pass, true, two.reasons.join()); assert.match(two.reasons.at(-1), /high-risk rule met: 2 distinct independent identities/);
+  assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'builder-1' })], authors, q }).pass, false, 'an author identity does not count');
+  const q3 = { ...q, high_risk_verifiers: 3 };
+  assert.match(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'verifier-2' })], authors, q: q3 }).reasons.at(-1), /need PASSes from 3 independent verifiers with distinct identities \(have 2\)/);
+  assert.equal(gateDecision({ bind: head(), files: ['bin/eng.mjs'], verdicts: [V(), V({ by: 'verifier-2' }), V({ by: 'verifier-3' })], authors, q: q3 }).pass, true);
 });
 
-test('verifier identity: with verifier_logins only listed logins count, with their own provider (round-1 P1: impersonation)', () => {
-  const comments = [{ user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-gpt' })), created_at: '2026-10-24T01:00:00Z' },
-    { user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-gemini', family: 'gemini', provider: 'google' })), created_at: '2026-10-24T01:01:00Z' }];
-  const claimed = gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: parseVerdicts(comments), authors, q });
-  assert.equal(claimed.pass, true, 'self-declared mode trusts the claims (eng doctor flags this mode)');
-  const logins = { 'gpt-verifier-bot': 'openai', 'gemini-verifier-bot': 'google' };
+test('verifier identity: with verifier_logins only listed logins count, one identity per login (round-1 P1: impersonation)', () => {
+  const comments = [{ user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-1' })), created_at: '2026-10-24T01:00:00Z' },
+    { user: { login: 'builder' }, author_association: 'OWNER', body: verdictBody(V({ by: 'fake-2' })), created_at: '2026-10-24T01:01:00Z' }];
+  const claimed = gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: trusted(parseVerdicts(comments), null), authors, q });
+  assert.equal(claimed.pass, true, 'self-declared mode trusts the `by` claims (eng doctor flags this mode)');
+  const logins = ['verifier-bot-a', 'verifier-bot-b'];
   assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: trusted(parseVerdicts(comments), logins), authors, q }).need, 'verdict', 'claims from an unlisted login are ignored');
-  const real = [{ user: { login: 'gpt-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ provider: 'xai' })), created_at: '2026-10-24T01:00:00Z' }, { user: { login: 'gemini-verifier-bot' }, author_association: 'OWNER', body: verdictBody(V({ by: 'g', family: 'gemini' })), created_at: '2026-10-24T01:01:00Z' }];
+  const real = [{ user: { login: 'verifier-bot-a' }, author_association: 'OWNER', body: verdictBody(V()), created_at: '2026-10-24T01:00:00Z' }, { user: { login: 'verifier-bot-b' }, author_association: 'OWNER', body: verdictBody(V()), created_at: '2026-10-24T01:01:00Z' }];
   const t = trusted(parseVerdicts(real), logins);
-  assert.deepEqual(t.map(v => v.provider), ['openai', 'google'], 'the provider comes from the login, not the claim');
-  assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: t, authors, q }).pass, true);
-  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'], verifier_logins: { a: 'devin' } } }).join(), /verifier_logins/);
+  assert.deepEqual(t.map(v => v.key), ['verifier-bot-a', 'verifier-bot-b'], 'the identity is the login, not the `by` claim');
+  assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: t, authors, q }).pass, true, 'two logins are two identities even with the same `by`');
+  const authored = authorsFrom(['x\n\nAgent: builder-1'], ['verifier-bot-b']);
+  assert.equal(gateDecision({ bind: head(), files: ['src/auth/x.ts'], verdicts: t, authors: authored, q }).pass, false, 'a listed login that authored a commit is not independent');
+  for (const bad of [{ a: 'x' }, [], ['']]) assert.match(validateAuto({ method: 'squash', auto: { high_risk_paths: ['x'], verifier_logins: bad } }).join(), /verifier_logins lists the GitHub logins/, JSON.stringify(bad));
 });
 
 test('auto-revert: needs bot provenance, the auto-revert/<sha12> branch, a shipped target and an exact inverse (round-1 P1)', () => {
@@ -80,7 +86,7 @@ test('auto-revert: needs bot provenance, the auto-revert/<sha12> branch, a shipp
   assert.equal(gateDecision({ bind: head({ upToDate: false }), files: [], verdicts: [], authors, q, revert: good }).need, 'update');
 });
 
-test('round-3 openai: a FAIL beats "behind" for the restart; detectMode reads the bound App per required check', () => {
+test('round-3: a FAIL beats "behind" for the restart; detectMode reads the bound App per required check', () => {
   const d = gateDecision({ bind: head({ upToDate: false }), files: ['docs/a.md'], verdicts: [V({ result: 'FAIL' })], authors, q });
   assert.equal(d.need, 'fix', 'an exact-head FAIL is reported even when the branch is behind');
   const now = Date.now(); assert.equal(restartDecision({ gate: d, head: H, headAt: new Date(now).toISOString(), now, waitMinutes: 30 }).restart, true);
@@ -109,7 +115,7 @@ test('stuck: red or missing required check with no activity for 30 minutes', () 
   assert.equal(stuckDecision({ check: { status: 'completed', conclusion: 'success' }, lastActivity: at(90), now, minutes: 30 }).stuck, false);
 });
 
-test('restart: follows what the gate still needs; a missing second-provider PASS restarts too; each cause once delivered (round-1 P2s)', () => {
+test('restart: follows what the gate still needs; a missing high-risk PASS restarts too; each cause once delivered (round-1 P2s)', () => {
   const now = Date.parse('2026-10-24T02:00:00Z'), old = new Date(now - 31 * 60e3).toISOString(), fresh = new Date(now - 5 * 60e3).toISOString();
   const fail = gateDecision({ bind: head(), files: ['docs/a.md'], verdicts: [V({ result: 'FAIL', evidence: 'nd7x' })], authors, q });
   let r = restartDecision({ gate: fail, head: H, headAt: fresh, now, waitMinutes: 30 });
@@ -117,16 +123,18 @@ test('restart: follows what the gate still needs; a missing second-provider PASS
   assert.equal(restartDecision({ gate: fail, head: H, headAt: fresh, now, waitMinutes: 30, delivered: new Set([r.key]) }).restart, false);
   const second = gateDecision({ bind: head(), files: ['src/auth/a.ts'], verdicts: [V()], authors, q });
   r = restartDecision({ gate: second, head: H, headAt: old, now, waitMinutes: 30 });
-  assert.equal(r.restart, true); assert.match(r.reason, /no second-provider PASS 31 min/);
+  assert.equal(r.restart, true); assert.match(r.reason, /too few independent PASSes 31 min/);
   const none = gateDecision({ bind: head(), files: ['docs/a.md'], verdicts: [], authors, q });
   assert.equal(restartDecision({ gate: none, head: H, headAt: fresh, now, waitMinutes: 30 }).restart, false);
   assert.match(restartDecision({ gate: none, head: H, headAt: old, now, waitMinutes: 30 }).reason, /no verdict 31 min/);
   assert.equal(restartDecision({ gate: gateDecision({ bind: head(), files: ['docs/a.md'], verdicts: [V()], authors, q }), head: H, headAt: old, now, waitMinutes: 30 }).restart, false);
 });
 
-test('config: one merge.auto block, mode strict or queue, squash, second-provider paths listed', () => {
+test('config: one merge.auto block, mode strict or queue, squash, high-risk paths listed', () => {
   assert.deepEqual(validateAuto(YAML.parse(fs.readFileSync(ROOTCFG, 'utf8')).merge), []);
-  assert.match(validateAuto({ method: 'merge', auto: { mode: 'fast', second_provider_paths: [] } }).join(), /mode must be strict or queue.*squash.*second_provider_paths/);
+  assert.match(validateAuto({ method: 'merge', auto: { mode: 'fast', high_risk_paths: [] } }).join(), /mode must be strict or queue.*squash.*high_risk_paths must list/);
+  assert.match(validateAuto({ method: 'squash', auto: { second_provider_paths: ['x'] } }).join(), /second_provider_paths was renamed merge.auto.high_risk_paths/);
+  for (const n of [0, 1.5, '2']) assert.match(validateAuto({ method: 'squash', auto: { high_risk_paths: ['x'], high_risk_verifiers: n } }).join(), /high_risk_verifiers must be a whole number/, String(n));
   assert.equal(groupPr('refs/heads/gh-readonly-queue/main/pr-19-4cc0857a09db6aac19544f78a23889c0542d0fff'), 19);
   assert.equal(ownerOf('Owner: mcp:abc\nbody', authors), 'mcp:abc'); assert.equal(ownerOf('', authors), 'builder-1');
 });
@@ -164,7 +172,7 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 function prWith(file, { behind = false } = {}) {
   git('checkout -q -B feat origin/main'); fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true }); fs.writeFileSync(path.join(dir, file), `change ${file}\n`);
-  git('add -A'); git(`commit -qm "change ${file}" -m "Agent: builder-1\nAgent-Family: claude"`);
+  git('add -A'); git(`commit -qm "change ${file}" -m "Agent: builder-1"`);
   const head = git('rev-parse HEAD'), patch = pidOf(`origin/main ${head}`);
   if (behind) { git('checkout -q --detach origin/main'); fs.writeFileSync(path.join(dir, 'other.md'), `o${Date.now()}\n`); git('add -A'); git('commit -qm other'); git('update-ref refs/remotes/origin/main HEAD'); }
   git('checkout -q --detach origin/main'); git('merge -q --squash feat'); git('commit -qm "group"');
@@ -172,7 +180,7 @@ function prWith(file, { behind = false } = {}) {
   const evq = path.join(dir, '.gh/event-q.json'); fs.writeFileSync(evq, JSON.stringify({ merge_group: { head_sha: group, base_sha: git('rev-parse origin/main'), head_ref: `refs/heads/gh-readonly-queue/main/pr-7-${head}` } }));
   const evp = path.join(dir, '.gh/event-p.json'); fs.writeFileSync(evp, JSON.stringify({ pull_request: { number: 7, head: { sha: head } } }));
   put('repos/o/r/pulls/7', { number: 7, labels: [], body: '', user: { login: 'builder' }, head: { sha: head, ref: 'feat' }, base: { ref: 'main' } });
-  put('repos/o/r/pulls/7/commits?per_page=100', [[{ commit: { message: `change ${file}\n\nAgent: builder-1\nAgent-Family: claude`, author: { email: 't@t' } } }]]);
+  put('repos/o/r/pulls/7/commits?per_page=100', [[{ commit: { message: `change ${file}\n\nAgent: builder-1`, author: { email: 't@t' } } }]]);
   return { head, patch, group, evq, evp };
 }
 // Verdict comments as GitHub returns them. `as`: author_association (OWNER = write access); `edited`: updated_at.
@@ -193,7 +201,7 @@ test('eng merge gate, strict (pull_request): PASS bound to the exact head; a beh
   assert.equal(r.status, 1); assert.match(r.stdout, /behind main: update the branch/);
 });
 
-test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files need a second provider', () => {
+test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files need two distinct identities', () => {
   setMode('queue');
   let pr = prWith('docs/q.md');
   comments([V({ patch_id: pr.patch, sha: pr.head })]);
@@ -203,8 +211,8 @@ test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files
   pr = prWith('bin/tool.mjs');
   comments([V({ patch_id: pr.patch, sha: pr.head })]);
   r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: pr.evq });
-  assert.equal(r.status, 1); assert.match(r.stdout, /need PASSes from two providers/);
-  comments([V({ patch_id: pr.patch, sha: pr.head }), V({ patch_id: pr.patch, sha: pr.head, by: 'gemini-1', family: 'gemini', provider: 'google' })]);
+  assert.equal(r.status, 1); assert.match(r.stdout, /need PASSes from 2 independent verifiers with distinct identities/);
+  comments([V({ patch_id: pr.patch, sha: pr.head }), V({ patch_id: pr.patch, sha: pr.head, by: 'verifier-2' })]);
   assert.equal(eng(['merge', 'gate'], { GITHUB_EVENT_PATH: pr.evq }).status, 0);
   setMode('strict');
 });
@@ -222,15 +230,15 @@ function runClosure(workflows) {
 }
 const wf = dir => fs.readdirSync(path.join(REPO, dir)).filter(f => f.endsWith('.yml')).map(f => path.join(REPO, dir, f));
 
-test('every file the reference gate workflows run or import needs a second provider (openai r7 and r8 P1s)', () => {
+test('every file the reference gate workflows run or import needs two distinct identities (round 7 and 8 P1s)', () => {
   const files = runClosure(wf('templates/merge-auto'));
   for (const f of ['bin/eng.mjs', 'lib/merge-cli.mjs', 'lib/merge-queue.mjs', 'lib/self-merge.mjs', 'lib/renovate-cli.mjs', 'lib/render.mjs', 'lib/flake.mjs', 'lib/stack-audit.mjs']) assert.ok(files.includes(f), `${f} is in the gate's run closure`);
-  for (const f of files) assert.equal(gateDecision({ bind: head(), files: [f], verdicts: [V()], authors, q }).need, 'second-provider', `${f}: one provider must not be enough`);
+  for (const f of files) assert.equal(gateDecision({ bind: head(), files: [f], verdicts: [V()], authors, q }).need, 'verifiers', `${f}: one verifier must not be enough`);
 });
 
-test('flat and nested auth, billing and payments paths need a second provider (openai r8 P1)', () => {
+test('flat and nested auth, billing and payments paths need two distinct identities (round 8 P1)', () => {
   for (const f of ['src/auth.ts', 'src/auth.mjs', 'src/auth/login.ts', 'app/billing.ts', 'app/billing/plan.ts', 'payments.ts', 'svc/payments/charge.ts'])
-    assert.equal(gateDecision({ bind: head(), files: [f], verdicts: [V()], authors, q }).need, 'second-provider', f);
+    assert.equal(gateDecision({ bind: head(), files: [f], verdicts: [V()], authors, q }).need, 'verifiers', f);
   assert.equal(gateDecision({ bind: head(), files: ['src/author.ts'], verdicts: [V()], authors, q }).pass, true, 'a name that only starts with auth is not an auth path');
 });
 
@@ -241,20 +249,20 @@ test('every file eng-standard\'s trusted controller workflows run or import is r
   for (const f of files) assert.ok(root.some(g => glob2re(g).test(f)), `${f} is in ship.high_risk.paths`);
 });
 
-test('eng merge gate reads authors from the PR\'s git history, not only the capped commits API (openai r9 P1)', () => {
+test('eng merge gate reads authors from the PR\'s git history, not only the capped commits API (round 9 P1)', () => {
   setMode('strict');
   prWith('bin/many.mjs');
-  fs.writeFileSync(path.join(dir, 'bin/many.mjs'), 'later\n'); git('add -A'); git('commit -qm later -m "Agent: gpt-builder\nAgent-Family: gpt"');
+  fs.writeFileSync(path.join(dir, 'bin/many.mjs'), 'later\n'); git('add -A'); git('commit -qm later -m "Agent: later-builder"');
   const head = git('rev-parse HEAD'), patch = pidOf(`origin/main ${head}`), evp = path.join(dir, '.gh/event-many.json');
   fs.writeFileSync(evp, JSON.stringify({ pull_request: { number: 7, head: { sha: head } } }));
   put('repos/o/r/pulls/7', { number: 7, labels: [], body: '', user: { login: 'builder' }, head: { sha: head, ref: 'feat' }, base: { ref: 'main' } });
-  comments([V({ patch_id: patch, sha: head }), V({ patch_id: patch, sha: head, by: 'gemini-1', family: 'gemini', provider: 'google' })]);
+  comments([V({ patch_id: patch, sha: head }), V({ patch_id: patch, sha: head, by: 'later-builder' })]);
   const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
-  assert.equal(r.status, 1, 'the API listed only the claude commit, but a gpt author wrote the head, so the gpt PASS cannot be the second provider');
-  assert.match(r.stdout, /need PASSes from two providers other than the authors' \(have google\)/);
+  assert.equal(r.status, 1, 'the API listed only the first commit, but later-builder wrote the head, so its PASS cannot count');
+  assert.match(r.stdout, /need PASSes from 2 independent verifiers with distinct identities \(have 1\)/);
 });
 
-test('eng merge gate counts verdicts like self-merge (PR #21): outsiders, prototype families and edits', () => {
+test('eng merge gate counts verdicts like self-merge (PR #21): outsiders, repeat identities and edits', () => {
   setMode('strict');
   const pr = prWith('docs/trust.md'), v = o => V({ patch_id: pr.patch, sha: pr.head, ...o });
   comments([v({ as: 'NONE' }), v({ by: 'v2', as: 'CONTRIBUTOR' })]);
@@ -264,32 +272,32 @@ test('eng merge gate counts verdicts like self-merge (PR #21): outsiders, protot
   r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: pr.evp });
   assert.equal(r.status, 1, 'an edited FAIL orders by its edit, so it is the verifier\'s latest'); assert.match(r.stdout, /is FAIL by verifier-1 \(its latest\)/);
   const gp = prWith('bin/trust.mjs'), g = o => V({ patch_id: gp.patch, sha: gp.head, ...o });
-  comments([g(), g({ by: 'proto', family: '__proto__', provider: undefined })]);
+  comments([g(), g()]);
   r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: gp.evp });
-  assert.equal(r.status, 1, 'a prototype-named family resolves to no provider'); assert.match(r.stdout, /need PASSes from two providers.*have openai\)/);
+  assert.equal(r.status, 1, 'one identity posting twice is one verifier'); assert.match(r.stdout, /need PASSes from 2 independent verifiers.*\(have 1\)/);
 });
 
-test('eng merge gate: renaming a file out of an auth path still needs the second provider (round-3 P1)', () => {
+test('eng merge gate: renaming a file out of an auth path still needs two distinct identities (round-3 P1)', () => {
   setMode('strict');
   git('checkout -q --detach origin/main'); fs.mkdirSync(path.join(dir, 'src/auth'), { recursive: true }); fs.writeFileSync(path.join(dir, 'src/auth/policy.ts'), 'export const allow = false\n'); git('add -A'); git('commit -qm policy'); git('update-ref refs/remotes/origin/main HEAD');
-  git('checkout -q -B mv origin/main'); git('mv src/auth/policy.ts src/policy.ts'); git('commit -qm mv -m "Agent: builder-1\nAgent-Family: claude"'); const head = git('rev-parse HEAD');
+  git('checkout -q -B mv origin/main'); git('mv src/auth/policy.ts src/policy.ts'); git('commit -qm mv -m "Agent: builder-1"'); const head = git('rev-parse HEAD');
   put('repos/o/r/pulls/13', { number: 13, labels: [], body: '', user: { login: 'b' }, head: { sha: head, ref: 'mv' }, base: { ref: 'main' } });
-  put('repos/o/r/pulls/13/commits?per_page=100', [[{ commit: { message: 'mv\n\nAgent: builder-1\nAgent-Family: claude', author: { email: 't@t' } } }]]);
+  put('repos/o/r/pulls/13/commits?per_page=100', [[{ commit: { message: 'mv\n\nAgent: builder-1', author: { email: 't@t' } } }]]);
   comments([V({ patch_id: 'x', sha: head })], 13);
   const r = eng(['merge', 'gate', '--pr', '13']);
-  assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /src\/auth\/policy\.ts.*need PASSes from two providers/);
+  assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /src\/auth\/policy\.ts.*need PASSes from 2 independent verifiers/);
 });
 
-test('eng merge gate: a non-ASCII, tab or newline filename under a gate path still needs the second provider (round-4 P1)', () => {
+test('eng merge gate: a non-ASCII, tab or newline filename under a gate path still needs two distinct identities (round-4 P1)', () => {
   setMode('strict');
   for (const name of ['.github/workflows/déploy.yml', '.github/workflows/de\tploy.yml', 'src/auth/a\nb.ts']) {
     git('checkout -q -B odd origin/main'); fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true }); fs.writeFileSync(path.join(dir, name), 'x\n');
-    git('add -A'); git('commit -qm odd -m "Agent: builder-1\nAgent-Family: claude"'); const head = git('rev-parse HEAD');
+    git('add -A'); git('commit -qm odd -m "Agent: builder-1"'); const head = git('rev-parse HEAD');
     put('repos/o/r/pulls/14', { number: 14, labels: [], body: '', user: { login: 'b' }, head: { sha: head, ref: 'odd' }, base: { ref: 'main' } });
-    put('repos/o/r/pulls/14/commits?per_page=100', [[{ commit: { message: 'odd\n\nAgent: builder-1\nAgent-Family: claude', author: { email: 't@t' } } }]]);
+    put('repos/o/r/pulls/14/commits?per_page=100', [[{ commit: { message: 'odd\n\nAgent: builder-1', author: { email: 't@t' } } }]]);
     comments([V({ patch_id: 'x', sha: head })], 14);
     const r = eng(['merge', 'gate', '--pr', '14']);
-    assert.equal(r.status, 1, `${JSON.stringify(name)}: ${r.stdout}${r.stderr}`); assert.match(r.stdout, /need PASSes from two providers/);
+    assert.equal(r.status, 1, `${JSON.stringify(name)}: ${r.stdout}${r.stderr}`); assert.match(r.stdout, /need PASSes from 2 independent verifiers/);
   }
 });
 
@@ -321,7 +329,7 @@ test('eng merge gate + watch: an auto-revert that main moved past is behind, get
   r = eng(['merge', 'gate', '--pr', '15']); assert.equal(r.status, 1); assert.match(r.stdout, /not its exact inverse/);
 });
 
-test('eng doctor runs to its verdict on a config with no stack (eng-standard itself; google round-4 note)', () => {
+test('eng doctor runs to its verdict on a config with no stack (eng-standard itself; round-4 note)', () => {
   git('checkout -q --detach origin/main');
   const r = eng(['doctor']), all = r.stdout + r.stderr;
   assert.doesNotMatch(all, /TypeError|Cannot read properties/); assert.match(all, /eng doctor: PASS|doctor: \d+ disk-hygiene problem/);
@@ -376,11 +384,11 @@ test('eng merge gate: a whitespace-only "inverse" that changes behaviour is not 
 });
 
 test('eng merge watch --dry-run: stuck flag, restart on FAIL, update-branch for a behind auto-merge PR', () => {
-  git('checkout -q -B feat2 origin/main'); fs.writeFileSync(path.join(dir, 'w.md'), 'w\n'); git('add -A'); git('commit -qm w -m "Agent: builder-9\nAgent-Family: claude"');
+  git('checkout -q -B feat2 origin/main'); fs.writeFileSync(path.join(dir, 'w.md'), 'w\n'); git('add -A'); git('commit -qm w -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), old = new Date(Date.now() - 45 * 60e3).toISOString();
   const pr8 = { number: 8, draft: false, head: { sha: head, ref: 'feat2' }, base: { ref: 'main' }, labels: [], updated_at: old, body: 'Owner: mcp:owner-thread', html_url: 'https://x/8', user: { login: 'builder' } };
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[pr8]]);
-  put('repos/o/r/pulls/8/commits?per_page=100', [[{ commit: { message: 'w\n\nAgent: builder-9\nAgent-Family: claude', author: { email: 't@t' }, committer: { date: old } } }]]);
+  put('repos/o/r/pulls/8/commits?per_page=100', [[{ commit: { message: 'w\n\nAgent: builder-9', author: { email: 't@t' }, committer: { date: old } } }]]);
   comments([V({ patch_id: 'x', sha: head, result: 'FAIL', evidence: 'nd7e' })], 8);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'failure', updated_at: old, created_at: old }] });
   fs.writeFileSync(calls, '');
@@ -404,10 +412,10 @@ test('eng merge watch --dry-run: stuck flag, restart on FAIL, update-branch for 
 });
 
 test('eng merge watch --dry-run: re-arms auto-merge once the gate passes; the hold label disarms it', () => {
-  git('checkout -q -B feat5 origin/main'); fs.writeFileSync(path.join(dir, 'a5.md'), 'a\n'); git('add -A'); git('commit -qm a5 -m "Agent: builder-9\nAgent-Family: claude"');
+  git('checkout -q -B feat5 origin/main'); fs.writeFileSync(path.join(dir, 'a5.md'), 'a\n'); git('add -A'); git('commit -qm a5 -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), now = new Date().toISOString();
   const base = { number: 11, draft: false, head: { sha: head, ref: 'feat5' }, base: { ref: 'main' }, labels: [], updated_at: now, body: '', html_url: 'https://x/11', user: { login: 'b' } };
-  put('repos/o/r/pulls/11/commits?per_page=100', [[{ commit: { message: 'a5\n\nAgent: builder-9\nAgent-Family: claude', author: { email: 't@t' }, committer: { date: now } } }]]);
+  put('repos/o/r/pulls/11/commits?per_page=100', [[{ commit: { message: 'a5\n\nAgent: builder-9', author: { email: 't@t' }, committer: { date: now } } }]]);
   comments([V({ patch_id: 'x', sha: head })], 11);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'success', updated_at: now, created_at: now }] });
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[base]]);
@@ -419,10 +427,10 @@ test('eng merge watch --dry-run: re-arms auto-merge once the gate passes; the ho
 });
 
 test('eng merge watch: a failed restart delivery is retried, and noted once (round-1 P2)', () => {
-  git('checkout -q -B feat4 origin/main'); fs.writeFileSync(path.join(dir, 'r.md'), 'r\n'); git('add -A'); git('commit -qm r -m "Agent: builder-9\nAgent-Family: claude"');
+  git('checkout -q -B feat4 origin/main'); fs.writeFileSync(path.join(dir, 'r.md'), 'r\n'); git('add -A'); git('commit -qm r -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), now = new Date().toISOString();
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[{ number: 10, draft: false, head: { sha: head, ref: 'feat4' }, base: { ref: 'main' }, labels: [], updated_at: now, body: '', html_url: 'https://x/10', user: { login: 'b' } }]]);
-  put('repos/o/r/pulls/10/commits?per_page=100', [[{ commit: { message: 'r\n\nAgent: builder-9\nAgent-Family: claude', author: { email: 't@t' }, committer: { date: now } } }]]);
+  put('repos/o/r/pulls/10/commits?per_page=100', [[{ commit: { message: 'r\n\nAgent: builder-9', author: { email: 't@t' }, committer: { date: now } } }]]);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'failure', updated_at: now, created_at: now }] });
   const failV = V({ patch_id: 'x', sha: head, result: 'FAIL' }), key = `fail:verifier-1:2026-10-24T00:00:00.000Z`;
   comments([failV], 10); fs.writeFileSync(calls, '');
@@ -445,9 +453,9 @@ test('eng merge post --dry-run and eng verdict --pr', () => {
   fs.writeFileSync(p, cfg.replace('post_merge: { check: "bash scripts/shipped-artifact-check.sh" }', 'post_merge: { check: "exit 4" }'));
   r = eng(['merge', 'post', '--dry-run']); assert.equal(r.status, 1); assert.match(r.stdout, /would open an auto-revert PR from auto-revert\//);
   fs.writeFileSync(p, cfg);
-  git('checkout -q -B feat3 origin/main'); fs.writeFileSync(path.join(dir, 'v.md'), 'v\n'); git('add -A'); git('commit -qm v -m "Agent: builder-1\nAgent-Family: claude"');
+  git('checkout -q -B feat3 origin/main'); fs.writeFileSync(path.join(dir, 'v.md'), 'v\n'); git('add -A'); git('commit -qm v -m "Agent: builder-1"');
   fs.writeFileSync(calls, '');
-  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--family', 'gpt', '--provider', 'openai', '--pr', '7']);
+  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--pr', '7']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const log = fs.readFileSync(calls, 'utf8');
   assert.match(log, /api repos\/o\/r\/issues\/7\/comments -f body=<!-- eng-verdict\/v1 -->/);

@@ -3,16 +3,17 @@
 This repo is the package that renders AGENTS.md and SHIPPING.md for other repos. It does not render its own (do not
 run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 
-## Merge rule (approved by Matt, 19 Oct 2026, 3:55 PM AEDT; two-provider rule 24 Oct 2026, 3:03 PM AEDT)
+## Merge rule (approved by Matt, 19 Oct 2026, 3:55 PM AEDT; independence by identity 26 Oct 2026)
 
 - **Self-merge.** `.github/workflows/self-merge.yml` runs main's code only and squash-merges at most one PR into
   `main` per run. Every condition below must hold on the PR's current head SHA:
   - The head contains main's tip (ancestry check). A behind branch is updated and its new head verified again.
   - The `test` check is green and the `verdict` status is success.
-  - **risk:low:** one PASS for that exact head from a verifier who wrote none of the commits and whose model family
-    differs from every author's.
-  - **risk:high:** PASSes for that exact head from two verifiers on two different providers, neither the authors'
-    provider. A PR is risk:high when any changed path matches `ship.high_risk.paths` in `eng.config.yml`: workflows
+  - **Independence is identity.** A verifier counts only when its identity (`--by`, and its GitHub login when
+    `ship.self_merge.verifier_logins` is set) matches no author's: no `Agent:` trailer id, commit email or login.
+  - **risk:low:** one PASS for that exact head from an independent verifier.
+  - **risk:high:** PASSes for that exact head from `ship.high_risk.verifiers` (default 2) independent verifiers with
+    distinct identities. A PR is risk:high when any changed path matches `ship.high_risk.paths` in `eng.config.yml`: workflows
     and CI, this merge setup, `bin/`, `scripts/`, package scripts and dependencies, vendored code, and auth or
     billing paths. `.github/workflows/risk-label.yml` sets the label on every push, and self-merge recomputes it.
   - No verdict, a verdict for another head, or a FAIL refuses the merge. Each verifier's latest verdict counts, and
@@ -24,9 +25,9 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
   that may merge, and it still needs every condition above.
 - **Nobody bypasses anything**, Matt included: no `--admin`, no `--no-verify`, no merging around a red or missing check.
   Authors never merge their own PR and never post its verdict.
-- **Verdict:** each verifier runs `eng verdict PASS|FAIL --by <id> --family <f> --provider <p> --pr <n>` on the exact
-  head. That posts an `eng-verdict/v1` PR comment (head SHA, family, provider) and the `verdict` status. Authors put
-  `Agent:` and `Agent-Family:` trailers on every commit so the gate can tell who wrote the patch.
+- **Verdict:** each verifier runs `eng verdict PASS|FAIL --by <id> --pr <n>` on the exact head, with its own identity.
+  That posts an `eng-verdict/v1` PR comment (head SHA, identity) and the `verdict` status. Authors put an `Agent:`
+  trailer on every commit so the gate can tell who wrote the patch.
 - **Stop one PR:** add the `hold` label. **Stop all:** `gh workflow disable self-merge.yml`.
 - **Undo:** `gh pr revert <n>` (one step: opens the revert PR, which goes through the same gates).
 
