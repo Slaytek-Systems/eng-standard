@@ -1,6 +1,6 @@
 # Squash-merges at most ONE PR into main per run, only when every rule in lib/self-merge.mjs holds on the current head
 # SHA (head contains main's tip, test green, verdict success, verdict comments for that head: one independent PASS for
-# risk:low, PASSes from two non-author providers for risk:high; no hold label, not draft, green for
+# risk:low, PASSes from N distinct independent identities for risk:high; no hold label, not draft, green for
 # ship.self_merge.hold_minutes). Then dispatches ci.yml on main (a GITHUB_TOKEN merge fires no push workflow); when that
 # post-merge check fails, the next run opens the tip's exact inverse as an auto-revert PR. Rules: AGENTS.md.
 # Stop one PR: add the `hold` label. Stop everything: gh workflow disable self-merge.yml
