@@ -76,18 +76,18 @@ On 26 Oct 2026 a reviewer thread stopped a devbox systemd test unit, `devbox-hea
 
 ```sh
 # The thread that owns the test run (ENG_AGENT_ID or T3_THREAD_ID = thread-a)
-eng run-service devbox-heavyweight-1792999183-707452
+eng run-service devbox-heavyweight-1792999183-707452.service
 #   record: project, owner, checkout, pid, start time, boot id, run token, agent thread-a (0600)
 
 # A reviewer thread (thread-b) in the same checkout
-eng stop devbox-heavyweight-1792999183-707452
-#   eng: FAIL stop: refusing; <project>/devbox-heavyweight-1792999183-707452 (pid 12345) was started by thread-a,
+eng stop devbox-heavyweight-1792999183-707452.service
+#   eng: FAIL stop: refusing; <project>/devbox-heavyweight-1792999183-707452.service (pid 12345) was started by thread-a,
 #   not thread-b. Only the starter may stop it
 eng status
-#   ok  devbox-heavyweight-1792999183-707452 pid 12345 port 41003 agent thread-a (this checkout)
+#   ok  devbox-heavyweight-1792999183-707452.service pid 12345 port 41003 agent thread-a (this checkout)
 ```
 
-`eng status` answers "who owns it": the record names the starting agent, and the reviewer reports to that thread instead of acting. When there is no ownership record, the helper refuses (`has no ownership record for this checkout`) and signals nothing. A target with no record is treated as someone else's, never as fair game. The same goes for a record that names another project, checkout or service, or a PID whose start time no longer matches. `test/isolation.test.mjs` replays this case with a synthetic process of that name.
+`eng status` answers "who owns it": the record names the starting agent, and the reviewer reports to that thread instead of acting. When there is no ownership record, the helper refuses (`has no ownership record for this checkout`) and signals nothing. A target with no record is treated as someone else's, never as fair game. The same goes for a record that names another project, checkout or service, or a PID whose start time no longer matches. `test/isolation.test.mjs` replays this case with a synthetic service of exactly that name (service names may contain single dots). It is an ordinary helper-started process, not a systemd unit.
 
 **Gap: systemd units.** The helper starts and stops only the processes it launched itself, as children in their own process group. It does not create, inspect or stop systemd units (`systemd-run`, `systemctl stop`), so a unit started outside the helper has no record, and nothing here stops a raw `systemctl stop` aimed at it. The repo check does not flag `systemctl` either. Closing this belongs to devbox-ops: have the unit launcher write the same ownership record, or label the unit with the project and starting agent, and refuse `stop` unless the caller matches. Until then, start test runs through `eng run-service` so they get a record, and treat any unit without one as not yours.
 

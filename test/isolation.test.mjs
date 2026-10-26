@@ -79,6 +79,8 @@ test('identity file: the starter template parses; default names, default ports, 
   bad(base.replace('schema = 1\n', ''), /schema must be 1/);
   bad(base, /at least one \[\[services\]\] table with an explicit name is required/);
   bad(base + '[[services]]\nname = "default"\ncommand = ["x"]\n', /"default" is a shared default name/);
+  for (const n of ['a..b', 'a.', '.a', 'x.connect', 'A.service']) bad(base + `[[services]]\nname = "${n}"\ncommand = ["x"]\n`, /name is required/);
+  assert.deepEqual(parseIdentity(base + '[[services]]\nname = "devbox-heavyweight-1792999183-707452.service"\ncommand = ["x"]\n').errors, [], 'a unit-style name with .service is accepted');
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--instance-secret", "abc"]\n', /carries --instance-secret on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--token", "-fakesecret"]\n', /carries --token on argv/);
   bad(base + '[[services]]\nname = "db"\ncommand = ["db", "--secret-key", "v"]\n', /carries --secret-key on argv/);
@@ -416,7 +418,7 @@ test('renovation audit: project-isolation is missing, partial or present', () =>
 });
 
 test('incident replay: a reviewer cannot stop a test run it did not start, and a target with no record is refused', async () => {
-  const unit = 'devbox-heavyweight-1792999183-707452', dir = project('epsilon', '47130, 47134');
+  const unit = 'devbox-heavyweight-1792999183-707452.service', dir = project('epsilon', '47130, 47134');
   fs.appendFileSync(path.join(dir, '.eng/project.toml'), `\n[[services]]\nname = "${unit}"\ncommand = ["node", "server.mjs"]\nport_env = "PORT"\nhealth = "/version"\n\n[[services]]\nname = "${unit}-orphan"\ncommand = ["node", "server.mjs"]\n`);
   const byThread = (thread, ...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: { ...env(''), T3_THREAD_ID: thread } });
 
