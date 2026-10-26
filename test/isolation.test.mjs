@@ -105,6 +105,10 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
 test('redactor: a secret split across output chunks is never forwarded, in whole or in part', () => {
   const short = redactor(['xyz']);
   assert.equal(short.push('a xy') + short.push('z b') + short.end(), 'a [redacted] b', 'short values are redacted too');
+  const overlap = redactor(['ab', 'bcdefgh']);
+  const ov = overlap.push('x ab') + overlap.push('cdefgh y') + overlap.end();
+  assert.equal(ov, 'x [redacted] y', 'overlapping values are redacted as one span');
+  assert.ok(!/a|cdefgh/.test(ov.replace('[redacted]', '')), 'no fragment of either value survives');
   const one = redactor(['Q']);
   assert.equal(one.push('aQb') + one.push('Q') + one.end(), 'a[redacted]b[redacted]', 'a 1-character value is redacted');
   const r = redactor(['s3cretVALUE', 'ab']);
@@ -145,21 +149,23 @@ test('run-service refuses a service whose argv carries a secret value starting w
 
 test('compose commands must name this project, through eng connect or not', () => {
   const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n';
-  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p-local up -d', d: 'COMPOSE_PROJECT_NAME=p-local docker compose ps', e: 'eng connect x -- docker compose --project-name=p-local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p-local ps', i: 'docker --context x ps' };
+  const scripts = { a: 'eng connect x -- docker compose -p beta-project down', b: 'docker compose down', c: 'docker compose -p p_local up -d', d: 'COMPOSE_PROJECT_NAME=p_local docker compose ps', e: 'eng connect x -- docker compose --project-name=p_local logs', f: 'docker --context other compose down', g: 'eng connect x -- podman --url u compose down', h: 'docker --context x compose -p p_local ps', i: 'docker --context x ps' };
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts }, null, 2) }], id);
   assert.deepEqual(hits.map(h => h.message.match(/script "(\w)"/)[1]).sort(), ['a', 'b', 'f', 'g'], 'global options before compose do not hide it');
-  const secret = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { s: 'tool --secret-key v' } }) }, { path: 'compose.yml', text: 'name: p-x\nservices:\n  a:\n    command: ["tool", "--secret-key", "v"]\n' }], id);
+  const twoIds = ['alpha', 'alpha-beta'].map(pid => isolationFindings([{ path: 'compose.yml', text: 'name: alpha-beta\nservices: {}\n' }], id.replace('id = "p"', `id = "${pid}"`)).map(h => h.rule));
+  assert.deepEqual(twoIds, [['compose-name'], []], 'alpha-beta names project alpha-beta only, never alpha');
+  const secret = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { s: 'tool --secret-key v' } }) }, { path: 'compose.yml', text: 'name: p_x\nservices:\n  a:\n    command: ["tool", "--secret-key", "v"]\n' }], id);
   assert.deepEqual(secret.map(h => `${h.file}:${h.rule}`).sort(), ['compose.yml:secret-argv', 'package.json:secret-argv']);
 });
 
 test('repo check: compose block-scalar commands are scanned across lines', () => {
   for (const style of ['>-', '|'])
-    assert.deepEqual(isolationFindings([{ path: 'compose.yml', text: `name: p-x\nservices:\n  a:\n    command: ${style}\n      backend\n      --instance-secret\n      abc\n` }], null).map(h => h.rule), ['identity-missing', 'secret-argv'], style);
+    assert.deepEqual(isolationFindings([{ path: 'compose.yml', text: `name: p_x\nservices:\n  a:\n    command: ${style}\n      backend\n      --instance-secret\n      abc\n` }], null).map(h => h.rule), ['identity-missing', 'secret-argv'], style);
 });
 
 test('repo check: "default" as a name and secret flags split across compose command lines', () => {
   const hits = isolationFindings([
-    { path: 'compose.yml', text: 'name: p-local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
+    { path: 'compose.yml', text: 'name: p_local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
     { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port', c: 'eng connect x -- true && npx convex dev', d: 'eng connect x -- npx convex codegen', e: 'env API_TOKEN=v client' } }, null, 2) },
   ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\n');
   assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:secret-argve']);
@@ -212,7 +218,7 @@ test('eng isolation check: a repo that wraps its commands and names its state pa
   const dir = repo({
     '.eng/project.toml': fs.readFileSync(path.join(PKG, 'templates/isolation/project.toml'), 'utf8'),
     'package.json': JSON.stringify({ scripts: { codegen: 'eng connect backend -- npx convex codegen', up: 'eng run-service backend', down: 'eng stop backend', port: 'serve --port ${PORT:-3210}' } }, null, 2),
-    'compose.yml': 'name: my-project-local\nservices:\n  db:\n    image: x\n',
+    'compose.yml': 'name: my-project_local\nservices:\n  db:\n    image: x\n',
   });
   const r = eng(dir, null, 'isolation', 'check');
   assert.equal(r.status, 0, out(r));
