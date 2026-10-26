@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execSync } from 'node:child_process';
-import { parseIdentity, argvSecrets, isolationFindings, redactor } from '../lib/isolation.mjs';
+import { parseIdentity, argvSecrets, isolationFindings, redactor, programName } from '../lib/isolation.mjs';
 import { ITEMS } from '../lib/renovate.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -95,7 +95,7 @@ test('argv secrets: flags with values are found; -file flags and --no- switches 
   assert.equal(argvSecrets(['sh', '-c', 'client --token -fakesecret']).length, 1);
   assert.equal(argvSecrets(['bash', '-c', 'exec client --token "$API_TOKEN"']).length, 1, 'a shell wrapper forwarding a secret flag is caught');
   assert.deepEqual(argvSecrets(['env', 'API_TOKEN=v', 'client']), ['API_TOKEN=']);
-  assert.deepEqual(argvSecrets(['sh', '-c', 'env LOG=1 API_TOKEN=v client']), ['API_TOKEN= (inside "env ...")']);
+  assert.deepEqual(argvSecrets(['sh', '-c', 'env LOG=1 API_TOKEN=v client']), ['API_TOKEN= (inside argument 3)']);
   assert.deepEqual(argvSecrets(['env', 'LOG_LEVEL=debug', 'client']), []);
 });
 
@@ -114,6 +114,20 @@ test('redactor: a secret split across output chunks is never forwarded, in whole
 test('repo check: a secret flag value starting with - is still a secret on the command line', () => {
   const hits = isolationFindings([{ path: 'package.json', text: JSON.stringify({ scripts: { boot: 'client --token -fakesecret', file: 'client --token-file -' } }, null, 2) }], null);
   assert.deepEqual(hits.filter(h => h.rule === 'secret-argv').map(h => h.message.match(/script "(\w+)"/)[1]), ['boot']);
+});
+
+test('refusal diagnostics never echo argv text that can hold a value', () => {
+  const dir = project('zeta', '47135, 47139'), canary = 'zeta-db-canary-value';
+  fs.appendFileSync(path.join(dir, '.eng/project.toml'), `\n[[services]]\nname = "wrapped"\ncommand = ["sh", "-c", "DB_URL=${canary} client --token x"]\n`);
+  let r = eng(dir, 'agent-z', 'run-service', 'wrapped');
+  assert.equal(r.status, 1);
+  assert.match(out(r), /command carries --token \(inside argument 3\) on argv/);
+  assert.doesNotMatch(out(r), new RegExp(canary), 'the identity refusal never prints the assignment');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'sh', '-c', `DB_URL=${canary} client --token x`);
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(out(r), new RegExp(canary), 'the connect refusal never prints the assignment');
+  assert.equal(programName(`DB_URL=${canary}`), '<command>', 'a command name that carries a value is withheld');
+  assert.equal(programName('node'), 'node');
 });
 
 test('run-service refuses a service whose argv carries a secret value starting with -', () => {
