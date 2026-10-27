@@ -77,4 +77,10 @@ test('CLI rejects non-decimal thresholds and escapes control characters in warni
   assert.equal(warning.status, 1);
   assert.match(warning.stderr, /coordinator\\u000a::warning::forged/);
   assert.equal(warning.stderr.split('\n').length, 2);
+
+  fs.writeFileSync(snapshot, '{"threads":[\n::error::forged\n]}');
+  const invalidJson = spawnSync(process.execPath, [script, snapshot], { encoding: 'utf8' });
+  assert.equal(invalidJson.status, 2);
+  assert.match(invalidJson.stderr, /\\u000a::error::/);
+  assert.equal(invalidJson.stderr.split('\n').length, 2);
 });
