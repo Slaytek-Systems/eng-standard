@@ -37,8 +37,11 @@ test('accepts a custom threshold and reports no fresh item as stale', () => {
 
 test('rejects incomplete snapshots and invalid age limits', () => {
   assert.throws(() => findStaleQueueItems({}), /threads array/);
-  assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{}] }] }), /queuedRunId and valid createdAt/);
+  assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{}] }] }), /queuedRunId and valid ISO 8601 createdAt/);
   assert.throws(() => findStaleQueueItems({ threads: [] }, { maxAgeMinutes: 0 }), /positive number/);
+  assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{ queuedRunId: 'run-1', createdAt: 12345 }] }] }, { now }), /valid ISO 8601/);
+  assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{ queuedRunId: 'run-1', createdAt: '2026-02-30T00:00:00Z' }] }] }, { now }), /valid ISO 8601/);
+  assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{ queuedRunId: 'run-1', createdAt: '2026-10-27T12:00:01Z' }] }] }, { now }), /future createdAt/);
 });
 
 test('rendered thread guidance treats queued as stored and requires run confirmation', () => {
@@ -58,4 +61,20 @@ test('CLI warns and exits nonzero for a stale queued item', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /WARN stale T3 queue item: thread thread-1/);
   assert.match(result.stderr, /queued run run-1/);
+});
+
+test('CLI rejects non-decimal thresholds and escapes control characters in warnings', () => {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 't3-queue-health-'));
+  const snapshot = path.join(dir, 'snapshot.json');
+  const script = fileURLToPath(new URL('../lib/t3-queue-health.mjs', import.meta.url));
+  fs.writeFileSync(snapshot, JSON.stringify({ threads: [{ threadId: 'thread-1', title: 'coordinator\n::warning::forged', items: [{ queuedRunId: 'run-1', createdAt: '2026-10-26T00:00:00Z' }] }] }));
+
+  const invalidThreshold = spawnSync(process.execPath, [script, snapshot, '--minutes', '0x10'], { encoding: 'utf8' });
+  assert.equal(invalidThreshold.status, 2);
+  assert.match(invalidThreshold.stderr, /positive decimal number/);
+
+  const warning = spawnSync(process.execPath, [script, snapshot], { encoding: 'utf8' });
+  assert.equal(warning.status, 1);
+  assert.match(warning.stderr, /coordinator\\u000a::warning::forged/);
+  assert.equal(warning.stderr.split('\n').length, 2);
 });

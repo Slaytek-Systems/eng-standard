@@ -13,6 +13,8 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - AGENTS.md gets an isolation rule row only in repos whose config has `isolation:`.
 ## Unreleased (26 Oct 2026)
 
+**T3 queued message delivery and coordinator health.** A queued result confirms storage, not run start; coordinators now have a 30-minute on-demand queue-age check with a configurable limit.
+
 **Self-merge runs on events and merges without a wait** (Matt, 26 Oct 2026: "No wait. Merge as soon as it's verified; post-merge checks roll back breakage.").
 
 - `self-merge.yml` has no schedule. The 30-minute cron from PR #17 is gone. It runs when `ci` finishes, on a verdict comment or `verdict` status, when a label is added or removed, when a PR is marked ready or retargeted to main, and on dispatch. Each event looks at its own PR. Runs queue one at a time (`queue: max`, up to 100 waiting), so two merges never run at once and a newer run never replaces a waiting one.
