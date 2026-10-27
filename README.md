@@ -2,6 +2,12 @@
 
 One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md files in `.agents/skills` (symlinked into `.claude/skills`), AGENTS.md (Codex/Cursor) + CLAUDE.md (`@AGENTS.md`), git hooks, and a Node CLI.
 
+## Starter pack
+
+When you send a message with T3 `t3_thread_send`, a `queued` result means T3 stored the message. It does not confirm delivery or a new run. Check `t3_thread_read` activity or `t3_thread_wait` for a new run. For time-critical or approved sends, use `mode: "auto"` and confirm that a run started.
+
+Run the coordinator queue-age check from an eng-standard checkout with `node lib/t3-queue-health.mjs snapshot.json`. The default age limit is 30 minutes. Set another limit with `--minutes N`. The command exits 1 when it finds an old item and 2 when the input is invalid. See `renovation/README.md` for the snapshot format.
+
 | Command | Does |
 |---|---|
 | `eng init` | seed eng.config.yml if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
