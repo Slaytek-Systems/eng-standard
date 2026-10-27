@@ -187,6 +187,9 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
     deno: "${XDG_CACHE_HOME}/eng/${repo}/deno"                   # DENO_DIR (stable, never per run)
   containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>); eng clean --containers --apply removes them with their volumes. Never docker volume prune -a.
   evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; eng clean --evidence --apply clears merged or closed PRs.
+  tmp_guard:                      # eng tmp-guard -- <cmd> (an explicit command; nothing runs it on a schedule): the command runs in a per-run root, removed
+    dirs: [/tmp]                  # on exit, and fails when these dirs have new top-level entries attributed to the run (SHIPPING.md §5).
+    ignore: []                    # entry-name globs never attributed to a run, e.g. a tool's socket dir. Say why next to each.
   # Clean up on merge or close (SHIPPING.md rule 18, §5): delete the PR's worktrees and evidence; one worktree per PR; no installs in review-only worktrees; shared package store and build cache; media off the box.
 
 flags:
