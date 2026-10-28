@@ -1,24 +1,23 @@
 # Squash-merges at most ONE PR into main per run, only when every rule in lib/self-merge.mjs holds on the current head
-# SHA (head contains main's tip, test green, verdict success, verdict comments for that head: one independent PASS for
-# risk:low, PASSes from N distinct independent identities for risk:high; no hold label, not draft). There is no wait: it
+# SHA (head contains main's tip; main's verify.yml passed on pull_request_target for that exact head; risk:high also
+# needs review PASS comments for that head from N distinct independent identities; no hold label, not draft). There is no wait: it
 # merges as soon as the rules hold, and reads them all again just before the merge call. Then dispatches ci.yml on main (a
 # GITHUB_TOKEN merge fires no push workflow); when that post-merge check fails, the next run opens the tip's exact
 # inverse as an auto-revert PR. Rules: AGENTS.md.
-# Events only, no schedule. Each event names one PR (scripts/pr-gate.mjs eventTarget): ci finished on it, a verdict
-# comment or verdict status on it, a label added or removed, ready for review, retargeted. ci finished on main (the post-merge check)
+# Events only, no schedule. Each event names one PR (scripts/pr-gate.mjs eventTarget): ci or verify finished on it, a review
+# verdict comment on it, a label added or removed, ready for review, retargeted. ci finished on main (the post-merge check)
 # and a dispatch without a PR look at every open PR. A ci run dispatched with GITHUB_TOKEN fires no workflow_run, so
 # ci.yml dispatches this workflow itself when such a run finishes.
-# pull_request_target, issue_comment, status and workflow_run all run main's copy of this file and main's code with the
+# pull_request_target, issue_comment and workflow_run all run main's copy of this file and main's code with the
 # base repository's token. Nothing from a PR is checked out or run.
 # Stop one PR: add the `hold` label. Stop everything: gh workflow disable self-merge.yml
 name: self-merge
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, verify]
     types: [completed]
   issue_comment:
     types: [created, edited]
-  status:
   pull_request_target:
     types: [labeled, unlabeled, ready_for_review, edited]   # edited: only a retarget to main runs (job if)
   workflow_dispatch:
@@ -37,9 +36,8 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' && (
         (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base)) ||
-        (github.event_name != 'pull_request_target' && github.event_name != 'issue_comment' && github.event_name != 'status') ||
-        (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '<!-- eng-verdict/v1 -->')) ||
-        (github.event_name == 'status' && github.event.context == 'verdict'))
+        (github.event_name != 'pull_request_target' && github.event_name != 'issue_comment') ||
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '<!-- eng-verdict/v1 -->')))
     # One queue for every self-merge run, so two merges never run at once. queue: max keeps up to 100 waiting runs in
     # order instead of letting a newer one replace the waiting one. GitHub cancels a run that arrives when 100 are
     # waiting; it shows as cancelled, and gh workflow run self-merge.yml -f pr=<n> runs that PR again.
@@ -51,9 +49,8 @@ jobs:
     permissions:
       contents: write               # squash-merge through the API, delete the merged head branch, push the auto-revert
       pull-requests: write          # open the auto-revert PR and set its risk label (risk-label.yml skips bot PRs)
-      checks: read                  # the test check run on the head SHA
-      statuses: read                # the verdict commit status on the head SHA
-      actions: write                # dispatch ci.yml on main after the merge, and on an auto-revert branch
+      checks: read                  # the test check run on main's tip (post-merge check)
+      actions: write                # read verify.yml runs for the head SHA; dispatch ci.yml on main after the merge, and on an auto-revert branch
     steps:
       - uses: actions/checkout@v4
         with:

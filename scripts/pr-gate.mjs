@@ -55,17 +55,19 @@ function label(n) {
   return want;
 }
 
+// Runs of main's verify workflow (by its main-owned path) for this head. The gate re-checks path, event and head_sha.
+const verifyRun = sha => get(`repos/${R}/actions/workflows/${path.basename(C.verify_workflow)}/runs?head_sha=${sha}&event=${C.verify_event}&per_page=20`).workflow_runs
+  .sort((x, y) => (y.created_at || '').localeCompare(x.created_at || ''))[0] || null;
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 
 // Everything decide() reads, for the PR's current head. Verdict comments and commit trailers are data; the rules are main's.
 function prState(pr, tip) {
   const sha = pr.head.sha;
-  const st = get(`repos/${R}/commits/${sha}/status`).statuses.find(s => s.context === C.status) || null;
   const commits = pages(`repos/${R}/pulls/${pr.number}/commits?per_page=100`), want = full(pr).commits;
   if (commits.length !== want) throw new Error(`GitHub listed ${commits.length} of ${want ?? '?'} commits, so the authors are unknown`);
   return {
-    risk: riskFor(pr).risk, check: testRun(sha), status: st,
+    risk: riskFor(pr).risk, verify: verifyRun(sha),
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
     authors: authorsFrom(commits.map(c => c.commit.message), commits.flatMap(c => [c.commit.author?.email, c.commit.committer?.email, c.author?.login, c.committer?.login])),

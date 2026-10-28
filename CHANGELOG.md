@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## Unreleased (28 Oct 2026): CI is the verifier
+
+- Self-merge now requires a successful run of main's `.github/workflows/verify.yml` (`pull_request_target`, checks out the exact head, `npm ci && npm test`) for the PR's current head SHA, checked by path, event and head SHA (`verifyGate`). The `verdict` status and verdict comments no longer verify anything (Matt, 28 Oct 2026). risk:high still needs review PASS comments from N independent identities on top. The `status` trigger is gone; `verify` finishing starts self-merge.
+
 ## 0.11.0 (26 Oct 2026)
 
 **Devbox project isolation, warn only.** Every devbox project runs as one Unix user, so shared defaults (Convex's `anonymous-agent` state in `~/.convex`, port 3210) let one project's tool reach another's service. This release ships the standard's five rules as an identity file, a helper and a repo check. Docs: `docs/project-isolation.md`.

@@ -1,0 +1,31 @@
+# The verifier (Matt, 28 Oct 2026: CI is the verifier). Runs the checks on the PR's exact head commit with the workflow
+# code from main: pull_request_target always loads main's copy of this file, so a PR cannot edit what runs here, and
+# self-merge counts only runs whose path is this file and whose event is pull_request_target (lib/self-merge.mjs
+# verifyGate). A PR's own workflow, even one with a job named verify, never counts.
+# Safety: this job checks out and runs PR code, so it gets a read-only token, no secrets, no cache, and does not persist
+# credentials. Forks are refused by self-merge anyway, and this job skips them.
+name: verify
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test
+      - run: node bin/eng.mjs --help

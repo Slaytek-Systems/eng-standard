@@ -49,14 +49,15 @@ ship:
       - "**/billing/**"
       - "**/billing.*"
     version_only: [package.json, package-lock.json]   # risk:low when the version field is the only change
-  self_merge:                     # .github/workflows/self-merge.yml: events only (ci done, verdict, label, ready, retarget) + dispatch. No wait.
+  self_merge:                     # .github/workflows/self-merge.yml: events only (ci or verify done, review verdict, label, ready, retarget) + dispatch. No wait.
     base: main
     hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go. There is no hold window.
-    check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
-    status: verdict               # commit status the independent checker posts (eng verdict ... --pr <n>)
+    check: test                   # GitHub Actions check run (.github/workflows/ci.yml): the post-merge check on main
+    verify_workflow: .github/workflows/verify.yml   # the verifier: CI on the exact head, workflow code from main
+    verify_event: pull_request_target                # only runs on this event count (main's copy of the file)
     # verifier_logins: [<login>, <login>]   # once verifiers have their own GitHub identities: only these logins'
-    #                               verdict comments count, one identity per login (docs/self-merge.md)
+    #                               review verdict comments count (risk:high), one identity per login (docs/self-merge.md)
 
 gates:
   skipped_is_failed: true
-  required: [test, verdict]
+  required: [test, verify]

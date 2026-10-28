@@ -54,7 +54,10 @@ const authors = authorsFrom(['feat\n\nAgent: builder-1'], ['t@t', 'builder-login
 const V = (o = {}) => ({ sha: SHA, patch_id: 'p1', result: 'PASS', by: 'checker-a', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', ...o });
 const OUT = { login: 'unrelated-outsider', association: 'NONE' };
 const V2 = V({ by: 'checker-b' });
-const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, status: { state: 'success', created_at: '2026-10-19T04:30:00Z' }, verdicts: [V()], authors, ...o });
+const VR = (o = {}) => ({ id: 42, head_sha: SHA, path: '.github/workflows/verify.yml', event: 'pull_request_target', status: 'completed', conclusion: 'success', ...o });
+const st = (o = {}) => ({ risk: 'low', containsBase: true, verify: VR(), verdicts: [V()], authors, ...o });
+const HP = pr({ labels: ['risk:high'] }), C1 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, high_risk: { ...HR, verifiers: 1 } } });
+const h1 = (o = {}) => st({ risk: 'high', ...o });   // review rules with one reviewer needed
 const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
 
 test('self-merge: no wait; it merges as soon as every rule holds, and hold_minutes is refused', () => {
@@ -73,7 +76,6 @@ test('self-merge events: each trigger maps to its one PR; ci finished on main or
     ['workflow_dispatch', { inputs: { pr: '' } }, { all: true }],
     ['pull_request_target', { action: 'unlabeled', pull_request: { number: 7 } }, { prs: [7] }],
     ['issue_comment', { issue: { number: 7, pull_request: {} }, comment: { body } }, { prs: [7] }],
-    ['status', { context: 'verdict', sha: SHA }, { sha: SHA }],
     ['workflow_run', wr({ pull_requests: [{ number: 7, base: { ref: 'main' } }, { number: 8, base: { ref: 'other' } }] }), { prs: [7] }],
     ['workflow_run', wr({ head_branch: 'main', event: 'workflow_dispatch' }), { all: true }],
     ['workflow_run', wr({ head_branch: 'main', event: 'push' }), { all: true }],
@@ -82,7 +84,7 @@ test('self-merge events: each trigger maps to its one PR; ci finished on main or
   ];
   for (const [name, ev, want] of cases) assert.deepEqual(eventTarget(name, ev, C), want, `${name} ${JSON.stringify(ev)}`);
   for (const [name, ev] of [['issue_comment', { issue: { number: 7, pull_request: {} }, comment: { body: 'LGTM' } }], ['issue_comment', { issue: { number: 7 }, comment: { body } }],
-    ['status', { context: 'test', sha: SHA }], ['schedule', {}], ['push', {}]])
+    ['status', { context: 'verdict', sha: SHA }], ['status', { context: 'test', sha: SHA }], ['schedule', {}], ['push', {}]])
     assert.ok(eventTarget(name, ev, C).skip, `${name} ${JSON.stringify(ev)} is skipped`);
 });
 
@@ -96,13 +98,10 @@ test('self-merge: every rule must hold', () => {
     [pr({ labels: ['risk:low', 'hold'] }), st(), /hold label/],
     [pr({ labels: [] }), st(), /no risk:low or risk:high label/],
     [pr(), st({ containsBase: false }), /does not contain main's tip/],
-    [pr(), st({ check: null }), /no test check/],
-    [pr(), st({ check: { ...st().check, head_sha: 'b'.repeat(40) } }), /no test check on head/],
-    [pr(), st({ check: { ...st().check, conclusion: 'failure' } }), /test is failure/],
-    [pr(), st({ check: { ...st().check, status: 'in_progress', conclusion: null } }), /test is in_progress/],
-    [pr(), st({ status: null }), /no verdict status/],
-    [pr(), st({ status: { state: 'failure', created_at: '2026-10-19T04:30:00Z' } }), /verdict is failure/],
-    [pr(), st({ status: { state: 'pending', created_at: '2026-10-19T04:30:00Z' } }), /verdict is pending/],
+    [pr(), st({ verify: null }), /no verify run/],
+    [pr(), st({ verify: VR({ head_sha: 'b'.repeat(40) }) }), /not head aaaaaaaa/],
+    [pr(), st({ verify: VR({ conclusion: 'failure' }) }), /verify is failure/],
+    [HP, hi({ verdicts: [] }), /review: no independent verdict comment/],
   ];
   for (const [p, s, re] of cases) { const d = no(p, s); assert.equal(d.merge, false, re.source); assert.match(d.reason, re); }
 });
@@ -152,14 +151,38 @@ test('eng verdict --pr: an author identity is rejected and posts failure; an ind
   assert.equal(r.status, 1); assert.match(r.stderr, /usage: eng verdict status --pr <n>/);
 });
 
-test('rule 1: risk:low merges after one independent PASS on the exact head', () => {
-  assert.equal(decide(pr(), st(), C).merge, true);
-  assert.match(decide(pr(), st(), C).reason, /risk:low: PASS by checker-a/);
+test('rule 1: risk:low merges on main\'s verify run passing on the exact head; verdict comments are not needed', () => {
+  assert.equal(decide(pr(), st({ verdicts: [] }), C).merge, true);
+  assert.match(decide(pr(), st({ verdicts: [] }), C).reason, /^risk:low: verify passed on aaaaaaaa \(run 42\)$/);
+});
+
+test('CI is the verifier: a PR without the verify pass is refused', () => {
+  for (const [verify, re] of [[null, /no verify run \(main's \.github\/workflows\/verify\.yml\) on head aaaaaaaa/], [VR({ conclusion: 'failure' }), /verify is failure on head/],
+    [VR({ status: 'in_progress', conclusion: null }), /verify is in_progress on head/], [VR({ conclusion: 'cancelled' }), /verify is cancelled/]])
+    for (const [p, s] of [[pr(), st({ verify })], [HP, hi({ verify })]]) { const d = decide(p, s, C); assert.equal(d.merge, false, re.source); assert.match(d.reason, re); }
+});
+
+test('CI is the verifier: a verify pass on an older SHA is refused', () => {
+  const old = VR({ head_sha: 'b'.repeat(40) });
+  for (const [p, s] of [[pr(), st({ verify: old })], [HP, hi({ verify: old })]]) {
+    const d = decide(p, s, C); assert.equal(d.merge, false); assert.match(d.reason, /verify passed on bbbbbbbb, not head aaaaaaaa: an older push does not count/);
+  }
+});
+
+test('CI is the verifier: a forged verdict comment alone is refused, and so is a pass from a workflow the PR controls', () => {
+  const forged = [V(), V2, V({ by: 'checker-c' })];   // valid-looking PASS comments from the owner account, every identity
+  for (const [p, s] of [[pr(), st({ verify: null, verdicts: forged })], [HP, hi({ verify: null, verdicts: forged })]]) {
+    const d = decide(p, s, C); assert.equal(d.merge, false); assert.match(d.reason, /no verify run/);
+  }
+  for (const [o, why] of [[{ event: 'pull_request' }, 'the PR\'s own copy of verify.yml (pull_request runs the PR\'s workflow code)'],
+    [{ path: '.github/workflows/ci.yml' }, 'another workflow'], [{ path: '.github/workflows/evil.yml' }, 'a workflow the PR added'], [{ event: 'workflow_dispatch' }, 'a dispatch on the PR branch']]) {
+    const d = decide(pr(), st({ verify: VR(o), verdicts: forged }), C); assert.equal(d.merge, false, why); assert.match(d.reason, /is not main's \.github\/workflows\/verify\.yml on pull_request_target/, why);
+  }
 });
 
 test('independence: a verifier whose identity is an author\'s (Agent trailer, commit email or login) is rejected', () => {
   for (const by of ['builder-1', 't@t', 'builder-login'])
-    assert.match(decide(pr(), st({ verdicts: [V({ by })] }), C).reason, /no independent verdict comment/, by);
+    assert.match(decide(HP, h1({ verdicts: [V({ by })] }), C1).reason, /no independent verdict comment/, by);
   assert.match(decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [V(), V({ by: 'builder-1' })] }), C).reason, /have 1 \(checker-a\)/, 'an author\'s PASS is not one of the N');
   assert.deepEqual([...authorsFrom(['a\n\nAgent: x, y\nAgent-Family: legacy'], ['e@e', null]).ids].sort(), ['e@e', 'x', 'y'], 'a legacy Agent-Family trailer names no identity');
 });
@@ -170,7 +193,7 @@ test('rule 2: risk:high (label, recomputed, or a gate/auth/billing path) needs P
     assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
   assert.equal(C.high_verifiers, 2, 'N defaults to 2');
   assert.equal(decide(H, hi(), C).merge, true, 'two distinct identities count');
-  assert.match(decide(H, hi(), C).reason, /risk:high: PASS by checker-a, checker-b/);
+  assert.match(decide(H, hi(), C).reason, /risk:high: verify passed on aaaaaaaa \(run 42\); review PASS by checker-a, checker-b/);
   const cases = [
     [H, hi({ verdicts: [V()] }), 'one identity'],
     [H, hi({ verdicts: [V(), V({ comment_at: '2026-10-19T04:05:00Z' })] }), 'the same identity twice is one verifier'],
@@ -190,7 +213,7 @@ test('rule 3: the head must contain main\'s tip (ancestry)', () => {
 });
 
 test('rule 4: a missing, stale or FAIL verdict refuses; each verifier\'s latest counts and any FAIL blocks', () => {
-  const no = s => decide(pr(), s, C);
+  const no = s => decide(HP, { ...s, risk: 'high' }, C1);
   assert.match(no(st({ verdicts: [] })).reason, /no independent verdict comment for head aaaaaaaa/);
   assert.match(no(st({ verdicts: [V({ sha: 'b'.repeat(40) })] })).reason, /stale verdicts \(for bbbbbbbb\)/);
   assert.match(no(st({ verdicts: [V({ result: 'FAIL' })] })).reason, /verdict FAIL by checker-a/);
@@ -219,7 +242,7 @@ test('legacy verdict comments with family, provider and model fields still parse
   const [v] = parseVerdicts([{ body, user: { login: 'Mattslayga' }, author_association: 'OWNER', created_at: '2026-10-19T04:00:00Z' }]);
   assert.deepEqual([v.sha, v.result, v.by], [SHA, 'PASS', 'old-checker']);
   for (const k of ['family', 'provider', 'model']) assert.equal(k in v, false, k);
-  assert.equal(decide(pr(), st({ verdicts: [v] }), C).merge, true, 'a legacy PASS counts by its identity');
+  assert.equal(decide(HP, h1({ verdicts: [v] }), C1).merge, true, 'a legacy PASS counts by its identity');
   const [noFamily] = parseVerdicts([{ body: verdictBody({ sha: SHA, result: 'PASS', by: 'new' }) }]);
   assert.equal(noFamily.by, 'new', 'a verdict without a family parses');
 });
@@ -256,6 +279,7 @@ process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
 }
 const TIP = 'c'.repeat(40), PARENT = 'd'.repeat(40), HEAD = 'e'.repeat(40), R = 'repos/o/r';
 const run = (sha, conclusion) => ({ check_runs: [{ head_sha: sha, status: 'completed', conclusion, completed_at: '2026-10-19T05:00:00Z', started_at: '2026-10-19T04:55:00Z', app: { slug: 'github-actions' } }] });
+const vruns = (sha, runs = [VR({ head_sha: sha })]) => ({ [`GET ${R}/actions/workflows/verify.yml/runs?head_sha=${sha}&event=pull_request_target&per_page=20`]: { workflow_runs: runs } });
 const runs = (sha, c) => ({ [`GET ${R}/commits/${sha}/check-runs?check_name=test&filter=latest&per_page=100`]: run(sha, c) });
 
 test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from the bot and merges nothing else', () => {
@@ -306,7 +330,7 @@ const p3 = { number: 3, state: 'open', title: 'fix: gate', draft: false, created
 const routes = {
   [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'success'), ...runs(SHA, 'success'),
   [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [p3], [`GET ${R}/pulls/3`]: { ...p3, changed_files: 1, commits: 1 },
-  [`GET ${R}/commits/${SHA}/status`]: { statuses: [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' }] },
+  ...vruns(SHA),
   [`GET ${R}/pulls/3/commits?per_page=100`]: [{ commit: { message: 'fix\n\nAgent: builder-1', author: { email: 't@t' }, committer: { email: 'c@t' } }, author: { login: 'builder-login' }, committer: { login: 'web-flow' } }],
   [`GET ${R}/issues/3/comments?per_page=100`]: comments,
   [`GET ${R}/compare/${TIP}...${SHA}`]: { behind_by: 0 },
@@ -318,28 +342,28 @@ const routes = {
 test('rules 2 and 6: a risk:high PR with PASSes from two distinct identities on its head merges, then the post-merge check runs on main', () => {
   let r = gate(routes);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: PASS by checker-a, checker-b/);
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: verify passed on aaaaaaaa \(run 42\); review PASS by checker-a, checker-b/);
   assert.deepEqual(r.sent.map(c => c.slice(0, 2)), [['PUT', `${R}/pulls/3/merge`], ['DELETE', `${R}/git/refs/heads/feat/x`], ['POST', `${R}/actions/workflows/ci.yml/dispatches`]]);
   assert.deepEqual(r.sent[0][2], { merge_method: 'squash', sha: SHA, commit_title: 'fix: gate (#3)' });
   assert.deepEqual(r.sent[2][2], { ref: 'main' });
   r = gate({ ...routes, [`GET ${R}/compare/${TIP}...${SHA}`]: { behind_by: 1 } });
   assert.match(r.stdout, /skip: head aaaaaaaa does not contain main's tip/); assert.equal(r.sent.length, 0);
   r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: comments.slice(0, 1) });
-  assert.match(r.stdout, /skip: risk:high needs PASSes/); assert.equal(r.sent.length, 0);
+  assert.match(r.stdout, /skip: review: risk:high needs PASSes/); assert.equal(r.sent.length, 0);
   r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: [V(), { ...V2, ...OUT }].map(asComment) });
-  assert.match(r.stdout, /skip: risk:high needs PASSes .* have 1 \(checker-a\)$/m, 'an outsider\'s comment cannot supply the second identity'); assert.equal(r.sent.length, 0);
+  assert.match(r.stdout, /skip: review: risk:high needs PASSes .* have 1 \(checker-a\)$/m, 'an outsider\'s comment cannot supply the second identity'); assert.equal(r.sent.length, 0);
   for (const by of ['builder-login', 'c@t']) {
     r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: [V(), V({ by })].map(asComment) });
-    assert.match(r.stdout, /skip: risk:high needs PASSes .* have 1 \(checker-a\)$/m, `${by}: the commit author's login and committer email are author identities`); assert.equal(r.sent.length, 0);
+    assert.match(r.stdout, /skip: review: risk:high needs PASSes .* have 1 \(checker-a\)$/m, `${by}: the commit author's login and committer email are author identities`); assert.equal(r.sent.length, 0);
   }
   const lowDocs = { ...routes, [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [{ ...p3, labels: [{ name: 'risk:low' }] }], [`GET ${R}/issues/3/labels`]: [{ name: 'risk:low' }], [`GET ${R}/issues/3/comments?per_page=100`]: comments.slice(0, 1) };
   for (const files of [[{ filename: '.github/workflows/de\nploy.yml', status: 'modified' }], [{ filename: 'src/policy.mjs', previous_filename: 'src/auth/a\nb.ts', status: 'renamed' }]]) {
     r = gate({ ...lowDocs, [`GET ${R}/pulls/3/files?per_page=100`]: files });
-    assert.match(r.stdout, /skip: risk:high needs PASSes/, JSON.stringify(files)); assert.equal(r.sent.length, 0);
+    assert.match(r.stdout, /skip: review: risk:high needs PASSes/, JSON.stringify(files)); assert.equal(r.sent.length, 0);
   }
   // GitHub lists at most 3,000 files and 250 commits for a PR (round 9 P1s): a short list is never evidence.
   r = gate({ ...lowDocs, [`GET ${R}/pulls/3/files?per_page=100`]: [{ filename: 'docs/a.md', status: 'modified' }], [`GET ${R}/pulls/3`]: { ...p3, changed_files: 3001, commits: 1 } });
-  assert.match(r.stdout, /skip: risk:high needs PASSes/, 'a sensitive file past the listing cap still makes the PR risk:high'); assert.equal(r.sent.length, 0);
+  assert.match(r.stdout, /skip: review: risk:high needs PASSes/, 'a sensitive file past the listing cap still makes the PR risk:high'); assert.equal(r.sent.length, 0);
   r = gate({ ...routes, [`GET ${R}/pulls/3`]: { ...p3, changed_files: 1, commits: 251 } });
   assert.match(r.stdout, /skip: could not read state: GitHub listed 1 of 251 commits, so the authors are unknown/, 'an author past the listing cap refuses the merge'); assert.equal(r.sent.length, 0);
 });
@@ -351,8 +375,10 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.ok(merged(r), r.stdout);
   assert.ok(!r.calls.some(c => c[1].startsWith(`${R}/pulls?state=open`)), 'a verdict comment looks at its own PR, not every open PR');
-  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/pulls`]: [{ ...p3, head: { ...p3.head, sha: SHA } }] }, { name: 'status', payload: { context: 'verdict', sha: SHA, state: 'success' } });
-  assert.ok(merged(r), `the verdict status finds the PR whose head is its SHA: ${r.stdout}`);
+  r = gate(routes, { name: 'workflow_run', payload: { workflow_run: { event: 'pull_request_target', head_branch: 'feat/x', head_sha: SHA, pull_requests: [{ number: 3, base: { ref: 'main' } }] } } });
+  assert.ok(merged(r), `verify finishing on the PR starts its merge: ${r.stdout}`);
+  r = gate({ ...routes, ...vruns(SHA, []) }, comment);
+  assert.equal(merged(r), false, 'a verdict comment without the verify run merges nothing'); assert.match(r.stdout, /skip: no verify run/);
   for (const ev of [{ name: 'issue_comment', payload: { issue: { number: 3, pull_request: {} }, comment: { body: 'LGTM' } } }, { name: 'status', payload: { context: 'test', sha: SHA } }]) {
     r = gate(routes, ev);
     assert.equal(r.calls.length, 0, `${ev.name}: no API call for an event that is not a self-merge trigger`); assert.match(r.stdout, /nothing to do/);
@@ -362,7 +388,7 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
     [{ [`GET ${R}/pulls/3`]: twice({ labels: [{ name: 'risk:high' }, { name: 'hold' }] }) }, /refused on re-check: hold label/, 'hold added during the run'],
     [{ [`GET ${R}/pulls/3`]: twice({ head: { ...p3.head, sha: 'b'.repeat(40) } }) }, /changed during this run/, 'a push during the run'],
     [{ [`GET ${R}/commits/main`]: { seq: [{ sha: TIP }, { sha: 'f'.repeat(40) }] }, ...runs('f'.repeat(40), 'success') }, /changed during this run/, 'main moved during the run'],
-    [{ [`GET ${R}/issues/3/comments?per_page=100`]: { seq: [comments, [...comments, asComment(V({ result: 'FAIL', comment_at: '2026-10-19T05:00:00Z' }))]] } }, /refused on re-check: verdict FAIL by checker-a/, 'a FAIL posted during the run'],
+    [{ [`GET ${R}/issues/3/comments?per_page=100`]: { seq: [comments, [...comments, asComment(V({ result: 'FAIL', comment_at: '2026-10-19T05:00:00Z' }))]] } }, /refused on re-check: review: verdict FAIL by checker-a/, 'a FAIL posted during the run'],
   ];
   for (const [over, want, why] of recheck) {
     r = gate({ ...routes, ...over }, comment);
@@ -372,12 +398,19 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
 
 test('self-merge.yml has no schedule; one queued concurrency group; retargets and verdict events only', () => {
   const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge.yml', import.meta.url), 'utf8')), job = wf.jobs['self-merge'];
-  assert.deepEqual(Object.keys(wf.on).sort(), ['issue_comment', 'pull_request_target', 'status', 'workflow_dispatch', 'workflow_run']);
+  assert.deepEqual(Object.keys(wf.on).sort(), ['issue_comment', 'pull_request_target', 'workflow_dispatch', 'workflow_run']);
+  assert.deepEqual(wf.on.workflow_run.workflows, ['ci', 'verify'], 'verify finishing starts self-merge');
   assert.deepEqual(job.concurrency, { group: 'self-merge', 'cancel-in-progress': false, queue: 'max' });
   assert.match(job.if, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base/, 'an edit runs only when the base changed');
   assert.match(job.if, /startsWith\(github\.event\.comment\.body, '<!-- eng-verdict\/v1 -->'\)/);
-  assert.match(job.if, /github\.event\.context == 'verdict'/);
-  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')).jobs['start-self-merge'];
+  assert.doesNotMatch(job.if, /github\.event\.context/, 'no verdict status trigger');
+  const v = YAML.parse(fs.readFileSync(new URL('../.github/workflows/verify.yml', import.meta.url), 'utf8'));
+  assert.deepEqual(Object.keys(v.on), ['pull_request_target'], 'verify.yml loads from main only');
+  assert.deepEqual(v.permissions, { contents: 'read' });
+  const co = v.jobs.verify.steps[0];
+  assert.equal(co.with.ref, '${{ github.event.pull_request.head.sha }}', 'checks out the exact head commit');
+  assert.equal(co.with['persist-credentials'], false);
+  assert.ok(v.jobs.verify.steps.some(x => x.run === 'npm test'));  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')).jobs['start-self-merge'];
   assert.equal(ci.if, "always() && github.event_name == 'workflow_dispatch'");
   assert.match(ci.steps[0].run, /gh workflow run self-merge\.yml .*--ref main/);
 });
@@ -392,7 +425,7 @@ test('round-1 P1: only trusted commenters count, before any verdict counts or su
   const H = pr({ labels: ['risk:high'] }), FAIL = V({ by: 'gem-r', result: 'FAIL', comment_at: '2026-10-19T04:01:00Z' });
   assert.match(decide(H, hi({ verdicts: [V(), { ...V2, ...OUT }] }), C).reason, /have 1 \(checker-a\)$/, 'an outsider cannot supply the second identity');
   assert.match(decide(H, hi({ verdicts: [{ ...V(), ...OUT }, { ...V2, ...OUT }] }), C).reason, /no independent verdict comment/, 'nor both');
-  assert.match(decide(pr(), st({ verdicts: [FAIL, V({ comment_at: '2026-10-19T04:02:00Z' }), { ...FAIL, ...OUT, result: 'PASS', comment_at: '2026-10-19T04:03:00Z' }] }), C).reason, /FAIL by gem-r/, 'an outsider reusing a failing verifier\'s `by` cannot clear its FAIL');
+  assert.match(decide(HP, h1({ verdicts: [FAIL, V({ comment_at: '2026-10-19T04:02:00Z' }), { ...FAIL, ...OUT, result: 'PASS', comment_at: '2026-10-19T04:03:00Z' }] }), C1).reason, /FAIL by gem-r/, 'an outsider reusing a failing verifier\'s `by` cannot clear its FAIL');
   for (const association of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'NONE', null]) assert.equal(trusted([V({ association })], null).length, 0, String(association));
 });
 
@@ -420,12 +453,12 @@ test('round-1 note (b): an existing unlabelled auto-revert is labelled and decid
     [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
     [`GET ${R}/pulls?state=open&base=main&head=o:${branch}`]: [rv], [`GET ${R}/pulls/9`]: rv,
     [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }], [`POST ${R}/issues/9/labels`]: {},
-    [`GET ${R}/commits/${HEAD}/status`]: { statuses: [] }, [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
+    ...vruns(HEAD, []), [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
     [`GET ${R}/compare/${TIP}...${HEAD}`]: { behind_by: 0 },
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(r.sent, [['POST', `${R}/issues/9/labels`, { labels: ['risk:high'] }]]);
-  assert.match(r.stdout, /#9 eeeeeeee: skip: no verdict status on head/, 'decided past the label check on this tick');
+  assert.match(r.stdout, /#9 eeeeeeee: skip: no verify run/, 'decided past the label check on this tick');
 });
 
 const PROTO = ['constructor', '__proto__', 'toString', 'hasOwnProperty'];
@@ -444,5 +477,5 @@ test('round-2 P1: an edited verdict comment counts from its edit when ordering a
   const edited = parseVerdicts([c(V(), '2026-10-19T04:00:00Z', '2026-10-19T14:59:00Z')]);
   assert.equal(edited[0].comment_at, '2026-10-19T14:59:00.000Z');
   const order = parseVerdicts([c(V({ result: 'FAIL' }), '2026-10-19T04:00:00Z', '2026-10-19T04:30:00Z'), c(V(), '2026-10-19T04:10:00Z', '2026-10-19T04:10:00Z')]);
-  assert.match(decide(pr(), st({ verdicts: order }), C).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
+  assert.match(decide(HP, h1({ verdicts: order }), C1).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
 });
