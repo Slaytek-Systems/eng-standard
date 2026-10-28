@@ -279,7 +279,7 @@ process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
 }
 const TIP = 'c'.repeat(40), PARENT = 'd'.repeat(40), HEAD = 'e'.repeat(40), R = 'repos/o/r';
 const run = (sha, conclusion) => ({ check_runs: [{ head_sha: sha, status: 'completed', conclusion, completed_at: '2026-10-19T05:00:00Z', started_at: '2026-10-19T04:55:00Z', app: { slug: 'github-actions' } }] });
-const vruns = (sha, runs = [VR({ head_sha: sha })]) => ({ [`GET ${R}/actions/workflows/verify.yml/runs?head_sha=${sha}&event=pull_request_target&per_page=20`]: { workflow_runs: runs } });
+const vruns = (sha, runs = [VR({ head_sha: sha })]) => ({ [`GET ${R}/actions/workflows/verify.yml/runs?head_sha=${sha}&event=pull_request_target&per_page=100`]: { workflow_runs: runs } });
 const runs = (sha, c) => ({ [`GET ${R}/commits/${sha}/check-runs?check_name=test&filter=latest&per_page=100`]: run(sha, c) });
 
 test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from the bot and merges nothing else', () => {
@@ -496,4 +496,31 @@ test('verify.yml runs when a PR is retargeted to main without a push, and skips 
   assert.equal(run('edited', { base: { ref: { from: 'x' } } }, 'fork/r'), false, 'forks still skipped');
   assert.equal(v.concurrency, undefined, 'no workflow-level group: a skipped edit run must not cancel a running verify');
   assert.deepEqual(v.jobs.verify.concurrency, { group: 'verify-${{ github.event.pull_request.number }}', 'cancel-in-progress': true });
+});
+
+test('pickVerifyRun: skipped edit runs never hide the real verify result; newest of the rest wins; every page counts', async () => {
+  const { pickVerifyRun } = await import('../lib/self-merge.mjs');
+  const at = (m, o) => VR({ created_at: `2026-10-28T10:${m}:00Z`, id: Number(m), ...o });
+  const skip = m => at(m, { conclusion: 'skipped' });
+  const gateOn = pages => decide(pr(), st({ verify: pickVerifyRun(pages, SHA) }), C);
+  let d = gateOn([{ workflow_runs: [skip('20'), at('10')] }]);
+  assert.equal(d.merge, true, 'a skipped edit run after a success passes: ' + d.reason);
+  const during = [{ workflow_runs: [skip('15'), at('10', { status: 'in_progress', conclusion: null })] }];
+  assert.match(gateOn(during).reason, /verify is in_progress/, 'while verify runs, the gate waits');
+  d = gateOn([{ workflow_runs: [skip('15'), at('10')] }]);
+  assert.equal(d.merge, true, 'a skipped run during an in-progress verify that later succeeds passes: ' + d.reason);
+  d = gateOn([{ workflow_runs: [at('20', { conclusion: 'failure' })] }, { workflow_runs: [at('10')] }]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is failure/, 'a newer failure (on a later page too) beats an older success');
+  d = gateOn([{ workflow_runs: [skip('20'), skip('10')] }]);
+  assert.equal(d.merge, false); assert.match(d.reason, /no verify run/, 'only skipped runs are refused');
+  assert.equal(pickVerifyRun([{ workflow_runs: [skip('30')] }, { workflow_runs: [at('05')] }], SHA).id, 5, 'a success on page 2 is found');
+  assert.equal(pickVerifyRun([{ workflow_runs: [at('30', { head_sha: 'b'.repeat(40) })] }], SHA), null, 'another head never counts');
+});
+
+test('pr-gate merge: a newer skipped edit run does not hide the verify pass; only skipped runs merge nothing', () => {
+  const skipped = VR({ id: 99, conclusion: 'skipped', created_at: '2026-10-28T11:00:00Z' }), ok = VR({ created_at: '2026-10-28T10:00:00Z' });
+  let r = gate({ ...routes, ...vruns(SHA, [skipped, ok]) });
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: .*verify passed on aaaaaaaa \(run 42\)/, r.stdout + r.stderr);
+  r = gate({ ...routes, ...vruns(SHA, [skipped]) });
+  assert.match(r.stdout, /skip: no verify run/); assert.equal(r.sent.length, 0);
 });

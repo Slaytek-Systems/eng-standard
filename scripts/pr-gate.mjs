@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
+import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK, pickVerifyRun } from '../lib/self-merge.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = YAML.parse(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
@@ -55,9 +55,9 @@ function label(n) {
   return want;
 }
 
-// Runs of main's verify workflow (by its main-owned path) for this head. The gate re-checks path, event and head_sha.
-const verifyRun = sha => get(`repos/${R}/actions/workflows/${path.basename(C.verify_workflow)}/runs?head_sha=${sha}&event=${C.verify_event}&per_page=20`).workflow_runs
-  .sort((x, y) => (y.created_at || '').localeCompare(x.created_at || ''))[0] || null;
+// Runs of main's verify workflow (by its main-owned path) for this head, every page. pickVerifyRun drops skipped runs (a
+// title or body edit) and takes the newest of the rest; the gate re-checks path, event and head_sha.
+const verifyRun = sha => pickVerifyRun(JSON.parse(gh(['--paginate', '--slurp', `repos/${R}/actions/workflows/${path.basename(C.verify_workflow)}/runs?head_sha=${sha}&event=${C.verify_event}&per_page=100`])), sha);
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 
