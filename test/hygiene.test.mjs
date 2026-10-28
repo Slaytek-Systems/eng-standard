@@ -122,9 +122,12 @@ test('sync renders .eng/test-tmp.mjs and the hygiene SOP in SHIPPING.md and AGEN
   assert.match(ship, /reuse it for every review round/); assert.match(ship, /never one per lane or worktree/); assert.match(ship, /CARGO_INCREMENTAL=0/);
   assert.match(agents, /one worktree per PR reused across review rounds/);
   const { default: setup } = await import(path.join(dir, '.eng/test-tmp.mjs'));
-  const saved = { E: process.env.ENG_TMP, T: process.env.TMPDIR }; delete process.env.ENG_TMP; process.env.TMPDIR = base;
-  const teardown = setup();
-  const d = process.env.ENG_TMP; assert.match(path.basename(d), /^eng-hyg-/); assert.equal(path.dirname(d), base); assert.ok(fs.existsSync(d));
+  const saved = { E: process.env.ENG_TMP, T: process.env.TMPDIR, B: process.env.ENG_TMP_BASE }; delete process.env.ENG_TMP; delete process.env.ENG_TMP_BASE; process.env.TMPDIR = base;
+  let teardown = setup();
+  let d = process.env.ENG_TMP; assert.match(path.basename(d), /^eng-hyg-/); assert.equal(path.dirname(d), path.join(process.env.XDG_CACHE_HOME, 'eng/hyg/scratch'), 'run directly: the scratch root, not TMPDIR or /tmp');
+  assert.equal(process.env.TMPDIR, d); assert.equal(fs.statSync(path.dirname(d)).mode & 0o777, 0o700);
   teardown(); assert.ok(!fs.existsSync(d));
-  process.env.TMPDIR = saved.T; if (saved.E === undefined) delete process.env.ENG_TMP; else process.env.ENG_TMP = saved.E;
+  delete process.env.ENG_TMP; process.env.ENG_TMP_BASE = base; teardown = setup(); d = process.env.ENG_TMP;
+  assert.equal(path.dirname(d), base, 'a parent round\'s ENG_TMP_BASE wins'); teardown(); assert.ok(!fs.existsSync(d));
+  for (const [k, v] of [['TMPDIR', saved.T], ['ENG_TMP', saved.E], ['ENG_TMP_BASE', saved.B]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
 });

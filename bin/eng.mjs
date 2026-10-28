@@ -10,10 +10,10 @@ import YAML from 'yaml';
 import { renderAll, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, tmpGuardErrors } from '../lib/hygiene.mjs';
 import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
-import { renovate, launch } from '../lib/renovate-cli.mjs';
+import { renovate, launch, tmpGuard } from '../lib/renovate-cli.mjs';
 import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { validateIsolation } from '../lib/isolation.mjs';
@@ -59,6 +59,7 @@ function configErrors(c) {
   errs.push(...validateAuto(c.merge));
   errs.push(...validateIsolation(c.isolation));
   errs.push(...trustErrors(c.trust));
+  errs.push(...tmpGuardErrors(c.hygiene?.tmp_guard));
   return errs;
 }
 
@@ -955,12 +956,12 @@ function gate() {
 function doctor() {
   const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
   const checks = [...doctorConfig(cfg, files, readOr), ...mergeDoctor(cfg)];
-  for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
+  for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : c.warn ? 'WARN' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
   for (const h of hits) console.log(`  FAIL ${hitText(h)}`);
-  const bad = checks.filter(c => !c.ok).length + hits.length;
+  const bad = checks.filter(c => !c.ok && !c.warn).length + hits.length;
   if (bad) die(`doctor: ${bad} disk-hygiene problem(s) above`);
   console.log(`eng doctor: PASS (${checks.length} config checks, ${DISK_RULE_IDS.length + 1} disk rules)`);
 }
@@ -1037,7 +1038,7 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   rules: () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove'),
   verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
   mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
-  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, merge: () => merge(engCtx(), a),
+  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), 'tmp-guard': () => tmpGuard(engCtx(), a), doctor, merge: () => merge(engCtx(), a),
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | tmp-guard [--ignore <glob>]... -- <cmd> | doctor | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();

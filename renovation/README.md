@@ -52,13 +52,13 @@ Repeat `plan` → branch → `apply <step>` → PR for each step. A step runs on
 | 4 | `gates-enforce` | `renovation.gates.mode: enforce`: new findings fail, baselined ones pass |
 | 5 | `verifier` | `ship.verifier`, `renovation.receipt.adapter`, `.gitignore` entry for `renovation/receipts/` |
 | 6 | `e2e` | `renovation.proof.gates` (name, command, timeout) from `project.commands` |
-| 7 | `launch` | `launch: { worktree: private, tmp: $TMPDIR, mode: "0700", base: <default branch> }`, `isolation: { mode: warn }`, and `.eng/project.toml` from `templates/isolation/project.toml` when missing (v0.11.0) |
+| 7 | `launch` | `launch: { worktree: private, tmp: $TMPDIR, mode: "0700", base: <default branch> }`, `isolation: { mode: warn }`, and `.eng/project.toml` from `templates/isolation/project.toml` when missing (v0.11.0). Prints each package script and CI step that runs tests or builds with no per-run root, with the `eng tmp-guard -- <cmd>` form to use instead; it does not edit them (v0.12.0) |
 
 ## Commands
 
 | Command | Does | Exit |
 |---|---|---|
-| `eng renovate audit [--json]` | Present, partial or missing for each item, with evidence and the suggested step. Items: eng.config.yml, SHIPPING.md, merge policy, pack version, baselines, secret scan, fallow, CI checks, toolchain vs CI image, gate mode, verifier/receipt, e2e and proof, launch contract, project isolation (`.eng/project.toml`, `isolation.mode`), checkout and tmp modes. Writes only under `renovation/` | 0 |
+| `eng renovate audit [--json]` | Present, partial or missing for each item, with evidence and the suggested step. Items: eng.config.yml, SHIPPING.md, merge policy, pack version, baselines, secret scan, fallow, CI checks, toolchain vs CI image, gate mode, verifier/receipt, e2e and proof, launch contract, project isolation (`.eng/project.toml`, `isolation.mode`), checkout mode, and `tmp-root` (v0.12.0): hard-coded `/tmp` paths, package scripts (`test*`, `build*`, `validate*`, `verify*`, `e2e*`, `ci*`, or any script calling vitest, jest, mocha, playwright test, `node --test`, bun/deno test, cargo test/build, vite/next build, turbo run test/build) and CI steps that run them with no per-run root, and whether CI or a package script uses `eng tmp-guard`. Writes only under `renovation/` | 0 |
 | `eng renovate plan` | The seven steps with done, next or todo and the open audit items | 0 |
 | `eng renovate apply <step>` | Writes that step's files on the current branch and records the step | 0, or 1 when out of order or on the default branch |
 | `eng renovate render [--check]` | Renders `SHIPPING.md` and `renovation/divergences.md`. `--check` fails when either differs. Text between `<!-- renovation:local -->` and `<!-- renovation:local:end -->` is kept; a pre-existing SHIPPING.md the standard did not write goes there whole on the first render | 1 on drift |

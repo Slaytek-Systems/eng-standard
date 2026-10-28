@@ -14,7 +14,7 @@ process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 let dir, tmp;
-const env = () => ({ ...process.env, TMPDIR: tmp, ENG_TMP: '', ENG_BASE: '', GITHUB_ACTIONS: '', BUILDKITE: '' });
+const env = () => ({ ...process.env, TMPDIR: tmp, ENG_TMP: '', ENG_TMP_BASE: '', ENG_SCRATCH: '', ENG_BASE: '', GITHUB_ACTIONS: '', BUILDKITE: '' });
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: env() });
 const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
 const put = (p, c) => { fs.mkdirSync(path.dirname(path.join(dir, p)), { recursive: true }); fs.writeFileSync(path.join(dir, p), c); };
