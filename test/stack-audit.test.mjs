@@ -12,7 +12,7 @@ process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const STD = YAML.parse(fs.readFileSync(new URL('../standard/modern-stack.yml', import.meta.url), 'utf8'));
-const facts = (name, deps, packageManager = 'bun@1.4.3', ciBun = [], ciNode = []) => ({ name, deps, packageManager, ciBun, ciNode });
+const facts = (name, deps, packageManager = 'bun@1.4.4', ciBun = [], ciNode = []) => ({ name, deps, packageManager, ciBun, ciNode });
 const brief = fs => fs.map(f => `${f.status} ${f.item} ${f.have} -> ${f.want}`);
 
 test('minVersion reads the lowest version a spec allows', () => {
@@ -35,7 +35,7 @@ test('the --core month is the Sydney calendar month, not the UTC one', () => {
 });
 
 test('a repo on the standard has no findings', () => {
-  assert.deepEqual(audit(STD, facts('x', { convex: '^1.46.2', '@sveltejs/kit': '2.70.1', typescript: '~6.0.3' }, 'bun@1.4.3', ['1.4.3'], ['24'])), []);
+  assert.deepEqual(audit(STD, facts('x', { convex: '^1.46.2', '@sveltejs/kit': '2.70.1', typescript: '~6.0.3' }, 'bun@1.4.4', ['1.4.4'], ['24'])), []);
 });
 
 test('below-floor deps, replaced tools, package manager and CI pins are drift', () => {
@@ -44,17 +44,17 @@ test('below-floor deps, replaced tools, package manager and CI pins are drift', 
     'drift convex ^1.36.0 -> >= 1.46.0',
     'drift @workos-inc/node ^8.0.0 -> >= 11.0.0',
     'drift eslint ^9 -> removed (replaced by the lint_format standard)',
-    'drift packageManager bun@1.2.19 -> bun@1.4.3',
-    'drift ci bun 1.3.14 -> >= 1.4.3',
+    'drift packageManager bun@1.2.19 -> bun@1.4.4',
+    'drift ci bun 1.3.14 -> >= 1.4.4',
     'drift ci node 22 -> >= 24',
   ]);
 });
 
 test('recorded exceptions are reported as excepted, not drift', () => {
   const f = audit(STD, facts('kalsigns', { react: '^19', typescript: '^5.9.0' }, 'pnpm@9.15.0'));
-  assert.deepEqual(brief(f), ['drift typescript ^5.9.0 -> >= 6.0.3', 'excepted pnpm pnpm@9.15.0 -> bun@1.4.3']);
+  assert.deepEqual(brief(f), ['drift typescript ^5.9.0 -> >= 6.0.3', 'excepted pnpm pnpm@9.15.0 -> bun@1.4.4']);
   assert.deepEqual(brief(audit(STD, facts('syncsoon', { next: '^16' }, 'npm@10.0.0'))), [
-    'drift next ^16 -> removed (replaced by the framework standard)', 'drift npm npm@10.0.0 -> bun@1.4.3']);
+    'drift next ^16 -> removed (replaced by the framework standard)', 'drift npm npm@10.0.0 -> bun@1.4.4']);
 });
 
 test('core payloads match work.followup-create and keep a stable dedupe key', () => {
@@ -75,7 +75,7 @@ test('eng stack-audit reads package.json, packageManager and CI pins from the gi
   try {
     const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe' });
     git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'bun@1.4.3', devDependencies: { vitest: '^4.0.10' } }));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'bun@1.4.4', devDependencies: { vitest: '^4.0.10' } }));
     fs.mkdirSync(path.join(dir, 'apps/web'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { vitest: '^5.0.4', convex: 'workspace:*' } }));
     fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
@@ -86,4 +86,12 @@ test('eng stack-audit reads package.json, packageManager and CI pins from the gi
     assert.equal(r.status, 1, r.stderr);
     assert.deepEqual(brief(JSON.parse(r.stdout).findings), ['drift vitest ^4.0.10 -> >= 5.0.4', 'drift ci node 22 -> >= 24']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('bun below 1.4.4 fails the standard; 1.4.4 passes (GHSA-cf8x-9m69-3gg3, GHSA-663w-cv8g-jj2p, GHSA-26q8-h657-pf84)', () => {
+  assert.deepEqual(brief(audit(STD, facts('x', {}, 'bun@1.4.3', ['1.4.3']))), [
+    'drift packageManager bun@1.4.3 -> bun@1.4.4',
+    'drift ci bun 1.4.3 -> >= 1.4.4',
+  ]);
+  assert.deepEqual(audit(STD, facts('x', {}, 'bun@1.4.4', ['1.4.4'])), []);
 });

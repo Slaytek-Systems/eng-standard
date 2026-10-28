@@ -4,7 +4,7 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 
 | Layer | Standard (floor) | Sanctioned alternative |
 |---|---|---|
-| Runtime | Bun 1.4.3 in `packageManager`, Node 24 LTS for `vp` and servers | pnpm, Kalsigns only |
+| Runtime | Bun 1.4.4 (minimum) in `packageManager`, Node 24 LTS for `vp` and servers | pnpm, Kalsigns only |
 | Toolchain | Vite+ (`vp`) ≥ 1.2.0, Vite ≥ 8.3 | plain `bun run` oxlint/oxfmt/vitest scripts |
 | Framework | SvelteKit ≥ 2.70 + Svelte ≥ 5.57.2 | Astro 7 for static or content sites |
 | Backend | Convex ≥ 1.46 on Convex Cloud | self-hosted Convex on Railway; PlanetScale |
@@ -14,7 +14,7 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 | Type-check | TS 7.0.2 as the checker, `typescript` 6.0.3 as the API shim | plain TS 7 where no Svelte, Astro, Next or TS-API tools |
 | Test | Vitest ≥ 5.0.4, `convex-test` ≥ 0.0.62, Playwright ≥ 1.64.1 | none |
 | AI | `ai` ≥ 7, OpenRouter provider ≥ 3 | none |
-| CI pins | Bun from `packageManager`, Node 24 from `.node-version` | none |
+| CI pins | Bun 1.4.4 from `packageManager` (minimum 1.4.4), Node 24 from `.node-version` | none |
 | Deploy | Railway | Azure, Microsoft-ecosystem clients only |
 
 ## Decisions (15 Oct 2026)

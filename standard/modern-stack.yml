@@ -14,8 +14,8 @@ core:
 layers:
   runtime:
     tool: "Bun as package manager and script runtime (packageManager + bun.lock); Node 24 LTS hosts vp and production servers"
-    package_manager: bun@1.4.3
-    ci: { bun: 1.4.3, node: 24 }
+    package_manager: bun@1.4.4
+    ci: { bun: 1.4.4, node: 24 }
     alternative: "pnpm, Kalsigns only, until an Expo install under Bun is proven"
   toolchain:
     tool: "Vite+ (vp) for install, check, test, build, run and env. Next apps use vp for check, test and run, and keep next build"
