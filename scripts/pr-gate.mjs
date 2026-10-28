@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK, pickVerifyRun } from '../lib/self-merge.mjs';
+import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK, pickVerifyCheck } from '../lib/self-merge.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = YAML.parse(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
@@ -55,9 +55,10 @@ function label(n) {
   return want;
 }
 
-// Runs of main's verify workflow (by its main-owned path) for this head, every page. pickVerifyRun drops skipped runs (a
-// title or body edit) and takes the newest of the rest; the gate re-checks path, event and head_sha.
-const verifyRun = sha => pickVerifyRun(JSON.parse(gh(['--paginate', '--slurp', `repos/${R}/actions/workflows/${path.basename(C.verify_workflow)}/runs?head_sha=${sha}&event=${C.verify_event}&per_page=100`])), sha);
+// GitHub's latest `verify` check runs for this head, every page, each joined to its workflow run (an Actions check run's
+// id is its job id) so the gate can check it is main's verify.yml on pull_request_target, not a PR's own job named verify.
+const workflowRun = cr => { const job = get(`repos/${R}/actions/jobs/${cr.id}`); return job?.run_id ? get(`repos/${R}/actions/runs/${job.run_id}`) : null; };
+const verifyRun = sha => pickVerifyCheck(JSON.parse(gh(['--paginate', '--slurp', `repos/${R}/commits/${sha}/check-runs?check_name=verify&filter=latest&per_page=100`])), sha, workflowRun, C);
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 

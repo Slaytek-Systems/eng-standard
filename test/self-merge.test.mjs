@@ -54,7 +54,7 @@ const authors = authorsFrom(['feat\n\nAgent: builder-1'], ['t@t', 'builder-login
 const V = (o = {}) => ({ sha: SHA, patch_id: 'p1', result: 'PASS', by: 'checker-a', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', ...o });
 const OUT = { login: 'unrelated-outsider', association: 'NONE' };
 const V2 = V({ by: 'checker-b' });
-const VR = (o = {}) => ({ id: 42, head_sha: SHA, path: '.github/workflows/verify.yml', event: 'pull_request_target', status: 'completed', conclusion: 'success', ...o });
+const VR = (o = {}) => ({ id: 42, app: 'github-actions', run: 7, head_sha: SHA, path: '.github/workflows/verify.yml', event: 'pull_request_target', status: 'completed', conclusion: 'success', ...o });
 const st = (o = {}) => ({ risk: 'low', containsBase: true, verify: VR(), verdicts: [V()], authors, ...o });
 const HP = pr({ labels: ['risk:high'] }), C1 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, high_risk: { ...HR, verifiers: 1 } } });
 const h1 = (o = {}) => st({ risk: 'high', ...o });   // review rules with one reviewer needed
@@ -153,7 +153,7 @@ test('eng verdict --pr: an author identity is rejected and posts failure; an ind
 
 test('rule 1: risk:low merges on main\'s verify run passing on the exact head; verdict comments are not needed', () => {
   assert.equal(decide(pr(), st({ verdicts: [] }), C).merge, true);
-  assert.match(decide(pr(), st({ verdicts: [] }), C).reason, /^risk:low: verify passed on aaaaaaaa \(run 42\)$/);
+  assert.match(decide(pr(), st({ verdicts: [] }), C).reason, /^risk:low: verify passed on aaaaaaaa \(check 42, run 7\)$/);
 });
 
 test('CI is the verifier: a PR without the verify pass is refused', () => {
@@ -193,7 +193,7 @@ test('rule 2: risk:high (label, recomputed, or a gate/auth/billing path) needs P
     assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
   assert.equal(C.high_verifiers, 2, 'N defaults to 2');
   assert.equal(decide(H, hi(), C).merge, true, 'two distinct identities count');
-  assert.match(decide(H, hi(), C).reason, /risk:high: verify passed on aaaaaaaa \(run 42\); review PASS by checker-a, checker-b/);
+  assert.match(decide(H, hi(), C).reason, /risk:high: verify passed on aaaaaaaa \(check 42, run 7\); review PASS by checker-a, checker-b/);
   const cases = [
     [H, hi({ verdicts: [V()] }), 'one identity'],
     [H, hi({ verdicts: [V(), V({ comment_at: '2026-10-19T04:05:00Z' })] }), 'the same identity twice is one verifier'],
@@ -279,7 +279,9 @@ process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
 }
 const TIP = 'c'.repeat(40), PARENT = 'd'.repeat(40), HEAD = 'e'.repeat(40), R = 'repos/o/r';
 const run = (sha, conclusion) => ({ check_runs: [{ head_sha: sha, status: 'completed', conclusion, completed_at: '2026-10-19T05:00:00Z', started_at: '2026-10-19T04:55:00Z', app: { slug: 'github-actions' } }] });
-const vruns = (sha, runs = [VR({ head_sha: sha })]) => ({ [`GET ${R}/actions/workflows/verify.yml/runs?head_sha=${sha}&event=pull_request_target&per_page=100`]: { workflow_runs: runs } });
+// GitHub's latest verify check runs for a head, each an Actions job whose workflow run carries path and event.
+const vruns = (sha, runs = [VR({ head_sha: sha })]) => Object.assign({ [`GET ${R}/commits/${sha}/check-runs?check_name=verify&filter=latest&per_page=100`]: { check_runs: runs.map(v => ({ id: v.id, name: 'verify', head_sha: v.head_sha, status: v.status, conclusion: v.conclusion, app: { slug: v.app } })) } },
+  ...runs.map(v => ({ [`GET ${R}/actions/jobs/${v.id}`]: { run_id: v.id + 1000 }, [`GET ${R}/actions/runs/${v.id + 1000}`]: { id: v.id + 1000, path: v.path, event: v.event, head_sha: v.head_sha } })));
 const runs = (sha, c) => ({ [`GET ${R}/commits/${sha}/check-runs?check_name=test&filter=latest&per_page=100`]: run(sha, c) });
 
 test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from the bot and merges nothing else', () => {
@@ -342,7 +344,7 @@ const routes = {
 test('rules 2 and 6: a risk:high PR with PASSes from two distinct identities on its head merges, then the post-merge check runs on main', () => {
   let r = gate(routes);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: verify passed on aaaaaaaa \(run 42\); review PASS by checker-a, checker-b/);
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:high: verify passed on aaaaaaaa \(check 42, run 1042\); review PASS by checker-a, checker-b/);
   assert.deepEqual(r.sent.map(c => c.slice(0, 2)), [['PUT', `${R}/pulls/3/merge`], ['DELETE', `${R}/git/refs/heads/feat/x`], ['POST', `${R}/actions/workflows/ci.yml/dispatches`]]);
   assert.deepEqual(r.sent[0][2], { merge_method: 'squash', sha: SHA, commit_title: 'fix: gate (#3)' });
   assert.deepEqual(r.sent[2][2], { ref: 'main' });
@@ -500,47 +502,37 @@ test('verify.yml runs when a PR is retargeted to main without a push, and skips 
   assert.deepEqual(v.jobs.verify.concurrency, { group: 'verify-${{ github.event.pull_request.number }}', 'cancel-in-progress': true });
 });
 
-test('pickVerifyRun: skipped edit runs never hide the real verify result; newest of the rest wins; every page counts', async () => {
-  const { pickVerifyRun } = await import('../lib/self-merge.mjs');
-  const at = (m, o) => VR({ created_at: `2026-10-28T10:${m}:00Z`, id: Number(m), ...o });
-  const skip = m => at(m, { conclusion: 'skipped' });
-  const gateOn = pages => decide(pr(), st({ verify: pickVerifyRun(pages, SHA) }), C);
-  let d = gateOn([{ workflow_runs: [skip('20'), at('10')] }]);
-  assert.equal(d.merge, true, 'a skipped edit run after a success passes: ' + d.reason);
-  const during = [{ workflow_runs: [skip('15'), at('10', { status: 'in_progress', conclusion: null })] }];
-  assert.match(gateOn(during).reason, /verify is in_progress/, 'while verify runs, the gate waits');
-  d = gateOn([{ workflow_runs: [skip('15'), at('10')] }]);
-  assert.equal(d.merge, true, 'a skipped run during an in-progress verify that later succeeds passes: ' + d.reason);
-  d = gateOn([{ workflow_runs: [at('20', { conclusion: 'failure' })] }, { workflow_runs: [at('10')] }]);
-  assert.equal(d.merge, false); assert.match(d.reason, /verify is failure/, 'a newer failure (on a later page too) beats an older success');
-  d = gateOn([{ workflow_runs: [skip('20'), skip('10')] }]);
-  assert.equal(d.merge, false); assert.match(d.reason, /no verify run/, 'only skipped runs are refused');
-  assert.equal(pickVerifyRun([{ workflow_runs: [skip('30')] }, { workflow_runs: [at('05')] }], SHA).id, 5, 'a success on page 2 is found');
-  assert.equal(pickVerifyRun([{ workflow_runs: [at('30', { head_sha: 'b'.repeat(40) })] }], SHA), null, 'another head never counts');
+test('pickVerifyCheck: GitHub\'s latest verify check for the head decides; no ordering of our own', async () => {
+  const { pickVerifyCheck } = await import('../lib/self-merge.mjs');
+  const CR = o => ({ id: 42, name: 'verify', head_sha: SHA, status: 'completed', conclusion: 'success', app: { slug: 'github-actions' }, ...o });
+  const OURS = { id: 7, path: '.github/workflows/verify.yml', event: 'pull_request_target', head_sha: SHA };
+  const gateOn = (checks, wr = () => OURS) => decide(pr(), st({ verify: pickVerifyCheck([{ check_runs: checks }], SHA, wr, C) }), C);
+  let d = gateOn([CR()]);
+  assert.equal(d.merge, true, 'success passes: ' + d.reason);
+  d = gateOn([CR({ conclusion: 'skipped' })]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is skipped/, 'skipped refuses');
+  d = gateOn([CR({ status: 'in_progress', conclusion: null })]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is in_progress/, 'in progress waits');
+  d = gateOn([]);
+  assert.equal(d.merge, false); assert.match(d.reason, /no verify run/, 'missing refuses');
+  d = gateOn([CR()], () => ({ ...OURS, path: '.github/workflows/evil.yml', event: 'pull_request' }));
+  assert.equal(d.merge, false); assert.match(d.reason, /is not main's/, 'a verify job from another workflow refuses');
+  d = gateOn([CR({ app: { slug: 'someone-else' } })], () => { throw new Error('never looked up'); });
+  assert.equal(d.merge, false); assert.match(d.reason, /is not main's/, 'a verify check from another app refuses');
+  d = gateOn([CR(), CR({ id: 43 })], cr => cr.id === 43 ? { ...OURS, path: '.github/workflows/evil.yml' } : OURS);
+  assert.equal(d.merge, false); assert.match(d.reason, /is not main's/, 'a fake verify next to the real one refuses');
+  d = gateOn([CR({ id: 99, conclusion: 'success' })], () => ({ ...OURS, id: 8 }));
+  assert.equal(d.merge, true, 'a rerun success GitHub reports as latest passes: ' + d.reason);
+  assert.match(d.reason, /check 99, run 8/);
+  d = gateOn([CR({ head_sha: 'b'.repeat(40) })]);
+  assert.match(d.reason, /no verify run/, 'another head never counts');
 });
 
-test('pickVerifyRun: reruns are dated by their latest attempt', async () => {
-  const { pickVerifyRun } = await import('../lib/self-merge.mjs');
-  const gateOn = runs => decide(pr(), st({ verify: pickVerifyRun([{ workflow_runs: runs }], SHA) }), C);
-  // A (run 1, created 10:10) and B (run 2, created 10:20). Rerunning A at 10:30 cancels B through verify's concurrency.
-  const A = o => VR({ id: 1, run_number: 1, created_at: '2026-10-28T10:10:00Z', run_started_at: '2026-10-28T10:30:00Z', run_attempt: 2, ...o });
-  const B = o => VR({ id: 2, run_number: 2, created_at: '2026-10-28T10:20:00Z', run_started_at: '2026-10-28T10:20:00Z', run_attempt: 1, ...o });
-  let d = gateOn([B({ conclusion: 'cancelled' }), A()]);
-  assert.equal(d.merge, true, 'a rerun of A that succeeds after B was cancelled passes: ' + d.reason);
-  d = gateOn([B(), A({ conclusion: 'failure' })]);
-  assert.equal(d.merge, false); assert.match(d.reason, /verify is failure/, 'a newer failed rerun beats an older success');
-  d = gateOn([B(), A({ status: 'in_progress', conclusion: null })]);
-  assert.equal(d.merge, false); assert.match(d.reason, /verify is in_progress/, 'an in-progress rerun waits');
-  d = gateOn([B(), A({ status: 'queued', conclusion: null, run_started_at: '2026-10-28T10:10:00Z' })]);
-  assert.equal(d.merge, false); assert.match(d.reason, /verify is queued/, 'a queued rerun still dated by its old attempt waits');
-  d = gateOn([B({ conclusion: 'cancelled' }), A({ run_started_at: '2026-10-28T10:20:00Z' })]);
-  assert.equal(d.merge, true, 'same start second: the higher attempt wins: ' + d.reason);
-});
-
-test('pr-gate merge: a newer skipped edit run does not hide the verify pass; only skipped runs merge nothing', () => {
-  const skipped = VR({ id: 99, conclusion: 'skipped', created_at: '2026-10-28T11:00:00Z' }), ok = VR({ created_at: '2026-10-28T10:00:00Z' });
-  let r = gate({ ...routes, ...vruns(SHA, [skipped, ok]) });
-  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: .*verify passed on aaaaaaaa \(run 42\)/, r.stdout + r.stderr);
-  r = gate({ ...routes, ...vruns(SHA, [skipped]) });
-  assert.match(r.stdout, /skip: no verify run/); assert.equal(r.sent.length, 0);
+test('pr-gate merge: reads GitHub\'s latest verify check for the head and its workflow run; skipped merges nothing', () => {
+  let r = gate({ ...routes, ...vruns(SHA) });
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: .*verify passed on aaaaaaaa \(check 42, run 1042\)/, r.stdout + r.stderr);
+  r = gate({ ...routes, ...vruns(SHA, [VR({ conclusion: 'skipped' })]) });
+  assert.match(r.stdout, /skip: verify is skipped/, r.stdout); assert.equal(r.sent.length, 0);
+  r = gate({ ...routes, ...vruns(SHA, [VR({ path: '.github/workflows/mine.yml', event: 'pull_request' })]) });
+  assert.match(r.stdout, /skip: verify check 42 is not main's/, r.stdout); assert.equal(r.sent.length, 0);
 });
