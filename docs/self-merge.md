@@ -64,7 +64,7 @@ that PR again.
 
 | Event | PRs it looks at |
 |---|---|
-| `workflow_run`: `ci` or `verify` completed on a PR | that PR |
+| `workflow_run`: `ci`, `verify` or `risk-label` completed on a PR (risk-label labels with `GITHUB_TOKEN`, which fires no `labeled` event) | that PR |
 | `workflow_run`: `ci` completed on main after a push or a manual dispatch | every open PR (main's state changed) |
 | `issue_comment` created or edited, body starts with `<!-- eng-verdict/v1 -->` | that PR |
 | `pull_request_target` labeled, unlabeled, ready_for_review, or edited with a base change (retargeted) | that PR |

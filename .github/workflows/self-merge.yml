@@ -14,7 +14,7 @@
 name: self-merge
 on:
   workflow_run:
-    workflows: [ci, verify]
+    workflows: [ci, verify, risk-label]   # risk-label: its GITHUB_TOKEN label fires no labeled event
     types: [completed]
   issue_comment:
     types: [created, edited]

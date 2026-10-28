@@ -399,7 +399,9 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
 test('self-merge.yml has no schedule; one queued concurrency group; retargets and verdict events only', () => {
   const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge.yml', import.meta.url), 'utf8')), job = wf.jobs['self-merge'];
   assert.deepEqual(Object.keys(wf.on).sort(), ['issue_comment', 'pull_request_target', 'workflow_dispatch', 'workflow_run']);
-  assert.deepEqual(wf.on.workflow_run.workflows, ['ci', 'verify'], 'verify finishing starts self-merge');
+  assert.deepEqual(wf.on.workflow_run.workflows, ['ci', 'verify', 'risk-label'], 'verify finishing starts self-merge; so does risk-label (its token label fires no labeled event)');
+  const rl = YAML.parse(fs.readFileSync(new URL('../.github/workflows/risk-label.yml', import.meta.url), 'utf8'));
+  assert.equal(rl.name, 'risk-label', 'the workflow_run trigger names the real risk-label workflow');
   assert.deepEqual(job.concurrency, { group: 'self-merge', 'cancel-in-progress': false, queue: 'max' });
   assert.match(job.if, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base/, 'an edit runs only when the base changed');
   assert.match(job.if, /startsWith\(github\.event\.comment\.body, '<!-- eng-verdict\/v1 -->'\)/);
@@ -515,6 +517,24 @@ test('pickVerifyRun: skipped edit runs never hide the real verify result; newest
   assert.equal(d.merge, false); assert.match(d.reason, /no verify run/, 'only skipped runs are refused');
   assert.equal(pickVerifyRun([{ workflow_runs: [skip('30')] }, { workflow_runs: [at('05')] }], SHA).id, 5, 'a success on page 2 is found');
   assert.equal(pickVerifyRun([{ workflow_runs: [at('30', { head_sha: 'b'.repeat(40) })] }], SHA), null, 'another head never counts');
+});
+
+test('pickVerifyRun: reruns are dated by their latest attempt', async () => {
+  const { pickVerifyRun } = await import('../lib/self-merge.mjs');
+  const gateOn = runs => decide(pr(), st({ verify: pickVerifyRun([{ workflow_runs: runs }], SHA) }), C);
+  // A (run 1, created 10:10) and B (run 2, created 10:20). Rerunning A at 10:30 cancels B through verify's concurrency.
+  const A = o => VR({ id: 1, run_number: 1, created_at: '2026-10-28T10:10:00Z', run_started_at: '2026-10-28T10:30:00Z', run_attempt: 2, ...o });
+  const B = o => VR({ id: 2, run_number: 2, created_at: '2026-10-28T10:20:00Z', run_started_at: '2026-10-28T10:20:00Z', run_attempt: 1, ...o });
+  let d = gateOn([B({ conclusion: 'cancelled' }), A()]);
+  assert.equal(d.merge, true, 'a rerun of A that succeeds after B was cancelled passes: ' + d.reason);
+  d = gateOn([B(), A({ conclusion: 'failure' })]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is failure/, 'a newer failed rerun beats an older success');
+  d = gateOn([B(), A({ status: 'in_progress', conclusion: null })]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is in_progress/, 'an in-progress rerun waits');
+  d = gateOn([B(), A({ status: 'queued', conclusion: null, run_started_at: '2026-10-28T10:10:00Z' })]);
+  assert.equal(d.merge, false); assert.match(d.reason, /verify is queued/, 'a queued rerun still dated by its old attempt waits');
+  d = gateOn([B({ conclusion: 'cancelled' }), A({ run_started_at: '2026-10-28T10:20:00Z' })]);
+  assert.equal(d.merge, true, 'same start second: the higher attempt wins: ' + d.reason);
 });
 
 test('pr-gate merge: a newer skipped edit run does not hide the verify pass; only skipped runs merge nothing', () => {
