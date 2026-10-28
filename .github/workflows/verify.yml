@@ -7,16 +7,18 @@
 name: verify
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited: a PR retargeted to main without a new push still gets a verify run (the job skips other edits).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     branches: [main]
 permissions:
   contents: read
-concurrency:
-  group: verify-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 jobs:
   verify:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base != null)
+    # Job-level, so a skipped run (a title or body edit) never cancels an in-progress verify.
+    concurrency:
+      group: verify-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

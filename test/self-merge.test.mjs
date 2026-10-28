@@ -479,3 +479,21 @@ test('round-2 P1: an edited verdict comment counts from its edit when ordering a
   const order = parseVerdicts([c(V({ result: 'FAIL' }), '2026-10-19T04:00:00Z', '2026-10-19T04:30:00Z'), c(V(), '2026-10-19T04:10:00Z', '2026-10-19T04:10:00Z')]);
   assert.match(decide(HP, h1({ verdicts: order }), C1).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
 });
+
+test('verify.yml runs when a PR is retargeted to main without a push, and skips other edits', () => {
+  const v = YAML.parse(fs.readFileSync(new URL('../.github/workflows/verify.yml', import.meta.url), 'utf8'));
+  assert.deepEqual(v.on.pull_request_target.types.sort(), ['edited', 'opened', 'ready_for_review', 'reopened', 'synchronize']);
+  assert.deepEqual(v.on.pull_request_target.branches, ['main']);
+  // Evaluate the real job condition: GitHub's ==, !=, &&, || and null map onto JS loose equality for this subset.
+  const expr = v.jobs.verify.if;
+  assert.doesNotMatch(expr.replace(/github(\.[\w]+)+|'[^']*'|null|==|!=|&&|\|\||[()\s]/g, ''), /./, 'condition stays in the evaluable subset');
+  const run = (action, changes, repo = 'o/r') => new Function('github', `return ${expr.replace(/github((?:\.\w+)+)/g, (_, p) => 'github' + p.replace(/\./g, '?.'))}`)(
+    { repository: 'o/r', event: { action, ...(changes && { changes }), pull_request: { head: { repo: { full_name: repo } } } } });
+  assert.equal(run('edited', { base: { ref: { from: 'feat/a' } } }), true, 'retarget to main without a push runs verify');
+  assert.equal(run('edited', { title: { from: 'x' } }), false, 'a title edit does not');
+  assert.equal(run('edited', { body: { from: 'x' } }), false, 'a body edit does not');
+  for (const a of ['opened', 'synchronize', 'reopened', 'ready_for_review']) assert.equal(run(a), true, a);
+  assert.equal(run('edited', { base: { ref: { from: 'x' } } }, 'fork/r'), false, 'forks still skipped');
+  assert.equal(v.concurrency, undefined, 'no workflow-level group: a skipped edit run must not cancel a running verify');
+  assert.deepEqual(v.jobs.verify.concurrency, { group: 'verify-${{ github.event.pull_request.number }}', 'cancel-in-progress': true });
+});
