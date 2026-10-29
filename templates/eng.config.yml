@@ -178,7 +178,7 @@ e2e:
 hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / eng e2e always run with a per-run $ENG_TMP removed on exit.
   tmp_lint: true                  # eng lint rule test-bare-tmpdir: test code may not write to bare os.tmpdir() or /tmp. false = off (say why).
   tmp_max_age_hours: 6            # eng clean: eng-<repo>-* temp dirs older than this (and whose process is gone) are stale.
-  disk_lint: true                 # eng lint built-in disk rules: script-bare-tmpdir, cargo-target-tmp, deno-dir-unstable, container-no-rm, volume-prune-all, credential-to-disk.
+  disk_lint: true                 # eng lint built-in disk rules: script-bare-tmpdir, cargo-target-tmp, cargo-target-per-run, deno-dir-unstable, container-no-rm, volume-prune-all, credential-to-disk.
   scratch_root: "${XDG_CACHE_HOME}/eng/${repo}/scratch"   # repo-owned root, never /tmp. eng launch/verdict round/gate/e2e make one 0700 round dir here per run and remove it on exit.
   caches:                         # one shared build cache per toolchain per repo; eng exports the env var to every child (eng doctor requires each toolchain the repo uses).
     cargo_target: "${XDG_CACHE_HOME}/eng/${repo}/cargo-target"   # CARGO_TARGET_DIR (+ CARGO_INCREMENTAL=0)
@@ -187,6 +187,24 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
     deno: "${XDG_CACHE_HOME}/eng/${repo}/deno"                   # DENO_DIR (stable, never per run)
   containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>); eng clean --containers --apply removes them with their volumes. Never docker volume prune -a.
   evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; eng clean --evidence --apply clears merged or closed PRs.
+  evidence_roots: [.eng/evidence]  # where run evidence lands (default: e2e.evidence_dir). Add a proof harness's root, e.g. "~/.local/state/<repo>-proof".
+  disk_rules:                     # Four disk rules (Matt, 30 Oct 2026). Every mode: fail | warn | off (eng doctor fails on off). SHIPPING.md §5.
+    tests_leave_nothing:          # Tests and proofs leave nothing behind.
+      mode: fail                  # eng gate gives each step its own TMPDIR/ENG_TMP; an entry left in it fails the step. eng leave-nothing -- <cmd> does the same for one command.
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    no_cache_in_evidence:         # No build caches inside evidence folders.
+      mode: fail                  # eng evidence check and eng e2e fail on a marker file under an evidence run dir; eng lint rule cargo-target-per-run.
+      markers: [CACHEDIR.TAG]     # file names that mark a cache dir (Cargo writes CACHEDIR.TAG in every target and build dir). Non-empty list.
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    pinned_downloads:             # Pinned downloads are fetched once into a shared, checksummed cache.
+      mode: fail                  # eng downloads check runs prepare twice on one fresh cache: no second fetch, no cached file copied into $ENG_RUN_DIR, every file has a matching .sha256.
+      cache: "${XDG_CACHE_HOME}/eng/downloads"   # absolute, not under a temp dir; shared by every repo. eng exports it as ENG_DOWNLOAD_CACHE.
+      prepare: null               # command that fetches every pinned download with `eng fetch <name> <version> <url> <sha256>`; null = the repo has none.
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    evidence_budget:              # Evidence folders have a size budget.
+      mode: fail                  # eng evidence check and eng e2e fail when a run dir is over max_mb. They report; they never delete.
+      max_mb: 100                 # positive number. A run dir is <root>/<run> or <root>/pr-<n>/<sha>.
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
   # Clean up on merge or close (SHIPPING.md rule 18, §5): delete the PR's worktrees and evidence; one worktree per PR; no installs in review-only worktrees; shared package store and build cache; media off the box.
 
 flags:
@@ -225,4 +243,4 @@ constraints:
 
 gates:
   skipped_is_failed: true         # Schema constant.
-  required: [drift, stack, lint, fallow, rules, typecheck, test, launch, verify, verdict, laws, conform, e2e]
+  required: [drift, stack, lint, fallow, rules, typecheck, test, launch, verify, verdict, laws, conform, e2e, evidence, downloads]

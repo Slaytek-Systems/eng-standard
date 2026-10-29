@@ -10,7 +10,7 @@ import YAML from 'yaml';
 import { renderAll, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv } from '../lib/hygiene.mjs';
 import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
@@ -19,6 +19,7 @@ import { validateAuto } from '../lib/merge-queue.mjs';
 import { validateIsolation } from '../lib/isolation.mjs';
 import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
+import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -59,6 +60,7 @@ function configErrors(c) {
   errs.push(...validateAuto(c.merge));
   errs.push(...validateIsolation(c.isolation));
   errs.push(...trustErrors(c.trust));
+  errs.push(...diskRuleErrors(c.hygiene));
   return errs;
 }
 
@@ -289,7 +291,7 @@ function builtinRules(cfg) {
   if (cfg.flags?.file) r.push({ id: 'flags-default-off', paths: cfg.flags.file, pattern: ':\\s*true\\b', flags: '',
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
-  if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.map(d => ({ ...d, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
+  if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || diskRules(cfg).no_cache_in_evidence.mode !== 'off').map(d => ({ ...d, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
@@ -780,6 +782,8 @@ function e2e() {
   if (!(tests > 0) || failures || errors || skipped) die(`e2e: junit tests=${tests} failures=${failures} errors=${errors} skipped=${skipped} (skipped or zero tests = failed)`);
   const ev = sh(`find ${out} -name '*.webm' -o -name '*.png'`).split('\n').filter(Boolean);
   if (!ev.length) die('e2e: no video or screenshots captured');
+  const rules = diskRules(cfg);
+  if (reportFindings(evidenceFindings([path.dirname(path.join(ROOT, out))], rules), rules)) die('e2e: evidence breaks the disk rules above');
   console.log(`eng e2e: PASS (${tests} test(s); ${ev.length} evidence file(s) in ${out})`);
 }
 
@@ -932,17 +936,24 @@ function fallowGate() {
 }
 
 function gate() {
-  const cfg = loadConfig(); const res = []; withTmp(cfg);
-  const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check' };
+  const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
+  const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
   for (const g of cfg.gates.required) {
     const c = map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
-    const r = c ? run(c) : { status: null, stdout: '', stderr: 'no command' };
+    // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
+    const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
+    const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
+    const left = leftovers(own); fs.rmSync(own, { recursive: true, force: true });
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
     const lines = (r.stdout + r.stderr).trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
     const why = r.status === 0 ? lines.at(-1) : lines.find(x => /AssertionError|Error:|FAIL |✗|×|\bfailed\b|eng: FAIL/.test(x)) ?? lines.at(-1);
     // A failing eng subcommand's die() puts its detail on the lines after "eng: FAIL ...:"; print them, not just the header.
     const at = lines.indexOf(why), more = r.status !== 0 && /eng: FAIL .*:$/.test(why ?? '') ? lines.slice(at + 1, at + 21) : [];
+    if (left.length && keep !== 'off') {
+      if (keep === 'fail' && r.status === 0) { res.push([g, 'FAIL', leftText(left), []]); continue; }
+      more.push(`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`);
+    }
     res.push([g, r.status === 0 ? 'pass' : r.status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more]);
   }
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
@@ -951,6 +962,66 @@ function gate() {
   if (res.some(r => r[1] !== 'pass')) die('gate: not all required gates passed');
   console.log('eng gate: PASS');
 }
+// ---------- disk rules (Matt, 30 Oct 2026; Core nd79fdwd1p4hc5nk60j7rmbn518h6tsv). lib/disk-rules.mjs has each rule's default, options and check. ----------
+// Node/Bun module compile cache defaults to TMPDIR/node-compile-cache and is keyed by absolute path, so each worktree
+// writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
+const privateTmpEnv = (env, dir) => ({ ...env, ENG_TMP: dir, TMPDIR: dir, TMP: dir, TEMP: dir, NODE_DISABLE_COMPILE_CACHE: '1' });
+const leftText = left => `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'} in its private TMPDIR: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ', ...' : ''} (tests_leave_nothing: remove what the test creates in an after hook or finally)`;
+// Prints each finding at its rule's mode; returns how many fail.
+function reportFindings(findings, rules) {
+  for (const f of findings) console.log(`  ${rules[f.rule].mode === 'fail' ? 'FAIL' : 'WARN'} ${path.relative(ROOT, f.path) || f.path}: ${f.why} (${f.rule}, ${rules[f.rule].source})`);
+  return findings.filter(f => rules[f.rule].mode === 'fail').length;
+}
+// tests_leave_nothing for one command outside eng gate (a proof script, a CI test step). Exits with the command's code, else 1 on leftovers.
+function leaveNothing() {
+  const cfg = loadConfig(), i = a.indexOf('--'), c = i >= 0 ? a.slice(i + 1) : [];
+  if (!c.length) die('usage: eng leave-nothing -- <cmd> [args...]');
+  const t = withTmp(cfg), own = fs.mkdtempSync(path.join(t.dir, 'run-')), mode = diskRules(cfg).tests_leave_nothing.mode;
+  const r = spawnSync(c[0], c.slice(1), { cwd: ROOT, stdio: 'inherit', env: privateTmpEnv(RUN_ENV, own) });
+  const left = leftovers(own);
+  if (left.length && mode !== 'off') console.log(`  ${mode === 'fail' ? 'FAIL' : 'WARN'} ${c.join(' ')} ${leftText(left)}`);
+  if (r.status !== 0) { console.error(`eng: FAIL leave-nothing: ${c.join(' ')} exited ${r.status ?? r.signal}`); process.exit(r.status || 1); }
+  if (left.length && mode === 'fail') die(`leave-nothing: ${c.join(' ')} left files behind`);
+  console.log(`eng leave-nothing: PASS (${c.join(' ')} left its private TMPDIR empty${mode === 'off' ? '; rule off' : ''})`);
+}
+const evidenceRoots = cfg => (cfg.hygiene?.evidence_roots ?? [cfg.e2e?.evidence_dir ?? '.eng/evidence']).map(r => path.resolve(ROOT, expandPath(r, cfg.project.name)));
+// no_cache_in_evidence + evidence_budget. Args: run dirs to check; none = every run dir under hygiene.evidence_roots. Never deletes.
+function evidenceCheck() {
+  const cfg = loadConfig(), rules = diskRules(cfg), given = a.slice(1).filter(x => !x.startsWith('--'));
+  const runs = given.length ? given.map(d => path.resolve(ROOT, d)) : evidenceRoots(cfg).flatMap(evidenceRuns);
+  const bad = reportFindings(evidenceFindings(runs, rules), rules);
+  if (bad) die(`evidence check: ${bad} evidence dir problem(s) above`);
+  console.log(`eng evidence check: PASS (${runs.length} run dir(s); no build cache, each under ${rules.evidence_budget.mode === 'off' ? 'no budget (off)' : `${rules.evidence_budget.max_mb} MB`})`);
+}
+// pinned_downloads: run prepare twice against one fresh cache, each time with a new run dir.
+function downloadsCheck() {
+  const cfg = loadConfig(), p = diskRules(cfg).pinned_downloads;
+  if (p.mode === 'off') return console.log('eng downloads check: OFF (hygiene.disk_rules.pinned_downloads.mode: off)');
+  if (!p.prepare) return console.log('eng downloads check: PASS (no pinned downloads; hygiene.disk_rules.pinned_downloads.prepare is null)');
+  const round = openRound(cfg, 'downloads'), cache = path.join(round.dir, 'cache'), runs = [1, 2].map(n => path.join(round.dir, `run-${n}`)), snaps = [];
+  fs.mkdirSync(cache);
+  for (const [n, d] of runs.entries()) {
+    fs.mkdirSync(d);
+    const r = spawnSync('bash', ['-c', p.prepare], { cwd: ROOT, encoding: 'utf8', env: { ...round.env, ENG_DOWNLOAD_CACHE: cache, ENG_RUN_DIR: d, ENG_RUN_ID: `downloads-${n + 1}` } });
+    if (r.status !== 0) die(`downloads check: prepare run ${n + 1} exited ${r.status}: ${(r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ')}`);
+    snaps.push(snapshot(cache));
+  }
+  const found = downloadFindings(cache, snaps[0], snaps[1], runs);
+  for (const f of found) console.log(`  ${p.mode === 'fail' ? 'FAIL' : 'WARN'} ${f} (pinned_downloads, ${p.source})`);
+  if (found.length && p.mode === 'fail') die(`downloads check: ${found.length} problem(s) above`);
+  console.log(`eng downloads check: ${found.length ? 'WARN' : 'PASS'} (prepare ran twice; ${snaps[0].size} cached file(s), none fetched twice or copied into a run dir)`);
+}
+// eng fetch <name> <version> <url> <sha256>: prints the cached file's path (stdout only). Cache: $ENG_DOWNLOAD_CACHE, else the config's.
+async function fetchCmd() {
+  const [name, version, url, sum] = a;
+  if (!name || !version || !url || !sum) die('usage: eng fetch <name> <version> <url> <sha256>');
+  const cache = process.env.ENG_DOWNLOAD_CACHE || cacheEnv(loadConfig()).ENG_DOWNLOAD_CACHE;
+  const download = async u => u.startsWith('file:') ? fs.readFileSync(fileURLToPath(u)) : (r => r.ok ? r.arrayBuffer().then(b => Buffer.from(b)) : Promise.reject(new Error(`${u}: HTTP ${r.status}`)))(await fetch(u));
+  const r = await fetchPinned({ name, version, url, sha256: sum }, cache, download).catch(e => die(`fetch: ${e.message}`));
+  console.error(`  ${r.fetched ? 'fetched' : 'cached'} ${name} ${version} (sha256 ok)`);
+  console.log(r.file);
+}
+
 // ---------- doctor: the config declares every disk-hygiene piece the repo needs, and the built-in disk rules find nothing new ----------
 function doctor() {
   const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
@@ -1038,6 +1109,7 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
   mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
   renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, merge: () => merge(engCtx(), a),
+  'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();

@@ -44,6 +44,7 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
   const cases = {
     'script-bare-tmpdir': [["const d = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-e2e-'));", 'D=$(mktemp -d)', 'cp x /tmp/out'], ["const d = fs.mkdtempSync(path.join(process.env.ENG_TMP, 'proof-e2e-'));", 'D=$(mktemp -d -p "$ENG_TMP")']],
     'cargo-target-tmp': [['CARGO_TARGET_DIR=/tmp/ce-$$ cargo test', 'cargo build --target-dir /tmp/t', 'export CARGO_TARGET_DIR=$(mktemp -d)'], ['cargo test', 'CARGO_TARGET_DIR="$CARGO_TARGET_DIR" cargo test']],
+    'cargo-target-per-run': [["env['CARGO_TARGET_DIR'] = str(run/'cargo-target')", 'const t = process.env.CARGO_TARGET_DIR ?? join(scratch, "fresh-target");', 'export CARGO_BUILD_BUILD_DIR="$ENG_RUN_DIR/build"'], ['CARGO_TARGET_DIR=$X cargo run', 'CARGO_TARGET_DIR="${XDG_CACHE_HOME}/eng/x/cargo-target" cargo build', 'CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,']],
     'deno-dir-unstable': [['DENO_DIR=$(mktemp -d) deno task check', 'export DENO_DIR=/tmp/deno'], ['deno task check']],
     'container-no-rm': [['docker run -d postgres:17', 'podman run -it alpine sh'], ['docker run --rm alpine true', 'docker run -d --label "$ENG_CONTAINER_LABEL" postgres:17', 'docker run -d --label eng.repo=x postgres']],
     'volume-prune-all': [['docker volume prune -a -f', 'docker volume prune -af', 'docker volume prune --all'], ['docker volume prune -f']],

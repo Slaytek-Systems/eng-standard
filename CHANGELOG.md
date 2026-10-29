@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## Unreleased (30 Oct 2026)
+
+**Four disk rules** (approved by Matt, 30 Oct 2026; source: Core note nd79fdwd1p4hc5nk60j7rmbn518h6tsv). Each is a `hygiene.disk_rules` setting with a default, its allowed options, the Core source and a check. Modes are `fail | warn | off`, and every default is `fail`.
+
+- `tests_leave_nothing`: `eng gate` gives each step a private `TMPDIR`/`ENG_TMP` and fails it on leftovers. New `eng leave-nothing -- <cmd>` does the same for one command.
+- `no_cache_in_evidence` (`markers`, default `[CACHEDIR.TAG]`): new `eng evidence check` (gate `evidence`) and `eng e2e` fail on a cache marker in an evidence run dir. New lint rule `cargo-target-per-run`.
+- `pinned_downloads` (`cache`, `prepare`): new `eng fetch` fills a shared cache once with a SHA-256 check on every use, and eng exports the cache as `ENG_DOWNLOAD_CACHE`. New `eng downloads check` (gate `downloads`) runs `prepare` twice and fails on a second fetch, a copy in the run dir or a missing checksum.
+- `evidence_budget` (`max_mb`, default 100): `eng evidence check` and `eng e2e` fail on an over-budget run dir. They never delete. `hygiene.evidence_roots` lists the roots to check.
+- `eng doctor` fails a rule set to `off`. The starter config adds `evidence` and `downloads` to `gates.required`. eng-standard's CI runs all three checks on itself.
+- Fixes found by the new check: two `t3-queue-health` tests left temp dirs, and the renovate `launch --keep` test used the parent eng's scratch root when run under eng.
+
 ## 0.11.0 (26 Oct 2026)
 
 **Devbox project isolation, warn only.** Every devbox project runs as one Unix user, so shared defaults (Convex's `anonymous-agent` state in `~/.convex`, port 3210) let one project's tool reach another's service. This release ships the standard's five rules as an identity file, a helper and a repo check. Docs: `docs/project-isolation.md`.
