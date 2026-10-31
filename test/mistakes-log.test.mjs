@@ -50,124 +50,10 @@ test('FAIL verdict inside eng verdict round: the round is removed and the FAIL s
   assert.match(retro(), /FAIL by verifier-2/);
 });
 
-test('launch down moves a pre-fix log out of the worktree, once, then removes it', () => {
-  const { wt, d } = keep(dir), line = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by legacy-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() });
-  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
-  const r = eng(dir, 'launch', 'down', d);
-  assert.equal(r.status, 0, out(r));
-  assert.ok(!fs.existsSync(d));
-  assert.equal(retro().match(/FAIL by legacy-verifier/g)?.length, 1, 'the legacy entry is kept exactly once');
-});
-
-test('launch down moves a pre-fix log that the repo gitignores', () => {
-  const p = path.join(root, 'ignoring');
-  fs.mkdirSync(p); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
-  fs.writeFileSync(path.join(p, '.gitignore'), '.eng/mistakes.jsonl\n'); git('add -A', p); git('commit -qm x', p);
-  const { wt, d } = keep(p), line = '{"key":"verdict:FAIL","what":"FAIL in an ignoring repo"}';
-  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-  assert.ok(!fs.existsSync(d));
-  assert.equal(fs.readFileSync(mistakesLog(p), 'utf8'), line + '\n', 'the ignored log is kept in the clone log');
-  fs.rmSync(p, { recursive: true });
-});
-
-test('launch down after a move that stopped before the delete adds nothing twice', () => {
-  const { wt, d } = keep(dir), line = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by interrupted-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() });
-  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
-  fs.appendFileSync(path.join(git('rev-parse --path-format=absolute --git-common-dir'), 'eng', 'mistakes.jsonl'), line + '\n');
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-  assert.equal(retro().match(/FAIL by interrupted-verifier/g)?.length, 1);
-});
-
-test('launch down keeps an orphaned launch dir whose worktree was moved inside it, or whose launch time was edited', () => {
-  const mk = name => { const p = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', name, 'repo'); fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p); fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p); return p; };
-  const p1 = mk('eng-repo-moved-wt'), a = keep(p1);
-  fs.renameSync(a.wt, path.join(a.d, 'wt-retained')); fs.writeFileSync(path.join(a.d, 'wt-retained', 'f'), 'edited\n'); fs.renameSync(p1, p1 + '-renamed');
-  const r = eng(dir, 'launch', 'down', a.d);
-  assert.equal(r.status, 1); assert.match(out(r), /eng: FAIL launch down: repo .* is gone and .* changed after launch/, 'a named refusal, not a crash');
-  assert.equal(fs.readFileSync(path.join(a.d, 'wt-retained', 'f'), 'utf8'), 'edited\n');
-  const p2 = mk('eng-repo-edited-at'), b = keep(p2), lj = path.join(b.d, 'launch.json');
-  fs.writeFileSync(path.join(b.wt, 'f'), 'edited\n');
-  fs.writeFileSync(lj, JSON.stringify({ ...JSON.parse(fs.readFileSync(lj, 'utf8')), at: new Date(Date.now() + 3600e3).toISOString() }));
-  fs.rmSync(path.dirname(p2), { recursive: true });
-  assert.equal(eng(dir, 'launch', 'down', b.d).status, 1);
-  assert.equal(fs.readFileSync(path.join(b.wt, 'f'), 'utf8'), 'edited\n');
-  for (const x of [a.d, b.d, path.dirname(p1)]) fs.rmSync(x, { recursive: true });
-});
-
-test('launch down never follows a symlinked .eng out of the worktree', () => {
-  const { wt, d } = keep(dir), outside = path.join(root, 'outside'), file = path.join(outside, 'mistakes.jsonl');
-  fs.mkdirSync(outside); fs.writeFileSync(file, '{"key":"x","what":"not this worktree\'s"}\n');
-  fs.symlinkSync(outside, path.join(wt, '.eng'));
-  const r = eng(dir, 'launch', 'down', d);
-  assert.equal(r.status, 1, out(r));
-  assert.equal(fs.readFileSync(file, 'utf8'), '{"key":"x","what":"not this worktree\'s"}\n', 'the file the link points at is untouched');
-  assert.doesNotMatch(retro(), /not this worktree's/);
-  fs.rmSync(path.join(wt, '.eng')); fs.rmSync(outside, { recursive: true });
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-});
-
-test('launch down never follows a worktree replaced by a symlink', () => {
-  const { wt, d } = keep(dir), outside = path.join(root, 'outside-repo'), file = path.join(outside, '.eng/mistakes.jsonl');
-  fs.mkdirSync(path.dirname(file), { recursive: true }); git('init -q', outside); fs.writeFileSync(file, '{"key":"x","what":"outside repo"}\n');
-  fs.renameSync(wt, wt + '-real'); fs.symlinkSync(outside, wt);
-  const r = eng(dir, 'launch', 'down', d);
-  assert.equal(r.status, 1, out(r));
-  assert.equal(fs.readFileSync(file, 'utf8'), '{"key":"x","what":"outside repo"}\n');
-  assert.doesNotMatch(retro(), /outside repo/);
-  fs.rmSync(wt); fs.renameSync(wt + '-real', wt); fs.rmSync(outside, { recursive: true });
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-});
-
-test('launch down never follows a worktree linked to another worktree of the same clone', () => {
-  const a = keep(dir), b = keep(dir), log = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL in worktree b', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n';
-  fs.mkdirSync(path.join(b.wt, '.eng')); fs.writeFileSync(path.join(b.wt, '.eng/mistakes.jsonl'), log);
-  fs.renameSync(a.wt, a.wt + '-real'); fs.symlinkSync(b.wt, a.wt);
-  assert.equal(eng(dir, 'launch', 'down', a.d).status, 1);
-  assert.equal(fs.readFileSync(path.join(b.wt, '.eng/mistakes.jsonl'), 'utf8'), log, "worktree b's log is untouched");
-  fs.rmSync(a.wt); fs.renameSync(a.wt + '-real', a.wt);
-  for (const x of [a, b]) assert.equal(eng(dir, 'launch', 'down', x.d).status, 0);
-});
-
-test('launch down never moves a log from a worktree replaced by another repo', () => {
-  const { wt, d } = keep(dir), log = '{"key":"x","what":"other repo log"}\n';
-  fs.renameSync(wt, wt + '-real'); fs.mkdirSync(path.join(wt, '.eng'), { recursive: true }); git('init -q', wt); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), log);
-  assert.equal(eng(dir, 'launch', 'down', d).status, 1);
-  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), log);
-  assert.doesNotMatch(retro(), /other repo log/);
-  fs.rmSync(wt, { recursive: true }); fs.renameSync(wt + '-real', wt);
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-});
-
-test('launch down never reads a log that is a symlink', () => {
-  const { wt, d } = keep(dir), outside = path.join(root, 'outside-log.jsonl');
-  fs.writeFileSync(outside, '{"key":"x","what":"linked log"}\n');
-  fs.mkdirSync(path.join(wt, '.eng')); fs.symlinkSync(outside, path.join(wt, '.eng/mistakes.jsonl'));
-  assert.equal(eng(dir, 'launch', 'down', d).status, 1);
-  assert.doesNotMatch(retro(), /linked log/);
-  fs.rmSync(path.join(wt, '.eng'), { recursive: true }); fs.rmSync(outside);
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-});
-
 test('mistakesLog refuses a dir git cannot read instead of returning a relative path', () => {
   const p = path.join(root, 'not-a-repo'); fs.mkdirSync(p);
   assert.throws(() => mistakesLog(p), /no git common dir/);
   assert.equal(mistakesLog(dir), path.join(fs.realpathSync(dir), '.git', 'eng', 'mistakes.jsonl'));
-});
-
-test('launch down touches nothing when git cannot read the source repo', () => {
-  const p = path.join(root, 'tracked'), log = '{"key":"x","what":"tracked log"}\n';
-  fs.mkdirSync(path.join(p, '.eng'), { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
-  fs.writeFileSync(path.join(p, '.eng/mistakes.jsonl'), log); git('add -A', p); git('commit -qm x', p);
-  const { wt, d } = keep(p);
-  fs.renameSync(path.join(p, '.git'), path.join(p, '.git-moved'));
-  const r = eng(dir, 'launch', 'down', d);
-  assert.equal(r.status, 1, out(r));
-  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), log, 'the tracked log stays in the worktree');
-  assert.ok(!fs.existsSync(path.join(dir, 'eng')), 'nothing written relative to the caller');
-  fs.renameSync(path.join(p, '.git-moved'), path.join(p, '.git'));
-  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
-  fs.rmSync(p, { recursive: true });
 });
 
 test('a pre-fix log in the checkout is still read', () => {
@@ -186,29 +72,12 @@ test('launch down still refuses other untracked work in the worktree', () => {
   assert.equal(eng(dir, 'launch', 'down', d).status, 0);
 });
 
-test('launch down removes a launch dir whose repo was a scratch dir that is gone, and refuses one whose repo was not', () => {
-  const mk = p => { fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p); fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p); };
-  // A repo named "repo" launches into <XDG>/eng/repo/scratch, so this one sits inside the scratch root its launch dir uses.
-  const scratchRepo = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', 'eng-repo-fixture', 'repo'), plainRepo = path.join(root, 'plain');
-  mk(scratchRepo); mk(plainRepo);
-  const a = keep(scratchRepo), b = keep(plainRepo);
-  fs.rmSync(path.dirname(scratchRepo), { recursive: true }); fs.rmSync(plainRepo, { recursive: true });
-  let r = eng(dir, 'launch', 'down', a.d);
-  assert.equal(r.status, 0, out(r)); assert.ok(!fs.existsSync(a.d));
-  r = eng(dir, 'launch', 'down', b.d);
-  assert.equal(r.status, 1, out(r)); assert.ok(fs.existsSync(b.d), 'a launch from a repo outside the scratch root is never removed blind');
-  fs.rmSync(b.d, { recursive: true });
-});
-
-test('launch down keeps an orphaned launch dir whose worktree was changed after launch', () => {
-  const p = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', 'eng-repo-moved', 'repo');
-  fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
-  fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p);
-  const { wt, d } = keep(p);
-  fs.writeFileSync(path.join(wt, 'f'), 'edited\n'); fs.writeFileSync(path.join(wt, 'new.txt'), 'unsaved\n');
-  fs.renameSync(p, p + '-renamed');
+test('launch down leaves a pre-fix worktree log in place and refuses, so nothing is lost', () => {
+  const { wt, d } = keep(dir), line = '{"key":"verdict:FAIL","what":"FAIL by legacy-verifier"}\n';
+  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line);
   const r = eng(dir, 'launch', 'down', d);
-  assert.equal(r.status, 1, out(r));
-  assert.equal(fs.readFileSync(path.join(wt, 'f'), 'utf8'), 'edited\n'); assert.ok(fs.existsSync(path.join(wt, 'new.txt')));
-  fs.rmSync(d, { recursive: true }); fs.rmSync(path.dirname(p), { recursive: true });
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /git refused/);
+  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), line);
+  fs.rmSync(path.join(wt, '.eng'), { recursive: true });
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
 });

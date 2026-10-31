@@ -7,8 +7,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 **Verdict rounds leave nothing behind and keep the mistakes log.** A FAIL verdict wrote `.eng/mistakes.jsonl` into the checkout it ran in. In an `eng launch --keep` worktree that untracked file made `eng launch down` refuse, and in `eng verdict round` the FAIL was deleted with the round.
 
 - The mistakes log is now one per clone, at `$(git rev-parse --git-common-dir)/eng/mistakes.jsonl`. Every worktree writes to it and `eng retro` / `eng verify maintain` read it from any worktree. A checkout's older `.eng/mistakes.jsonl` is still read.
-- `eng launch down` moves an older untracked `.eng/mistakes.jsonl` from the worktree into the clone log (once), then removes the worktree. Other untracked work is still refused.
-- `eng launch down` removes a launch dir whose repo is gone when that repo was a scratch dir under the same scratch root (a removed test or round fixture). It refuses any other missing repo.
+- `eng launch down` is unchanged: git still refuses a worktree that holds an older `.eng/mistakes.jsonl`, so no entry is lost. Folders left before this change are cleaned with the owner-run steps in PR #33.
 
 ## Unreleased (30 Oct 2026)
 
