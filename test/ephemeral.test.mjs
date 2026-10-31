@@ -455,7 +455,7 @@ test('isolation enforced: ~/.convex and the cache home are read-only, home state
   assert.equal(r.status, 1, out(r));
   assert.match(out(r), /Read-only file system/);
   assert.ok(!fs.existsSync(path.join(xdg, tag)), 'the cache home was never written');
-  assert.match(r.stdout, new RegExp(`LEFT home ${home}/\\.cache: appeared during the run outside its temp folders, so not removed`));
+  assert.match(r.stdout, new RegExp(`LEFT home ${home}/\\.cache: appeared or changed during the run outside its temp folders, so not restored or removed`));
   assert.match(r.stdout, new RegExp(`LEFT temp shm/${tag} `));
   assert.ok(!fs.existsSync(shm), 'the real /dev/shm never saw the write');
   assert.deepEqual(rounds(), []);
