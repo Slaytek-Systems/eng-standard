@@ -13,7 +13,7 @@ Run the coordinator queue-age check from an eng-standard checkout with `node lib
 | `eng init` | seed eng.config.yml if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
 | `eng sync` | re-render; second run prints `no changes` |
 | `eng drift-check` | fail if any generated file / symlink / lock differs from what the config renders |
-| `eng stack-check` | fail on off-stack language, framework or lockfile without a `stack.exceptions` entry; warns if `ship.merge_queue` is set and no CI workflow triggers on `merge_group` |
+| `eng stack-check` | fail on off-stack language, framework or lockfile without a `stack.exceptions` entry, or on a Convex repo that pins Node below 22; warns if `ship.merge_queue` is set and no CI workflow triggers on `merge_group` |
 | `eng stack-audit [<name>=<path>...]` | read-only: compare declared deps, `packageManager` and CI Bun/Node pins at `origin/main` (`--ref`) against the Modern Stack floors in `standard/modern-stack.yml`; exit 1 on drift. `--json` prints findings, `--core` prints Core follow-up inputs and never sends them. See `docs/modern-stack.md` |
 | `eng lint` / `eng rules prove` | regex constraints (incl. built-in db-additive-only, flags-default-off); each rule must bite its fixture |
 | `eng verify create <id>` | check must FAIL on merge-base and PASS on HEAD; verdict stored as git note on the SHA |

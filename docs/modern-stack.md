@@ -7,7 +7,7 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 | Runtime | Bun 1.4.4 (minimum) in `packageManager`, Node 24 LTS for `vp` and servers | pnpm, Kalsigns only |
 | Toolchain | Vite+ (`vp`) ≥ 1.2.0, Vite ≥ 8.3 | plain `bun run` oxlint/oxfmt/vitest scripts |
 | Framework | SvelteKit ≥ 2.70 + Svelte ≥ 5.57.2 | Astro 7 for static or content sites |
-| Backend | Convex ≥ 1.46 on Convex Cloud | self-hosted Convex on Railway; PlanetScale |
+| Backend | Convex ≥ 1.49 on Convex Cloud, on Node ≥ 22; `v.function()` validates function handles | self-hosted Convex on Railway; PlanetScale |
 | Auth | Better Auth ≥ 1.6.33 (below 1.7) + `@convex-dev/better-auth` ≥ 0.12.5 | WorkOS AuthKit (`@workos-inc/node` ≥ 11) |
 | Styling | Tailwind ≥ 4.3.3 + shadcn-svelte, shadcn Trace for agent UI | none |
 | Lint and format | Oxlint ≥ 1.88 (type-aware) + Oxfmt ≥ 0.73; ESLint and Prettier retired (Svelte template linting not covered: decision 3) | none |
@@ -41,7 +41,9 @@ eng stack-audit <repos> --json                   # findings as JSON
 eng stack-audit <repos> --core                   # Core work.followup-create inputs, one per drift; printed, never sent
 ```
 
-The audit is read-only and makes no network calls. A floor applies only when a repo declares that package. Exit 1 means drift. Each `--core` item has a stable `dedupe_key`; skip any item whose key already has an open follow-up. Its `idempotency_key` carries the run month in Australia/Sydney.
+The audit is read-only and makes no network calls. A floor applies only when a repo declares that package. Exit 1 means drift.
+
+Two Convex rules run in each repo's own gate, not in the audit. `eng stack-check` fails a repo that declares `convex` and pins Node below the backend layer's `node` (22) in `engines.node`, `.nvmrc`, `.node-version`, a CI `node-version` or `convex.json` `node.nodeVersion`. It warns when such a repo pins no Node at all. Once a repo is on convex 1.49, `eng lint` rule `convex-function-handle-validator` fails a `v.string()` handle field or an `as FunctionHandle<...>` cast under `convex/`. Use `v.function()` instead. A brownfield repo baselines its existing hits with `eng renovate baseline --kind lint`. Each `--core` item has a stable `dedupe_key`; skip any item whose key already has an open follow-up. Its `idempotency_key` carries the run month in Australia/Sydney.
 
 ## Not verified
 

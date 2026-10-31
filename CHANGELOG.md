@@ -4,6 +4,14 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## Unreleased (31 Oct 2026)
 
+**Convex 1.49: Node 22 floor, `v.function()` for function handles.** Convex 1.49.0 (30 Oct 2026) dropped Node 20 and added `v.function()`.
+
+- The Modern Stack backend floor is now `convex` 1.49.0, and the backend layer sets `node: 22`.
+- `eng stack-check` fails a repo that declares `convex` and pins Node below 22 in `engines.node`, `.nvmrc`/`.node-version` (nvm `lts/<codename>` too), a CI `node-version` (lists too) or `convex.json` `node.nodeVersion`. Each line names its fix. It warns when such a repo pins no Node at all.
+- New `eng lint` rule `convex-function-handle-validator`, on only when the repo is on convex 1.49 or newer. It fails a handle field validated with `v.string()` or an `as FunctionHandle<...>` cast under `convex/` (not `_generated/`). The starter config's stack notes make `v.function()` the default.
+- `eng stack-audit` reads Node pins with the same reader. `.nvmrc`/`.node-version` count at any depth, and a CI `node-version` list counts each entry.
+- The eng-route skill names the formal skills by their `formal.stateful` and `formal.other` settings, not only the defaults.
+
 **pstack 0.15.36, and `statechart` is the default formal check for stateful flows.** In eng-sandbox PR #17, statechart's TLC run found five merge-flow holes and then proved the fixes.
 
 - pstack bumped from 0.15.19 to 0.15.36 (`c742dd6`). Six skills added: `statechart`, `create-formal-verification-skill`, `maintain-formal-verification-skill`, `sharpen`, `in-your-own-words`, `ketchup-video`. None removed or renamed. statechart's upstream test suite is not vendored (`vendor/PINS.txt`).
