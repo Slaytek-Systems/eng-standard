@@ -10,7 +10,7 @@ import YAML from 'yaml';
 import { renderAll, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
 import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
@@ -364,7 +364,7 @@ function notes(sha) { try { return sh(`git notes --ref ${NOTES} show ${sha}`).sp
 function allNotes() { let l = ''; try { l = sh(`git notes --ref ${NOTES} list`); } catch {} return l.split('\n').filter(Boolean).flatMap(x => notes(x.split(' ')[1])); }
 function record(rec) { sh(`git notes --ref ${NOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${rec.sha}`); }
 function runCheck(cfg, id, cwd) { const r = run(`bash ${path.join(ROOT, cfg.verification.checks_dir, id + '.sh')}`, cwd); return { ok: r.status === 0, out: (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ') }; }
-// .eng/mistakes.jsonl is an append-only log that eng gate itself writes; it never counts as uncommitted code.
+// A checkout's .eng/mistakes.jsonl is the pre-31-Oct-2026 mistakes log (now in git's common dir); it never counts as uncommitted code.
 function clean() { if (sh('git status --porcelain -- . ":(exclude).eng/mistakes.jsonl" ":(exclude)renovation/proof" ":(exclude)renovation/receipts"')) die('working tree not clean; commit first so the verdict binds to a real SHA'); }
 
 function verifyCreate(id) {
@@ -416,7 +416,7 @@ function verifyMaintain() {
       record({ kind: 'reverify', check: id, sha: H, patch_id: pid, from: prev?.sha, result: status, at: new Date().toISOString() });
   }
   // Repeat mistakes become rules.
-  const ms = readOr('.eng/mistakes.jsonl', '').split('\n').filter(Boolean).map(JSON.parse);
+  const ms = readMistakes();
   const counts = ms.reduce((a, m) => (a[m.key] = (a[m.key] || 0) + 1, a), {});
   const ruleIds = new Set([...builtinRules(cfg).map(r => r.id), ...ids]);
   for (const p of unenforced(cfg)) problems.push(p);
@@ -425,12 +425,13 @@ function verifyMaintain() {
   console.log(`eng verify maintain: PASS (${ids.length} checks re-verified on ${H.slice(0, 8)})`);
 }
 
-const readMistakes = () => readOr('.eng/mistakes.jsonl', '').split('\n').filter(Boolean).map(JSON.parse);
+const MISTAKES = () => mistakesLog(ROOT);
+const readMistakes = () => [fs.existsSync(MISTAKES()) ? fs.readFileSync(MISTAKES(), 'utf8') : '', readOr(LEGACY_MISTAKES, '')].join('\n').split('\n').filter(Boolean).map(JSON.parse);
 function logMistake(key, what, source = 'human', dedupe = false) {
   const sha = head();
   if (dedupe && readMistakes().some(m => m.key === key && m.sha === sha)) return false; // one entry per key per SHA, so re-running a gate does not inflate counts
-  fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true });
-  fs.appendFileSync(path.join(ROOT, '.eng/mistakes.jsonl'), JSON.stringify({ key, what, sha, source, at: new Date().toISOString() }) + '\n');
+  fs.mkdirSync(path.dirname(MISTAKES()), { recursive: true });
+  fs.appendFileSync(MISTAKES(), JSON.stringify({ key, what, sha, source, at: new Date().toISOString() }) + '\n');
   return true;
 }
 function mistake(key, what) { logMistake(key, what); console.log(`eng mistake: recorded ${key}`); }
@@ -486,7 +487,7 @@ function retro() {
   const { rules, checks } = enforcerIds(cfg);
   const groups = {}; for (const m of ms) (groups[m.key] ||= []).push(m);
   const out = [`# eng retro (${new Date().toISOString().slice(0, 10)}, HEAD ${head().slice(0, 8)}): proposals only. Nothing changes until Matt approves one.`,
-    `Source: .eng/mistakes.jsonl (${ms.length} entries). A class counts at ${v.repeat_threshold}+ (pstack correct). Order: ${LEVELS.join(' > ')}.`, ''];
+    `Source: ${MISTAKES()} (${ms.length} entries). A class counts at ${v.repeat_threshold}+ (pstack correct). Order: ${LEVELS.join(' > ')}.`, ''];
   // pstack correct: a rule that exists and still repeats is a repeat. Mistakes from before the enforcer existed are what it was built from.
   const settled = [];
   for (const k of Object.keys(groups)) if (rules.includes(k) || checks.includes(k)) {
@@ -962,7 +963,7 @@ function gate() {
   }
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
   const logged = res.filter(([g, st]) => st !== 'pass' && g !== 'verdict').filter(([g, , l]) => logMistake(`gate:${g}`, l, 'gate', true)).map(([g]) => `gate:${g}`);
-  if (logged.length) console.log(`  logged to .eng/mistakes.jsonl: ${logged.join(', ')} (eng retro reads it)`);
+  if (logged.length) console.log(`  logged to ${MISTAKES()}: ${logged.join(', ')} (eng retro reads it)`);
   if (res.some(r => r[1] !== 'pass')) die('gate: not all required gates passed');
   console.log('eng gate: PASS');
 }

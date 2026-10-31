@@ -2,6 +2,13 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## Unreleased (31 Oct 2026)
+
+**Verdict rounds leave nothing behind and keep the mistakes log.** A FAIL verdict wrote `.eng/mistakes.jsonl` into the checkout it ran in. In an `eng launch --keep` worktree that untracked file made `eng launch down` refuse, and in `eng verdict round` the FAIL was deleted with the round.
+
+- The mistakes log is now one per clone, at `$(git rev-parse --git-common-dir)/eng/mistakes.jsonl`. Every worktree writes to it and `eng retro` / `eng verify maintain` read it from any worktree. A checkout's older `.eng/mistakes.jsonl` is still read.
+- `eng launch down` is unchanged: git still refuses a worktree that holds an older `.eng/mistakes.jsonl`, so no entry is lost. Folders left before this change are cleaned with the owner-run steps in PR #33.
+
 ## Unreleased (30 Oct 2026)
 
 **Four disk rules** (approved by Matt, 30 Oct 2026; source: Core note nd79fdwd1p4hc5nk60j7rmbn518h6tsv). Each is a `hygiene.disk_rules` setting with a default, its allowed options, the Core source and a check. Modes are `fail | warn | off`, and every default is `fail`.
