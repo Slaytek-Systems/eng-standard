@@ -4,6 +4,13 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## Unreleased (31 Oct 2026)
 
+**pstack 0.15.36, and `statechart` is the default formal check for stateful flows.** In eng-sandbox PR #17, statechart's TLC run found five merge-flow holes and then proved the fixes.
+
+- pstack bumped from 0.15.19 to 0.15.36 (`c742dd6`). Six skills added: `statechart`, `create-formal-verification-skill`, `maintain-formal-verification-skill`, `sharpen`, `in-your-own-words`, `ketchup-video`. None removed or renamed. statechart's upstream test suite is not vendored (`vendor/PINS.txt`).
+- New `formal` config block (`lib/formal.mjs`). `stateful` defaults to `statechart`: merge flow, rollout, booking or other state machines, protocols. `other` defaults to `create-formal-verification-skill`. A different choice needs `formal.why`, and each named skill must be installed by `agents.skills`. eng rejects the config otherwise.
+- AGENTS.md and the router `eng init` prints name both skills.
+- `eng sync` keeps the exec bit of vendored scripts, so `.agents/skills/statechart/scripts/statechart` runs. `eng drift-check` fails on a generated script or git hook that is not executable.
+
 **Verdict rounds leave nothing behind and keep the mistakes log.** A FAIL verdict wrote `.eng/mistakes.jsonl` into the checkout it ran in. In an `eng launch --keep` worktree that untracked file made `eng launch down` refuse, and in `eng verdict round` the FAIL was deleted with the round.
 
 - The mistakes log is now one per clone, at `$(git rev-parse --git-common-dir)/eng/mistakes.jsonl`. Every worktree writes to it and `eng retro` / `eng verify maintain` read it from any worktree. A checkout's older `.eng/mistakes.jsonl` is still read.

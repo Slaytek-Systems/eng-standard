@@ -35,7 +35,7 @@ The router below (also in AGENTS.md) is the fallback when no skill was named.
 
 - **plan:** `poteto-mode` (it picks the playbook: bug-fix, feature, refactoring ...), then `how` / `why` / `architect`; `figure-it-out` for large work; `grilling` / `grill-with-docs` for product calls; `find-the-laws` for rules that must always hold.
 - **build:** the playbook steps; `tdd` for bug fixes; `typescript-best-practices` on every .ts/.tsx edit; `show-me-your-work` for long or unattended runs.
-- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; `interrogate` for contested design, `blast-radius` for small risky diffs.
+- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; `statechart` for a flow that moves between states, `create-formal-verification-skill` for non-stateful high-cost code (`formal` in eng.config.yml); `interrogate` for contested design, `blast-radius` for small risky diffs.
 - **ship:** author: the Opening a PR playbook (`no-comments`, then `technical-writing` + `unslop`) up to merge-ready, never merge. Shipping manager: the loop below.
 
 ## Shipping (serial, one PR at a time)

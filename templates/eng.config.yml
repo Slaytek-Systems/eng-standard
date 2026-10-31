@@ -49,7 +49,7 @@ agents:
   rules:                          # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng verify maintain fails on a rule with nothing enforcing it.
     - { rule: "Orders are written only through saveOrder()", enforced_by: gate-only-writes }
   skills:                         # <source>/<name>. Vendored copies at pins in pkg/vendor/PINS.txt; eng/* are ours.
-    - pstack/*                     # the full pstack set (55 skills + 2 subagents), pinned in pkg/vendor/PINS.txt
+    - pstack/*                     # the full pstack set (61 skills + 2 subagents), pinned in pkg/vendor/PINS.txt
     - pocock/grilling
     - pocock/grill-with-docs
     - pocock/domain-modeling
@@ -99,6 +99,11 @@ verification:
   flake_runs: 3                   # maintain runs each check this many times; mixed results = FLAKY = fail.
   stale_after_commits: 50
   repeat_threshold: 2             # A mistake seen this often must become a rule or check.
+
+formal:                           # Which skill formally checks what (lib/formal.mjs). Rendered into AGENTS.md; each skill must be in agents.skills.
+  stateful: statechart            # Default for a flow that moves between states: merge flow, rollout, booking or other state machines, protocols. TLA+ checked by TLC, drawn as a Mermaid statechart (eng-sandbox PR #17: found five merge-flow holes, then proved the fixes).
+  other: create-formal-verification-skill   # Non-stateful code where a bug costs most: parsers, data-structure invariants, unsafe code.
+  # why: "..."                    # Required when stateful or other is not the default above.
 
 launch:                           # The repo owns its isolated local launch (pstack Launch/Doctor/Cleanup). The verify skill only CALLS these.
   # eng sets ENG_RUN_ID, ENG_PORT (free port picked per run) and ENG_RUN_DIR (outside the repo) for each command.
