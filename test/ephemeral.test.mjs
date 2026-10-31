@@ -27,7 +27,6 @@ const docker = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'
 const dockerAt = docker ? execSync('command -v docker', { encoding: 'utf8' }).trim() : null;
 // The socket the run's own one forwards to: talking to it directly is what a client that ignores DOCKER_HOST does.
 const outside = docker ? process.env.DOCKER_HOST || `unix://${execSync("docker context inspect --format '{{.Endpoints.docker.Host}}'", { encoding: 'utf8' }).trim().replace(/^unix:\/\//, '')}` : null;
-const scoped = spawnSync('systemd-run', ['--user', '--scope', '--quiet', 'true'], { timeout: 10e3 }).status === 0;
 const dk = (...a) => spawnSync('docker', a, { encoding: 'utf8' });
 
 before(() => {
@@ -43,7 +42,8 @@ after(() => {
   for (const n of ['left', 'kept', 'up', 'bare']) { try { process.kill(Number(mark(n)), 'SIGKILL'); } catch {} }
   if (docker) {
     for (const id of dk('ps', '-aq', '--filter', `name=${tag}`).stdout.split('\n').filter(Boolean)) dk('rm', '-f', '-v', id);
-    for (const v of [`${tag}-v`, `${tag}-out`, ...(fs.existsSync(path.join(marks, 'anon')) ? [mark('anon')] : [])]) dk('volume', 'rm', v);
+    for (const n of ['b1', 'b2', 'd1', 'd2']) dk('rm', '-f', `${tag}-${n}`);
+    for (const v of [`${tag}-v`, `${tag}-out`, ...['anon', 'during'].filter(n => fs.existsSync(path.join(marks, n))).map(mark)]) dk('volume', 'rm', v);
     dk('network', 'rm', `${tag}-n`);
   }
   fs.rmSync(path.join('/tmp', tag), { force: true }); // ENG_TMP aside: the private /tmp test's file, should the sandbox fail
@@ -91,10 +91,10 @@ test('a server left running fails and is stopped; one marked with persist_env ke
   assert.ok(running(kept), 'the marked server is still running');
 });
 
-test('a child that drops the run id from its environment is still found through the run\'s systemd scope', { skip: !scoped && 'no systemd user scope on this host' }, () => {
+test('a child that drops the run id from its environment and leaves its session is still found and stopped', () => {
   const r = eng('ephemeral', '--', `env -u ENG_EPHEMERAL_RUN setsid ${SERVER} & echo $! > ${marks}/bare`);
   assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, /processes \(systemd scope and run id\)/);
+  assert.match(r.stdout, /processes \(descendants and run id\)/);
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('bare')} `));
   assert.ok(!running(Number(mark('bare'))), 'stopped');
 });
@@ -110,7 +110,7 @@ test('containers and volumes left behind fail and are removed with their volumes
   ].join('; '));
   assert.equal(r.status, 1, out(r));
   const anon = mark('anon');
-  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-c\\): removed with its anonymous volumes`));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-c\\): removed`));
   assert.match(r.stdout, new RegExp(`LEFT volume ${anon} \\(anonymous, mounted by \\w{12}\\): removed`));
   assert.match(r.stdout, new RegExp(`LEFT volume ${tag}-v \\(created by the run\\): removed`));
   assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-c`).stdout.trim(), '', 'container removed');
@@ -118,6 +118,49 @@ test('containers and volumes left behind fail and are removed with their volumes
   assert.notEqual(dk('volume', 'inspect', `${tag}-v`).status, 0, 'named volume removed');
   assert.match(r.stdout, new RegExp(`LEFT network ${tag}-n \\(created by the run\\): removed`));
   assert.notEqual(dk('network', 'inspect', `${tag}-n`).status, 0, 'network removed');
+});
+
+test('another owner\'s anonymous volume a run container inherits (made before or during the run, owner removed mid-run) is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+  // The donor is created outside the run's socket, as another agent would; the run borrows its volume with --volumes-from,
+  // then the donor goes away, so the run's container is the volume's only user when the check cleans up.
+  dk('create', '--name', `${tag}-d1`, '-v', '/data', 'alpine:latest', 'true'); // created, never run: the devbox removes exited containers
+  const before = dk('inspect', '-f', '{{range .Mounts}}{{.Name}}{{end}}', `${tag}-d1`).stdout.trim();
+  assert.match(before, /^\w{64}$/); fs.writeFileSync(path.join(marks, 'anon'), before);
+  const r = eng('ephemeral', '--', [
+    `DOCKER_HOST=${outside} docker create --name ${tag}-d2 -v /data alpine:latest true >/dev/null`,
+    `DOCKER_HOST=${outside} docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-d2 > ${marks}/during`,
+    `docker run -d --name ${tag}-b1 --volumes-from ${tag}-d1 alpine:latest sleep 300 >/dev/null`,
+    `docker run -d --name ${tag}-b2 --volumes-from ${tag}-d2 alpine:latest sleep 300 >/dev/null`,
+    `DOCKER_HOST=${outside} docker rm ${tag}-d1 ${tag}-d2 >/dev/null`,
+  ].join('; '));
+  const during = mark('during');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-b1\\): removed`));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-b2\\): removed`));
+  assert.doesNotMatch(r.stdout, new RegExp(`LEFT volume ${before}`), 'existed before the run: not a leftover');
+  assert.match(r.stdout, new RegExp(`LEFT volume ${during} \\(anonymous, mounted by \\w{12}\\): the run's containers used it, but it may have been made outside the run, so not removed`));
+  for (const v of [before, during]) assert.equal(dk('volume', 'inspect', v).status, 0, `${v} is untouched`);
+  for (const v of [before, during]) dk('volume', 'rm', v);
+});
+
+test('a run whose docker it cannot watch is refused before it starts', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+  const deep = path.join(root, 'x'.repeat(90));
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-z alpine:latest sleep 300`], { cwd: dir, encoding: 'utf8', env: { ...env, XDG_CACHE_HOME: deep, XDG_RUNTIME_DIR: '' } });
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stderr, /run command not started, because it could not be watched: docker: the run's labelling socket did not start/);
+  assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-z`).stdout.trim(), '', 'the command never ran');
+});
+
+test('the run\'s docker socket survives a malformed create request', { skip: (!docker || !execSync('command -v curl || true', { encoding: 'utf8' }).trim()) && 'needs docker and curl' }, () => {
+  const r = eng('ephemeral', '--', `curl -s --unix-socket "\${DOCKER_HOST#unix://}" -X POST -H 'Content-Type: application/json' -d null http://d/containers/create >/dev/null; docker version --format ok`);
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /^ok$/m);
+});
+
+test('a run whose docker socket dies part way fails as not fully watched', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+  const r = eng('ephemeral', '--', 'pkill -f -- "${DOCKER_HOST#unix://}"; sleep 0.3; true');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stderr, /run command was not fully watched: docker: the run's labelling socket died during the run/);
 });
 
 test('a container marked with persist_label stays, with its volume', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
@@ -136,7 +179,7 @@ test('docker by an absolute path is labelled; a volume made outside the run is r
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-k\\): removed`));
   assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-k`).stdout.trim(), '', 'absolute-path container removed');
-  assert.match(r.stdout, new RegExp(`LEFT volume ${tag}-out \\(mounted by \\w{12}\\): a named volume new since the run began, but it may have been made outside the run, so not removed`));
+  assert.match(r.stdout, new RegExp(`LEFT volume ${tag}-out \\(mounted by \\w{12}\\): the run's containers used it, but it may have been made outside the run, so not removed`));
   assert.equal(dk('volume', 'inspect', `${tag}-out`).status, 0, 'never removes a volume it cannot prove is the run\'s');
   assert.match(r.stdout, new RegExp(`note container \\w{12} \\(alpine:latest ${tag}-u\\) was created on this host during the run by something else; untouched`));
   assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-u`).stdout.trim(), 'true');
@@ -206,7 +249,7 @@ test('eng gate: an interrupted step still dies by the signal, and the run folder
   setCfg(c => { c.project.commands.test = 'true'; });
 });
 
-test('findLeftovers: only an anonymous volume a run container mounted is removable; pre-existing and marked ones are not leftovers', () => {
+test('findLeftovers: a volume is removable only when docker made it for a run container and only run containers use it', () => {
   const run = { id: 'r1' }, persist = { label: 'slaytek.persist=true', env: 'SLAYTEK_PERSIST=true' };
   const ev = (Type, Action, ID, Attributes) => ({ Type, Action, Actor: { ID, Attributes } });
   const events = [
@@ -216,8 +259,9 @@ test('findLeftovers: only an anonymous volume a run container mounted is removab
   const live = { containers: new Map([['c2', { 'eng.ephemeral.run.r1': 'true', 'slaytek.persist': 'true' }]]), volumes: new Map([['shared', {}], ['keepvol', {}]]), networks: new Map() };
   const { left } = findLeftovers({ run, persist, events, live, volumesBefore: new Set(['shared']), temp: [], procs: [] });
   assert.deepEqual(left, []);
-  const more = [...events, ev('volume', 'mount', 'anon1', { container: 'c1' }), ev('volume', 'mount', 'named1', { container: 'c1' })];
-  const vols = new Map([...live.volumes, ['anon1', { 'com.docker.volume.anonymous': '' }], ['named1', {}]]);
-  const got = findLeftovers({ run, persist, events: more, live: { ...live, volumes: vols }, volumesBefore: new Set(['shared']), temp: [], procs: [] }).left;
-  assert.deepEqual(got.map(f => [f.id, f.owner]), [['anon1', 'run'], ['named1', 'unproven']]);
+  const anon = { 'com.docker.volume.anonymous': '' };
+  const more = [...events, ev('container', 'create', 'x9', { image: 'other' }), ...['anon1', 'named1', 'inherited1', 'shared1'].map(v => ev('volume', 'mount', v, { container: 'c1' }))];
+  const vols = new Map([...live.volumes, ['anon1', anon], ['named1', {}], ['inherited1', anon], ['shared1', anon]]);
+  const got = findLeftovers({ run, persist, events: more, live: { ...live, volumes: vols, volumeUsers: new Map([['shared1', ['c1', 'x9']]]), madeVolumes: new Set(['anon1', 'shared1']) }, volumesBefore: new Set(['shared']), temp: [], procs: [] }).left;
+  assert.deepEqual(got.map(f => [f.id, f.owner]).sort(), [['anon1', 'run'], ['inherited1', 'unproven'], ['named1', 'unproven'], ['shared1', 'unproven']]);
 });
