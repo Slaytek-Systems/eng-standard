@@ -4,6 +4,12 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## Unreleased (31 Oct 2026)
 
+**`.eng/lock.json` lists paths only.** The lock held a sha256 of each rendered file and of `eng.config.yml`. A repo-owned edit to a managed file (text outside the AGENTS.md block) changed a hash, so two branches that each made one conflicted in the lock on merge (Motus).
+
+- The lock now holds `package` (the standard version) and the sorted `files` and `links` that `eng sync` manages, and nothing else (`lib/lock.mjs`). Edits to managed files no longer touch it, and `eng sync` on unchanged inputs leaves it byte-identical.
+- `eng drift-check` keeps its checks. It still compares each rendered file with the file on disk. "config changed since last sync" now means the lock's paths differ from what the config renders, instead of any edit to `eng.config.yml`. A config edit that changes no generated file is no longer drift.
+- An older lock (`files` as `{ path: sha256 }`, plus `config_hash`) is still read, and the next `eng sync` rewrites it in the new format. The release that ships this change is the last to read the old format. The reader is removed in 0.13.0.
+
 **pstack 0.15.36, and `statechart` is the default formal check for stateful flows.** In eng-sandbox PR #17, statechart's TLC run found five merge-flow holes and then proved the fixes.
 
 - pstack bumped from 0.15.19 to 0.15.36 (`c742dd6`). Six skills added: `statechart`, `create-formal-verification-skill`, `maintain-formal-verification-skill`, `sharpen`, `in-your-own-words`, `ketchup-video`. None removed or renamed. statechart's upstream test suite is not vendored (`vendor/PINS.txt`).

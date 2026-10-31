@@ -22,6 +22,7 @@ import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
+import { parseLock, lockText } from '../lib/lock.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -68,7 +69,6 @@ function configErrors(c) {
   return errs;
 }
 
-const cfgHash = () => sha256(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
 const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 
@@ -105,15 +105,14 @@ function sync() {
     if (cur !== t) { fs.mkdirSync(path.dirname(abs), { recursive: true }); fs.rmSync(abs, { force: true, recursive: true }); fs.symlinkSync(t, abs); console.log(`  linked ${l}`); changed++; }
   }
   // Prune files (and skill symlinks) a previous sync generated that the config no longer renders.
-  const old = JSON.parse(readOr('.eng/lock.json', '{}'));
-  for (const p of Object.keys(old.files || {})) if (!(p in files) && fs.existsSync(path.join(ROOT, p)) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  const old = parseLock(readOr('.eng/lock.json'));
+  for (const p of old.files) if (!(p in files) && fs.existsSync(path.join(ROOT, p)) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
   const links = new Set(claudeLinks(cfg).map(([l]) => l));
   const cl = path.join(ROOT, '.claude/skills');
   const ours = fs.existsSync(cl) ? fs.readdirSync(cl).map(n => `.claude/skills/${n}`).filter(l => { try { return fs.readlinkSync(path.join(ROOT, l)).startsWith(`../../${cfg.agents.skills_dir}/`) && !fs.existsSync(path.join(ROOT, l)); } catch { return false; } }) : [];
-  for (const l of new Set([...(old.links || []), ...ours])) if (!links.has(l)) { fs.rmSync(path.join(ROOT, l), { force: true }); console.log(`  unlinked ${l}`); changed++; }
+  for (const l of new Set([...old.links, ...ours])) if (!links.has(l)) { fs.rmSync(path.join(ROOT, l), { force: true }); console.log(`  unlinked ${l}`); changed++; }
   for (const d of [cfg.agents.skills_dir]) { const walk = x => { if (!fs.existsSync(x)) return; for (const e of fs.readdirSync(x, { withFileTypes: true })) if (e.isDirectory()) { walk(path.join(x, e.name)); if (!fs.readdirSync(path.join(x, e.name)).length) fs.rmdirSync(path.join(x, e.name)); } }; walk(path.join(ROOT, d)); }
-  const lock = JSON.stringify({ links: [...links].sort(), config_hash: cfgHash(), package: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'))).version,
-    files: Object.fromEntries(Object.entries(files).map(([p, c]) => [p, sha256(c)]).sort()) }, null, 2) + '\n';
+  const lock = lockText(JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'))).version, Object.keys(files), links);
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
@@ -146,8 +145,9 @@ function driftCheck() {
   }
   for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   for (const [l, t] of claudeLinks(cfg)) { let cur = null; try { cur = fs.readlinkSync(path.join(ROOT, l)); } catch {} if (cur !== t) bad.push(`${l}: symlink missing or wrong`); }
-  const lock = JSON.parse(readOr('.eng/lock.json', '{}'));
-  if (lock.config_hash !== cfgHash()) bad.push('.eng/lock.json: config changed since last sync');
+  // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
+  const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
+  if (!same(lock.files, Object.keys(files)) || !same(lock.links, claudeLinks(cfg).map(([l]) => l))) bad.push('.eng/lock.json: config changed since last sync');
   if (bad.length) die(`drift-check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
   console.log(`eng drift-check: PASS (${Object.keys(files).length} generated files match config)`);
 }
@@ -317,7 +317,7 @@ function lintHits(cfg) {
   // Files eng sync writes (drift-tracked: rendered + vendored) are owned by the standard, not this repo. The drift
   // check forbids editing them, so repo lint rules must not flag them either (fix such hits upstream in eng-standard).
   // A config with no stack renders nothing (eng-standard itself: it does not sync its own files).
-  const c = loadConfig(), managed = new Set([...Object.keys(c.stack ? render(c) : {}), ...Object.keys(JSON.parse(readOr('.eng/lock.json', '{}')).files || {})]);
+  const c = loadConfig(), managed = new Set([...Object.keys(c.stack ? render(c) : {}), ...parseLock(readOr('.eng/lock.json')).files]);
   const own = files.filter(f => !managed.has(f));
   return builtinRules(cfg).flatMap(r => lintFiles(r, own, ROOT));
 }
