@@ -114,6 +114,14 @@ test('drift-check still fails when the config changes what eng sync manages, unt
   assert.equal(r.eng('drift-check').status, 0);
 });
 
+test('a skill listed twice (pstack/* and pstack/how) is one managed link, and drift-check passes after sync', () => {
+  const r = repo();
+  r.edit('eng.config.yml', s => s.replace(/^( +)- pstack\/\*.*$/m, '$&\n$1- pstack/how'));
+  assert.match(r.read('eng.config.yml'), /^ +- pstack\/how$/m);
+  assert.equal(r.eng('sync').status, 0);
+  const d = r.eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+});
+
 test('drift-check fails with no lock', () => {
   const r = repo();
   fs.rmSync(r.file('.eng/lock.json'));
