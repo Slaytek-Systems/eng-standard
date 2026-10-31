@@ -95,3 +95,16 @@ test('launch down removes a launch dir whose repo was a scratch dir that is gone
   assert.equal(r.status, 1, out(r)); assert.ok(fs.existsSync(b.d), 'a launch from a repo outside the scratch root is never removed blind');
   fs.rmSync(b.d, { recursive: true });
 });
+
+test('launch down keeps an orphaned launch dir whose worktree was changed after launch', () => {
+  const p = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', 'eng-repo-moved', 'repo');
+  fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
+  fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p);
+  const { wt, d } = keep(p);
+  fs.writeFileSync(path.join(wt, 'f'), 'edited\n'); fs.writeFileSync(path.join(wt, 'new.txt'), 'unsaved\n');
+  fs.renameSync(p, p + '-renamed');
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r));
+  assert.equal(fs.readFileSync(path.join(wt, 'f'), 'utf8'), 'edited\n'); assert.ok(fs.existsSync(path.join(wt, 'new.txt')));
+  fs.rmSync(d, { recursive: true }); fs.rmSync(path.dirname(p), { recursive: true });
+});
