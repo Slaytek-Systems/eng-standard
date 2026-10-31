@@ -58,6 +58,12 @@ test('launch down moves a pre-fix log out of the worktree, once, then removes it
   assert.equal(retro().match(/FAIL by legacy-verifier/g)?.length, 1, 'the legacy entry is kept exactly once');
 });
 
+test('a pre-fix log in the checkout is still read', () => {
+  fs.mkdirSync(path.join(dir, '.eng'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.eng/mistakes.jsonl'), JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by checkout-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n');
+  try { assert.match(retro(), /FAIL by checkout-verifier/); } finally { fs.rmSync(path.join(dir, '.eng'), { recursive: true }); }
+});
+
 test('launch down still refuses other untracked work in the worktree', () => {
   const { wt, d } = keep(dir);
   fs.writeFileSync(path.join(wt, 'notes.txt'), 'unsaved\n');
