@@ -59,6 +59,18 @@ test('launch down moves a pre-fix log out of the worktree, once, then removes it
   assert.equal(retro().match(/FAIL by legacy-verifier/g)?.length, 1, 'the legacy entry is kept exactly once');
 });
 
+test('launch down moves a pre-fix log that the repo gitignores', () => {
+  const p = path.join(root, 'ignoring');
+  fs.mkdirSync(p); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
+  fs.writeFileSync(path.join(p, '.gitignore'), '.eng/mistakes.jsonl\n'); git('add -A', p); git('commit -qm x', p);
+  const { wt, d } = keep(p), line = '{"key":"verdict:FAIL","what":"FAIL in an ignoring repo"}';
+  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+  assert.ok(!fs.existsSync(d));
+  assert.equal(fs.readFileSync(mistakesLog(p), 'utf8'), line + '\n', 'the ignored log is kept in the clone log');
+  fs.rmSync(p, { recursive: true });
+});
+
 test('launch down after a move that stopped before the delete adds nothing twice', () => {
   const { wt, d } = keep(dir), line = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by interrupted-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() });
   fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
