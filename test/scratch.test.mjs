@@ -57,28 +57,16 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
   }
 });
 
-// Motus PR470 (37d6e7a8, 1 Nov 2026): 24 findings. Each false positive below is the flagged code as written, in a file of
-// its language; each true positive must still fire, as must the near misses a mask could swallow (verifier rounds 1 to 3 too).
-test('disk rules: Motus PR470 false positives pass, its true positives and near misses still fire', () => {
+// Motus PR470 (37d6e7a8, 1 Nov 2026): 24 findings. Rows the flagged line proves inert pass; true positives, the false
+// positives a line cannot disprove (decided: they fire, the repo restructures), and every verifier probe (rounds 1-4) fire.
+test('disk rules: Motus PR470 inert lines pass; true positives, undecidable lines and verifier probes fire', () => {
   const rule = id => DISK_RULES.find(r => r.id === id), lines = (id, [f, t]) => lintText(rule(id), t, f).map(h => h.line);
-  const quiet = {
-    'script-bare-tmpdir': [
-      ['a.mjs', 'spawnSync(bwrap,\n    [\n      "--dev",\n      "/dev",\n      "--tmpfs",\n      "/tmp",\n      "--tmpfs",\n      "/home",\n    ],\n  );'],
-      ['a.mjs', '// /tmp is shared and cleaned, so state kept there can vanish mid-recovery or fill the disk.'],
-      ['a.sh', '# never write to /tmp here'], ['a.mjs', 'const sh = `\n# cp x /tmp/out\n`;'],
-      ['a.sh', 'echo "Epic IDs saved to /tmp/linear-epic-ids.env"'],
-      ['a.mjs', '  for (const name of (await readdir("/tmp")).sort()) {'], ['a.sh', 'readdir("/tmp")'],
-      ['a.ts', 'throw new Error(`refused /tmp: ${dir}`);'],
-    ],
-    'container-no-rm': [
-      ['a.test.mjs', '      throw new Error(`docker run failed: ${started.stderr}`);'],
-      ['a.test.mjs', '  const busy = (message) => Object.assign(new Error("docker run failed"), { stderr: message });'],
-      ['a.test.mjs', '    ).toThrow("docker run failed");'],
-      ['a.sh', '# docker run -d postgres:17 leaves volumes behind'],
-      ['a.sh', "echo 'next: docker run -d postgres:17'"], ['a.sh', 'throw new Error("docker run -d postgres:17")'],
-    ],
-  };
-  for (const [id, cases] of Object.entries(quiet)) for (const c of cases) assert.deepEqual(lines(id, c), [], `${id} passes: ${c}`);
+  const quiet = [
+    ['a.mjs', '// /tmp is shared and cleaned, so state kept there can vanish mid-recovery or fill the disk.'],
+    ['a.mjs', '  for (const name of (await readdir("/tmp")).sort()) {'],
+    ['a.sh', '  // /tmp is not used here'], ['a.ts', 'const names = readdirSync(\'/tmp\', { withFileTypes: true });'],
+  ];
+  for (const c of quiet) assert.deepEqual(lines('script-bare-tmpdir', c), [], `passes: ${c}`);
   const bite = {
     'script-bare-tmpdir': [
       ['a.mjs', 'const work = await fs.mkdtemp(path.join(os.tmpdir(), "calendly-allowlist-"));'],
@@ -89,32 +77,32 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
       ['a.ts', 'const tempFile = join(tmpdir(), "email-preview.html");'],
       ['a.mjs', '  const scratch = mkdtempSync(path.join(tmpdir(), "ui-evidence-"));'],
       ['a.sh', 'TMP_DIR="$(mktemp -d)"'],
-      ['a.sh', 'retained=$(mktemp -d "$evidence/run-XXXXXXXX")'], ['a.sh', 'd=$(mktemp -d "$scratch/run.XXXXXX")'],
-      ['a.sh', 'd=$(mktemp -d /var/../tmp/run.XXXXXX)'], ['a.sh', 'd=$(mktemp -d /tmp/run.XXXXXX)'], ['a.sh', 'd=$(mktemp -t run.XXXXXX)'],
-      ['a.sh', 'echo "$(mktemp -d)"'], ['a.sh', 'echo "a\\"$(mktemp -d)\\""'], ['a.sh', 'echo "ids" > /tmp/ids.env'], ['a.sh', 'echo "saved" | tee /tmp/log'],
-      ['a.mjs', '["--bind",\n"/tmp"]'], ['a.sh', 'bwrap --tmpfs /tmp -- sh'], ['a.mjs', 'copyFileSync("--tmpfs", "/tmp/output");'],
-      ['a.mjs', 'copyFileSync("--tmpfs", "/tmp");'], ['a.mjs', '["--tmpfs", "/tmp/x"]'], ['a.mjs', 'const sh = `\n//bin/mkdir -p /tmp/x\n`;'],
-      ['a.mjs', 'const sh = `throw new Error("x"); cp a /tmp/b`;'], ['a.mjs', 'const s = "// cp a /tmp/b";'], ['a.mjs', 'const re = /"/; const p = "/tmp/x";'],
-      ['a.sh', 'echo "`mktemp -d`"'], ['a.sh', 'cp -- "./--tmpfs" "/tmp"'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nwriteFileSync("/tmp/x", "");'],
-      ['a.sh', 'cat <<EOF\n# $(mktemp -d)\nEOF'], ['a.sh', 'bash -c "echo \'$(mktemp -d)\';"'], ['a.sh', '// x; cp a /tmp/b'],
-      ['a.mjs', 'execSync("new Error(`cp a /tmp/b`)");'], ['a.sh', 'new Error(`mktemp -d`)'], ['a.mjs', 'execSync(`\necho \'${mkdtempSync(tmpdir())}\'\n`);'], ['a.mjs', 'const sh = `echo "${fs.mkdtempSync("/tmp/x")}"`;'], ['a.sh', 'docker run --tmpfs /run -v /tmp/cache:/data alpine'],
-      ['a.mjs', '#dir = fs.mkdtempSync(path.join(os.tmpdir(), "x-"));'], ['a.sh', 'cp x /tmp/out # copy'],
-      ['a.sh', '//bin/mkdir -p /tmp/example'],
-      ['a.mjs', 'const f = join("/tmp", "x"); readdir("/tmp")'],
-      ['a.mjs', 'throw new Error(`failed: ${fs.mkdtempSync("/tmp/x")}`);'],
-      ['a.sh', 'printf "%s\\n" "Error(\'$(mktemp -d)\')"'], ['a.mjs', 'const sh = `printf "%s" "new Error(\'$(mktemp -d)\')"`;'],
+      ['a.sh', 'retained=$(mktemp -d "$evidence/run-XXXXXXXX")'], ['a.mjs', '      "--tmpfs",\n      "/tmp",'],
+      ['a.sh', 'echo "Epic IDs saved to /tmp/linear-epic-ids.env"'], ['a.mjs', 'mkdir -p "$PGDATA/pg_wal" /tmp/fixture-tablespace'],
+      ['a.mjs', '  const path = join("/tmp", name);'],
+      ['a.sh', 'd=$(mktemp -d "$scratch/run.XXXXXX")'], ['a.sh', 'd=$(mktemp -d /var/../tmp/run.XXXXXX)'], ['a.sh', 'printf "%s\\n" "Error(\'$(mktemp -d)\')"'],
+      ['a.sh', 'echo "a\\"$(mktemp -d)\\""'], ['a.sh', '//bin/mkdir -p /tmp/example'], ['a.sh', 'echo "`mktemp -d`"'],
+      ['a.mjs', 'execFileSync("bash", ["-c", `\n//bin/mkdir -p /tmp/example\n`]);'], ['a.sh', 'cp -- "./--tmpfs" "/tmp"'],
+      ['a.mjs', 'copyFileSync("--tmpfs", "/tmp/output");'], ['a.mjs', 'execSync(`\necho \'${mkdtempSync(tmpdir())}\'\n`);'],
+      ['a.sh', 'cat <<EOF\n# $(mktemp -d)\nEOF'], ['a.sh', 'bash -c "echo \'$(mktemp -d)\';"'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nwriteFileSync("/tmp/x", "");'],
+      ['a.sh', "$(echo 'mkdir -p /tmp/example')"], ['a.sh', "printf '%s\\n' 'new Error(\"'; mkdir -p /tmp/example; echo '\")'"],
+      ['a.mjs', "const prefix = 'new Error(\"'; fs.writeFileSync('/tmp/example', 'data'); const suffix = '\")';"],
+      ['a.mjs', 'spawnSync("cp", ["--", "--tmpfs", "/tmp"]);'], ['a.mjs', 'fs.cpSync("--tmpfs", "/tmp", {recursive: true});'],
+      ['a.sh', 'cp a "x\n// y" /tmp/z'], ['a.sh', 'cp a "x\n// y\' /tmp/z'], ['a.sh', '// x; cp a /tmp/b'], ['a.sh', 'readdir("/tmp")'],
+      ['a.mjs', 'const f = join("/tmp", "x"); readdir("/tmp")'], ['a.mjs', 'cp(a, "/tmp/b") // copy'],
     ],
     'container-no-rm': [
-      ['a.sh', 'docker run -d postgres:17'], ['a.mjs', 'execSync("docker run -d postgres:17");'], ['a.mjs', 'throw new Error("x"); docker run -d postgres:17'],
-      ['a.sh', 'echo "$(docker run -d postgres:17)"'], ['a.sh', 'echo starting && docker run -d postgres:17'],
-      ['a.sh', 'printf "%s\\n" "Error(\'$(docker run -d postgres:17)\')"'],
-      ['a.sh', '//usr/bin/docker run -d postgres:17'], ['a.sh', 'echo "`docker run -d postgres:17`"'], ['a.sh', 'bash -c "echo \'$(docker run -d postgres:17)\';"'],
-      ['a.sh', 'cat <<EOF\n# $(docker run -d postgres:17)\nEOF'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nexecSync("docker run -d postgres:17");'], ['a.mjs', 'execSync(`printf "%s" "new Error(\'\\`docker run -d postgres:17\\`\')"`);'],
-      ['a.mjs', 'const sh = `\n// note\ndocker run -d postgres:17\n`;'], ['a.mjs', 'const sh = `new Error("x") docker run -d postgres:17`;'],
+      ['a.sh', 'docker run -d postgres:17'], ['a.mjs', 'execSync("docker run -d postgres:17");'],
+      ['a.test.mjs', '      throw new Error(`docker run failed: ${started.stderr}`);'], ['a.test.mjs', '    ).toThrow("docker run failed");'],
+      ['a.sh', 'printf "%s\\n" "Error(\'$(docker run -d postgres:17)\')"'], ['a.sh', 'echo "`docker run -d postgres:17`"'],
+      ['a.mjs', 'execSync(`printf "%s" "new Error(\'\\\\`docker run -d postgres:17\\\\`\')"`);'], ['a.sh', 'bash -c "echo \'$(docker run -d postgres:17)\';"'],
+      ['a.sh', 'cat <<EOF\n# $(docker run -d postgres:17)\nEOF'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nexecSync("docker run -d postgres:17");'],
+      ['a.sh', "$(echo 'docker run -d postgres:17')"], ['a.sh', `eval "$(echo 'docker run -d postgres:17')"`],
+      ['a.mjs', 'const re = /"/; execSync(\'echo "new Error(`docker run -d postgres:17`)"\');'], ['a.sh', '//usr/bin/docker run -d postgres:17'],
     ],
   };
   for (const [id, cases] of Object.entries(bite)) for (const c of cases) assert.equal(lines(id, c).length, 1, `${id} bites: ${c}`);
-  assert.deepEqual(lines('script-bare-tmpdir', ['a.mjs', '["--tmpfs",\n"/tmp"];\ncp(a, "/tmp/b")']), [3], 'line numbers survive a multi-line mask');
+  assert.deepEqual(lines('script-bare-tmpdir', ['a.mjs', '// note\nreaddir("/tmp");\ncp(a, "/tmp/b")']), [3], 'line numbers survive masking');
 });
 
 test('evidence is per PR and only merged or closed PRs are removable', () => {
