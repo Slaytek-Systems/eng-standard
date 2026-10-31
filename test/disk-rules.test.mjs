@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
+import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 import { DISK_RULE_SPECS, SOURCE, diskRules, diskRuleErrors, evidenceRuns } from '../lib/disk-rules.mjs';
@@ -17,6 +18,8 @@ const env = { ...process.env, ENG_TMP: '', ENG_TMP_BASE: path.join(root, 'tmpbas
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env });
 const setCfg = f => { const p = path.join(dir, 'eng.config.yml'), c = YAML.parse(fs.readFileSync(p, 'utf8')); f(c); fs.writeFileSync(p, YAML.stringify(c)); };
 const rules = r => setCfg(c => { c.hygiene.disk_rules = r; });
+const engAsync = (...a) => new Promise(res => { const p = spawn(process.execPath, [ENG, ...a], { cwd: dir, env }); let o = ''; p.stdout.on('data', d => { o += d; }); p.stderr.on('data', d => { o += d; }); p.on('close', status => res({ status, out: o })); });
+const NO_NET = spawnSync('bwrap', ['--unshare-net', '--die-with-parent', '--dev-bind', '/', '/', 'true']).status === 0 ? false : 'bwrap with network namespaces is not available here';
 const write = (p, data) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, data); };
 
 before(() => {
@@ -71,6 +74,18 @@ test('eng leave-nothing -- <cmd>: passes on an empty private TMPDIR, fails on le
   assert.equal(r.status, 7);
   r = eng('leave-nothing', '--', 'bash', '-c', 'test "$NODE_DISABLE_COMPILE_CACHE" = 1');
   assert.equal(r.status, 0, 'the write-only Node compile cache is off for checked commands');
+  r = eng('leave-nothing', '--', 'bash', '-c', 'kill -TERM $$');
+  assert.equal(r.status, 143, 'a signal keeps its conventional exit code');
+  r = eng('leave-nothing', '--', process.execPath, ENG, 'leave-nothing', '--', 'true');
+  assert.equal(r.status, 0, `a nested clean wrapper removes its own dir: ${r.stdout}${r.stderr}`);
+  setCfg(c => { c.project.commands.test = `node ${ENG} leave-nothing -- true`; });
+  r = eng('gate');
+  assert.equal(r.status, 0, `leave-nothing composes inside eng gate: ${r.stdout}${r.stderr}`);
+  setCfg(c => { c.project.commands.test = 'true'; });
+  rules({ tests_leave_nothing: { mode: 'warn' } });
+  r = eng('leave-nothing', '--', 'bash', '-c', 'mktemp -d >/dev/null');
+  assert.equal(r.status, 0); assert.match(r.stdout, /eng leave-nothing: WARN \(bash -c mktemp -d >\/dev\/null left 1 entry; rule warn\)/);
+  setCfg(c => { delete c.hygiene.disk_rules; });
   assert.deepEqual(fs.readdirSync(env.ENG_TMP_BASE).filter(n => n.startsWith('eng-disk-')), [], 'the per-run dir is removed');
 });
 
@@ -106,9 +121,17 @@ test('eng lint: cargo-target-per-run flags a Cargo target built inside a run dir
   write(path.join(dir, 'scripts/qualify.sh'), 'export CARGO_TARGET_DIR="$ENG_RUN_DIR/cargo-target"\ncargo build\n');
   let r = eng('lint');
   assert.equal(r.status, 1); assert.match(r.stderr, /scripts\/qualify\.sh:1: \[cargo-target-per-run\]/);
+  rules({ no_cache_in_evidence: { mode: 'warn' } });
+  r = eng('lint');
+  assert.equal(r.status, 0, `warn mode reports without failing: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /WARN scripts\/qualify\.sh:1: \[cargo-target-per-run\]/); assert.match(r.stdout, /eng lint: PASS .*1 warning\(s\) above/);
   rules({ no_cache_in_evidence: { mode: 'off' } });
   r = eng('lint');
   assert.doesNotMatch(r.stderr + r.stdout, /cargo-target-per-run/, 'mode off drops the lint rule too');
+  setCfg(c => { delete c.hygiene.disk_rules; });
+  write(path.join(dir, 'scripts/qualify.sh'), 'CARGO_TARGET_DIR="$CARGO_TARGET_DIR" cargo run -- --output "$ENG_RUN_DIR/report.json"\n');
+  r = eng('lint');
+  assert.doesNotMatch(r.stderr + r.stdout, /cargo-target-per-run/, 'a later output argument is not the assigned value');
   fs.rmSync(path.join(dir, 'scripts'), { recursive: true }); setCfg(c => { delete c.hygiene.disk_rules; });
 });
 
@@ -129,7 +152,7 @@ test('eng fetch: fills the shared cache once, checks the pinned sha256 on fill a
   assert.ok(!fs.existsSync(path.join(xdg, 'eng/downloads/other-1/node-v24.tar.gz')), 'a bad download never lands in the cache');
 });
 
-test('eng downloads check: passes when prepare fetches once into the cache; fails on a refetch, a copy in the run dir or no checksum', () => {
+test('eng downloads check: passes when prepare fetches once into the cache; fails on a refetch, a copy in the run dir or no checksum', { skip: NO_NET }, () => {
   const src = path.join(root, 'backend.zip'); fs.writeFileSync(src, 'backend bytes '.repeat(1000));
   const sum = crypto.createHash('sha256').update(fs.readFileSync(src)).digest('hex'), url = pathToFileURL(src).href;
   const fetchCmd = `node ${ENG} fetch backend 1.0 ${url} ${sum}`;
@@ -138,7 +161,7 @@ test('eng downloads check: passes when prepare fetches once into the cache; fail
 
   rules({ pinned_downloads: { prepare: `f=$(${fetchCmd}) && mkdir -p "$(dirname "$f")/x" && test -e "$(dirname "$f")/x/run" || cp "$f" "$(dirname "$f")/x/run"; ln -sf "$f" "$ENG_RUN_DIR/backend.zip"` } });
   r = eng('downloads', 'check');
-  assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /PASS \(prepare ran twice; 3 cached file/);
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /PASS \(prepare ran twice, the second with no network; 3 cached file/);
 
   rules({ pinned_downloads: { prepare: `cp "$(${fetchCmd})" "$ENG_RUN_DIR/backend.zip"` } });
   r = eng('downloads', 'check');
@@ -160,12 +183,54 @@ test('eng downloads check: passes when prepare fetches once into the cache; fail
   setCfg(c => { delete c.hygiene.disk_rules; });
 });
 
+test('eng downloads check: a real second download, an extracted runtime in the run dir or an unchecked file at any depth fails', { skip: NO_NET }, async () => {
+  let gets = 0;
+  const server = http.createServer((q, s) => { gets++; s.end('pinned over http'); });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/net.bin`, sum = crypto.createHash('sha256').update('pinned over http').digest('hex');
+  try {
+    rules({ pinned_downloads: { prepare: `node ${ENG} fetch net 1 ${url} ${sum} >/dev/null` } });
+    let r = await engAsync('downloads', 'check');
+    assert.equal(r.status, 0, r.out); assert.equal(gets, 1, 'eng fetch downloads once; the second run reads the cache');
+    gets = 0;
+    rules({ pinned_downloads: { prepare: `node ${ENG} fetch net 1 ${url} ${sum} >/dev/null; curl -fsS ${url} -o /dev/null` } });
+    r = await engAsync('downloads', 'check');
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /FAIL the second prepare run failed with no network \(exit \d+\), so it downloads again on every run/);
+    assert.equal(gets, 2, 'the first run made two real requests; the second could make none');
+  } finally { server.close(); }
+
+  const pkg = path.join(root, 'rt'); write(path.join(pkg, 'bin/runtime'), 'runtime binary '.repeat(500));
+  const tarball = path.join(root, 'runtime.tar'); execSync(`tar -cf ${tarball} -C ${pkg} bin`);
+  const tsum = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex'), fetchTar = `node ${ENG} fetch runtime 1 ${pathToFileURL(tarball).href} ${tsum}`;
+  rules({ pinned_downloads: { prepare: `f=$(${fetchTar}) && tar -xf "$f" -C "$ENG_RUN_DIR"` } });
+  let r = eng('downloads', 'check');
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL run-1\/bin\/runtime is bin\/runtime extracted from cached runtime-1\/runtime\.tar/);
+  rules({ pinned_downloads: { prepare: `f=$(${fetchTar}) && d="$(dirname "$f")/x" && { test -d "$d" || { mkdir "$d" && tar -xf "$f" -C "$d"; }; } && ln -sfn "$d" "$ENG_RUN_DIR/rt"` } });
+  r = eng('downloads', 'check');
+  assert.equal(r.status, 0, `extracting once beside the verified archive passes: ${r.stdout}${r.stderr}`);
+
+  rules({ pinned_downloads: { prepare: `mkdir -p "$ENG_DOWNLOAD_CACHE/test-1/deeper" && { test -e "$ENG_DOWNLOAD_CACHE/test-1/deeper/pinned.bin" || cp ${tarball} "$ENG_DOWNLOAD_CACHE/test-1/deeper/pinned.bin"; }` } });
+  r = eng('downloads', 'check');
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL test-1\/deeper\/pinned\.bin is not beside a checksummed artifact/);
+  rules({ pinned_downloads: { prepare: `test -e "$ENG_DOWNLOAD_CACHE/loose.bin" || cp ${tarball} "$ENG_DOWNLOAD_CACHE/loose.bin"` } });
+  r = eng('downloads', 'check');
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL loose\.bin sits at the top of the cache with no checksum/);
+  setCfg(c => { delete c.hygiene.disk_rules; });
+});
+
+test('eng downloads check fails closed when it cannot cut the network for the second run', () => {
+  rules({ pinned_downloads: { prepare: 'true' } });
+  const r = spawnSync(process.execPath, [ENG, 'downloads', 'check'], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: path.join(root, 'no-bin') } });
+  assert.equal(r.status, 1); assert.match(r.stderr, /cannot prove the second prepare run downloads nothing: bubblewrap \(bwrap\)/);
+  setCfg(c => { delete c.hygiene.disk_rules; });
+});
+
 test('eng doctor fails a rule turned off; the gate maps evidence and downloads', () => {
   rules({ evidence_budget: { mode: 'off' } });
   let r = eng('doctor');
   assert.match(r.stdout, /FAIL hygiene\.disk_rules\.evidence_budget is on \(Evidence folders have a size budget\)/);
   assert.match(r.stdout, /ok   hygiene\.disk_rules\.tests_leave_nothing is on/);
-  setCfg(c => { delete c.hygiene.disk_rules; c.gates.required = ['evidence', 'downloads']; });
+  setCfg(c => { delete c.hygiene.disk_rules; c.gates.required = ['evidence', 'downloads']; c.project.commands.test = 'true'; });
   r = eng('gate');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /pass\s+evidence\s+eng evidence check: PASS/); assert.match(r.stdout, /pass\s+downloads\s+eng downloads check: PASS/);

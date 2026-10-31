@@ -197,7 +197,7 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
       markers: [CACHEDIR.TAG]     # file names that mark a cache dir (Cargo writes CACHEDIR.TAG in every target and build dir). Non-empty list.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     pinned_downloads:             # Pinned downloads are fetched once into a shared, checksummed cache.
-      mode: fail                  # eng downloads check runs prepare twice on one fresh cache: no second fetch, no cached file copied into $ENG_RUN_DIR, every file has a matching .sha256.
+      mode: fail                  # eng downloads check runs prepare twice on one fresh cache, the second offline (bwrap): no second download, nothing copied or extracted into $ENG_RUN_DIR, every file checksummed or extracted beside a checksummed artifact.
       cache: "${XDG_CACHE_HOME}/eng/downloads"   # absolute, not under a temp dir; shared by every repo. eng exports it as ENG_DOWNLOAD_CACHE.
       prepare: null               # command that fetches every pinned download with `eng fetch <name> <version> <url> <sha256>`; null = the repo has none.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv

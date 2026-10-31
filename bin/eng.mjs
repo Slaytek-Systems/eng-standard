@@ -291,7 +291,9 @@ function builtinRules(cfg) {
   if (cfg.flags?.file) r.push({ id: 'flags-default-off', paths: cfg.flags.file, pattern: ':\\s*true\\b', flags: '',
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
-  if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || diskRules(cfg).no_cache_in_evidence.mode !== 'off').map(d => ({ ...d, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
+  const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
+  if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || cacheMode !== 'off')
+    .map(d => ({ ...d, ...(d.id === 'cargo-target-per-run' && cacheMode === 'warn' ? { warn: true } : {}), proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
@@ -299,7 +301,7 @@ function lintFiles(rule, files, base) {
   for (const f of files) {
     const name = f.replace(/\.fixture$/, '');
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
-    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => { if (re.test(line)) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message }); });
+    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => { if (re.test(line)) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) }); });
   }
   return hits;
 }
@@ -326,10 +328,12 @@ function lint() {
     console.log(`  baseline ${baselinePath('lint')}: ${c.known.length} baselined, ${c.gone.length} fixed since the baseline`);
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
+  const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
+  for (const h of warned) console.log(`  WARN ${hitText(h)}`);
   if (hits.length && cfg.renovation?.gates?.mode === 'warn')  // mode from the config the rules came from: a branch cannot switch the base to warn
     return console.log(`  ${hits.map(hitText).join('\n  ')}\neng lint: WARN (renovation.gates.mode warn; ${hits.length} new finding(s) would fail in enforce mode)`);
   if (hits.length) die(`lint:\n  ${hits.map(hitText).join('\n  ')}`);
-  console.log(`eng lint: PASS (${builtinRules(cfg).length} rules${bl ? ', new findings only' : ''})`);
+  console.log(`eng lint: PASS (${builtinRules(cfg).length} rules${bl ? ', new findings only' : ''}${warned.length ? `; ${warned.length} warning(s) above` : ''})`);
 }
 function rulesProve() {
   const cfg = loadConfig(); const bad = [];
@@ -977,39 +981,54 @@ function leaveNothing() {
   const cfg = loadConfig(), i = a.indexOf('--'), c = i >= 0 ? a.slice(i + 1) : [];
   if (!c.length) die('usage: eng leave-nothing -- <cmd> [args...]');
   const t = withTmp(cfg), own = fs.mkdtempSync(path.join(t.dir, 'run-')), mode = diskRules(cfg).tests_leave_nothing.mode;
-  const r = spawnSync(c[0], c.slice(1), { cwd: ROOT, stdio: 'inherit', env: privateTmpEnv(RUN_ENV, own) });
-  const left = leftovers(own);
+  let r, left;
+  try { r = spawnSync(c[0], c.slice(1), { cwd: ROOT, stdio: 'inherit', env: privateTmpEnv(RUN_ENV, own) }); left = leftovers(own); }
+  finally { fs.rmSync(own, { recursive: true, force: true }); }  // its own dir, even when ENG_TMP belongs to a parent eng
   if (left.length && mode !== 'off') console.log(`  ${mode === 'fail' ? 'FAIL' : 'WARN'} ${c.join(' ')} ${leftText(left)}`);
-  if (r.status !== 0) { console.error(`eng: FAIL leave-nothing: ${c.join(' ')} exited ${r.status ?? r.signal}`); process.exit(r.status || 1); }
+  const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGKILL: 9 }[r.signal];
+  if (r.status !== 0) { console.error(`eng: FAIL leave-nothing: ${c.join(' ')} exited ${r.status ?? r.signal}`); process.exit(sig ? 128 + sig : r.status || 1); }
   if (left.length && mode === 'fail') die(`leave-nothing: ${c.join(' ')} left files behind`);
-  console.log(`eng leave-nothing: PASS (${c.join(' ')} left its private TMPDIR empty${mode === 'off' ? '; rule off' : ''})`);
+  console.log(`eng leave-nothing: ${left.length && mode === 'warn' ? 'WARN' : 'PASS'} (${c.join(' ')} ${left.length ? `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'}; rule ${mode}` : `left its private TMPDIR empty${mode === 'off' ? '; rule off' : ''}`})`);
 }
 const evidenceRoots = cfg => (cfg.hygiene?.evidence_roots ?? [cfg.e2e?.evidence_dir ?? '.eng/evidence']).map(r => path.resolve(ROOT, expandPath(r, cfg.project.name)));
 // no_cache_in_evidence + evidence_budget. Args: run dirs to check; none = every run dir under hygiene.evidence_roots. Never deletes.
 function evidenceCheck() {
   const cfg = loadConfig(), rules = diskRules(cfg), given = a.slice(1).filter(x => !x.startsWith('--'));
   const runs = given.length ? given.map(d => path.resolve(ROOT, d)) : evidenceRoots(cfg).flatMap(evidenceRuns);
-  const bad = reportFindings(evidenceFindings(runs, rules), rules);
+  const found = evidenceFindings(runs, rules), bad = reportFindings(found, rules);
   if (bad) die(`evidence check: ${bad} evidence dir problem(s) above`);
-  console.log(`eng evidence check: PASS (${runs.length} run dir(s); no build cache, each under ${rules.evidence_budget.mode === 'off' ? 'no budget (off)' : `${rules.evidence_budget.max_mb} MB`})`);
+  if (found.length) return console.log(`eng evidence check: WARN (${runs.length} run dir(s); ${found.length} warning(s) above)`);
+  console.log(`eng evidence check: PASS (${runs.length} run dir(s); no build cache${rules.no_cache_in_evidence.mode === 'off' ? ' check (off)' : ''}, ${rules.evidence_budget.mode === 'off' ? 'no budget (off)' : `each under ${rules.evidence_budget.max_mb} MB`})`);
 }
-// pinned_downloads: run prepare twice against one fresh cache, each time with a new run dir.
+// pinned_downloads: run prepare twice against one fresh cache, each time with a new run dir. The second run has no
+// network (bwrap --unshare-net), so any download it tries, through eng fetch or not, fails it. A prepare that hides a
+// failed download (`|| true`) is not caught.
+const NO_NET = ['--unshare-net', '--die-with-parent', '--dev-bind', '/', '/'];
 function downloadsCheck() {
   const cfg = loadConfig(), p = diskRules(cfg).pinned_downloads;
   if (p.mode === 'off') return console.log('eng downloads check: OFF (hygiene.disk_rules.pinned_downloads.mode: off)');
   if (!p.prepare) return console.log('eng downloads check: PASS (no pinned downloads; hygiene.disk_rules.pinned_downloads.prepare is null)');
+  if (spawnSync('bwrap', [...NO_NET, 'true']).status !== 0) {
+    const why = 'cannot prove the second prepare run downloads nothing: bubblewrap (bwrap) with network namespaces is not available here';
+    if (p.mode === 'fail') die(`downloads check: ${why}`);
+    return console.log(`  WARN ${why} (pinned_downloads, ${p.source})\neng downloads check: WARN (not run)`);
+  }
   const round = openRound(cfg, 'downloads'), cache = path.join(round.dir, 'cache'), runs = [1, 2].map(n => path.join(round.dir, `run-${n}`)), snaps = [];
+  let offline = null;
   fs.mkdirSync(cache);
   for (const [n, d] of runs.entries()) {
     fs.mkdirSync(d);
-    const r = spawnSync('bash', ['-c', p.prepare], { cwd: ROOT, encoding: 'utf8', env: { ...round.env, ENG_DOWNLOAD_CACHE: cache, ENG_RUN_DIR: d, ENG_RUN_ID: `downloads-${n + 1}` } });
-    if (r.status !== 0) die(`downloads check: prepare run ${n + 1} exited ${r.status}: ${(r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ')}`);
+    const argv = n === 0 ? ['bash', '-c', p.prepare] : ['bwrap', ...NO_NET, 'bash', '-c', p.prepare];
+    const r = spawnSync(argv[0], argv.slice(1), { cwd: ROOT, encoding: 'utf8', env: { ...round.env, ENG_DOWNLOAD_CACHE: cache, ENG_RUN_DIR: d, ENG_RUN_ID: `downloads-${n + 1}` } });
+    const tail = (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ');
+    if (r.status !== 0 && n === 0) die(`downloads check: prepare run 1 exited ${r.status}: ${tail}`);
+    if (r.status !== 0) offline = `the second prepare run failed with no network (exit ${r.status}), so it downloads again on every run: ${tail}`;
     snaps.push(snapshot(cache));
   }
-  const found = downloadFindings(cache, snaps[0], snaps[1], runs);
+  const found = [...(offline ? [offline] : []), ...downloadFindings(cache, snaps[0], snaps[1], runs)];
   for (const f of found) console.log(`  ${p.mode === 'fail' ? 'FAIL' : 'WARN'} ${f} (pinned_downloads, ${p.source})`);
   if (found.length && p.mode === 'fail') die(`downloads check: ${found.length} problem(s) above`);
-  console.log(`eng downloads check: ${found.length ? 'WARN' : 'PASS'} (prepare ran twice; ${snaps[0].size} cached file(s), none fetched twice or copied into a run dir)`);
+  console.log(found.length ? `eng downloads check: WARN (${found.length} warning(s) above)` : `eng downloads check: PASS (prepare ran twice, the second with no network; ${snaps[0].size} cached file(s), none fetched twice, unchecked or copied or extracted into a run dir)`);
 }
 // eng fetch <name> <version> <url> <sha256>: prints the cached file's path (stdout only). Cache: $ENG_DOWNLOAD_CACHE, else the config's.
 async function fetchCmd() {
@@ -1030,7 +1049,8 @@ function doctor() {
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
-  for (const h of hits) console.log(`  FAIL ${hitText(h)}`);
+  for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
+  hits = hits.filter(h => !h.warn);
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (bad) die(`doctor: ${bad} disk-hygiene problem(s) above`);
   console.log(`eng doctor: PASS (${checks.length} config checks, ${DISK_RULE_IDS.length + 1} disk rules)`);

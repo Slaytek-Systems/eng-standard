@@ -8,9 +8,10 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 - `tests_leave_nothing`: `eng gate` gives each step a private `TMPDIR`/`ENG_TMP` and fails it on leftovers. New `eng leave-nothing -- <cmd>` does the same for one command.
 - `no_cache_in_evidence` (`markers`, default `[CACHEDIR.TAG]`): new `eng evidence check` (gate `evidence`) and `eng e2e` fail on a cache marker in an evidence run dir. New lint rule `cargo-target-per-run`.
-- `pinned_downloads` (`cache`, `prepare`): new `eng fetch` fills a shared cache once with a SHA-256 check on every use, and eng exports the cache as `ENG_DOWNLOAD_CACHE`. New `eng downloads check` (gate `downloads`) runs `prepare` twice and fails on a second fetch, a copy in the run dir or a missing checksum.
+- `pinned_downloads` (`cache`, `prepare`): new `eng fetch` fills a shared cache once with a SHA-256 check on every use, and eng exports the cache as `ENG_DOWNLOAD_CACHE`. New `eng downloads check` (gate `downloads`) runs `prepare` twice, the second time with no network through bubblewrap, and fails closed without it. It fails on a second download, a copy or extracted archive member in the run dir, or a cached file that is neither a checksummed artifact nor extracted beside one.
 - `evidence_budget` (`max_mb`, default 100): `eng evidence check` and `eng e2e` fail on an over-budget run dir. They never delete. `hygiene.evidence_roots` lists the roots to check.
 - `eng doctor` fails a rule set to `off`. The starter config adds `evidence` and `downloads` to `gates.required`. eng-standard's CI runs all three checks on itself.
+- `cargo-target-per-run` reads only the assigned value, and in `warn` mode it reports without failing `eng lint`. `eng leave-nothing` removes its own dir when nested and keeps a signal's exit code.
 - Fixes found by the new check: two `t3-queue-health` tests left temp dirs, and the renovate `launch --keep` test used the parent eng's scratch root when run under eng.
 
 ## 0.11.0 (26 Oct 2026)
