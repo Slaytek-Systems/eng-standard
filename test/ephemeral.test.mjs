@@ -187,6 +187,22 @@ test('a run whose docker it cannot watch is refused before it starts', { skip: !
   assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-z`).stdout.trim(), '', 'the command never ran');
 });
 
+test('a docker daemon that is there but does not answer refuses the run; a missing socket counts as no docker', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const sick = path.join(base, `${tag}-500.sock`);
+  if (Buffer.byteLength(sick) > 107) return t.skip('no socket path of 107 bytes or less');
+  const up = http.createServer((req, res) => { res.writeHead(500); res.end('{"message":"broken"}'); });
+  await new Promise(r => up.listen(sick, r));
+  t.after(() => { up.close(); fs.rmSync(sick, { force: true }); });
+  const run = h => new Promise(ok => { const c = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo ran > ${marks}/sick`], { cwd: dir, env: { ...env, DOCKER_HOST: h } }); let o = ''; c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { o += d; }); c.on('close', status => ok({ status, o })); });
+  let r = await run(`unix://${sick}`);
+  assert.equal(r.status, 1, r.o); assert.match(r.o, /not started, because it could not be watched: docker: the run's labelling socket did not start/);
+  assert.ok(!fs.existsSync(path.join(marks, 'sick')), 'the command never ran');
+  r = await run(`unix://${path.join(root, 'no-such.sock')}`);
+  assert.equal(r.status, 0, r.o); assert.match(r.o, /no docker reachable/);
+  fs.rmSync(path.join(marks, 'sick'), { force: true });
+});
+
 test('the run\'s docker socket survives a malformed create request', { skip: (!docker || !execSync('command -v curl || true', { encoding: 'utf8' }).trim()) && 'needs docker and curl' }, () => {
   const r = eng('ephemeral', '--', `curl -s --unix-socket "\${DOCKER_HOST#unix://}" -X POST -H 'Content-Type: application/json' -d null http://d/containers/create >/dev/null; docker version --format ok`);
   assert.equal(r.status, 0, out(r));
