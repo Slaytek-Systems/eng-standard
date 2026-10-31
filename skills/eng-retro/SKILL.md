@@ -12,7 +12,7 @@ This skill copies two upstream skills and adds no new method:
 
 ## Steps
 
-1. Run `eng retro`. It is read-only. It reads `.eng/mistakes.jsonl`, which holds `eng mistake` entries, every failed `eng gate` gate (`gate:<name>`, once per SHA) and every `eng verdict FAIL` (`verdict:FAIL`).
+1. Run `eng retro`. It is read-only. It reads the clone's mistakes log, `$(git rev-parse --git-common-dir)/eng/mistakes.jsonl` (one log for every worktree, so a FAIL in a removed verifier worktree is kept), plus a checkout's older `.eng/mistakes.jsonl` if one exists. The log holds `eng mistake` entries, every failed `eng gate` gate (`gate:<name>`, once per SHA) and every `eng verdict FAIL` (`verdict:FAIL`).
 2. For each class it lists, read the commits it cites. Discard any class you cannot trace to a real moment (retro).
 3. Check its proposed level against correct's order. Go higher if you can: one owner or one write path (`add-gate`), types or a Bend law (`write-law-and-proof`), then `custom-lint`, then `property-test` / `eng-verify` / `e2e-flow`, docs last. Say why a higher level did not work.
 4. Add the prune candidates: rules nothing has needed, AGENTS.md lines with no enforcer, reviewer-only rules.

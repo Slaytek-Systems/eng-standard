@@ -1,0 +1,2 @@
+# Core Edge qualification runner: a fresh 2.1 GB Cargo target in every evidence run dir (disk audit, 29 Oct 2026)
+env['CARGO_TARGET_DIR'] = str(run/'cargo-target')

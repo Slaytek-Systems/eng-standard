@@ -36,9 +36,10 @@ test('eng gate: children get a per-run ENG_TMP/TMPDIR, removed on failure', () =
   const r = eng('gate');
   assert.equal(r.status, 1, r.stdout + r.stderr);
   const seen = fs.readFileSync(path.join(base, 'seen'), 'utf8').trim();
-  assert.match(path.basename(seen), /^eng-hyg-[a-z0-9]+-\d+-/);
-  assert.equal(path.dirname(seen), base);
-  assert.ok(!fs.existsSync(seen), 'per-run dir removed after a failed gate');
+  assert.match(path.basename(path.dirname(seen)), /^eng-hyg-[a-z0-9]+-\d+-/);
+  assert.match(path.basename(seen), /^test-/, 'each gate step gets its own dir inside the per-run dir');
+  assert.equal(path.dirname(path.dirname(seen)), base);
+  assert.ok(!fs.existsSync(path.dirname(seen)), 'per-run dir removed after a failed gate');
   assert.deepEqual(engDirs(), []);
 });
 
@@ -54,10 +55,25 @@ test('eng gate: per-run dir removed on SIGTERM', async () => {
 });
 
 test('eng gate: a nested eng reuses the parent ENG_TMP and passing gate removes it', () => {
-  setCfg(c => { c.project.commands.test = `node ${ENG} e2e-required --files docs/a.md > "$ENG_TMP/n.txt" && test -f "$ENG_TMP/n.txt" && ls "$ENG_TMP_BASE" | grep -c '^eng-hyg-' > "$ENG_TMP_BASE/count"`; });
+  setCfg(c => { c.project.commands.test = `node ${ENG} e2e-required --files docs/a.md > "$ENG_TMP/n.txt" && test -f "$ENG_TMP/n.txt" && rm "$ENG_TMP/n.txt" && ls "$ENG_TMP_BASE" | grep -c '^eng-hyg-' > "$ENG_TMP_BASE/count"`; });
   const r = eng('gate'); assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(fs.readFileSync(path.join(base, 'count'), 'utf8').trim(), '1');
   assert.deepEqual(engDirs(), []);
+});
+
+test('disk rule tests_leave_nothing: a gate step that leaves a file in its TMPDIR fails; warn reports; off ignores', () => {
+  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/leaky-fixture" && touch "$ENG_TMP/also-left"'; delete c.hygiene.disk_rules; });
+  let r = eng('gate');
+  assert.equal(r.status, 1, 'default mode is fail');
+  assert.match(r.stdout, /FAIL\s+test\s+left 2 entries in its private TMPDIR: also-left, leaky-fixture/);
+  setCfg(c => { c.hygiene.disk_rules = { tests_leave_nothing: { mode: 'warn' } }; });
+  r = eng('gate');
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /WARN left 2 entries/);
+  setCfg(c => { c.hygiene.disk_rules = { tests_leave_nothing: { mode: 'off' } }; });
+  r = eng('gate');
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.doesNotMatch(r.stdout, /left 2 entries/);
+  assert.deepEqual(engDirs(), [], 'the per-run dir is still removed');
+  setCfg(c => { delete c.hygiene.disk_rules; });
 });
 
 test('eng clean: dry run lists stale dirs only; --apply removes them', () => {

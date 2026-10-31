@@ -1,0 +1,83 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync, execSync } from 'node:child_process';
+import YAML from 'yaml';
+import { mistakesLog } from '../lib/hygiene.mjs';
+// eng's scratch root lives under XDG_CACHE_HOME: keep it inside this run, never in the real ~/.cache.
+process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
+process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
+
+const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
+const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
+const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-mlog-'));
+const remote = path.join(root, 'remote.git'), dir = path.join(root, 'repo');
+const scratch = path.join(process.env.XDG_CACHE_HOME, 'eng', 'mlog', 'scratch');
+const env = { ...process.env, ENG_TMP: '', ENG_TMP_BASE: '', ENG_BASE: '', ENG_PR_LABELS: '', BUILDKITE: '', GITHUB_ACTIONS: '' };
+const eng = (cwd, ...a) => spawnSync(process.execPath, [ENG, ...a], { cwd, encoding: 'utf8', env });
+const git = (c, cwd = dir) => execSync(`git ${c}`, { cwd, stdio: 'pipe', encoding: 'utf8' }).trim();
+const out = r => r.stdout + r.stderr;
+const keep = cwd => { const r = eng(cwd, 'launch', '--keep', '--ref', 'HEAD'); assert.equal(r.status, 0, out(r)); const wt = r.stdout.match(/worktree (\S+) \(mode 700\)/)[1]; return { wt, d: path.dirname(wt) }; };
+const retro = () => { const r = eng(dir, 'retro'); assert.equal(r.status, 0, out(r)); return r.stdout; };
+
+before(() => {
+  git(`init -q --bare -b main ${remote}`, root); git(`clone -q ${remote} repo`, root);
+  git('config user.email builder@t'); git('config user.name builder');
+  fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml'));
+  const p = path.join(dir, 'eng.config.yml'), c = YAML.parse(fs.readFileSync(p, 'utf8'));
+  c.project.name = 'mlog'; fs.writeFileSync(p, YAML.stringify(c));
+  git('add -A'); git('commit -qm base'); git('push -q -u origin main');
+  git('checkout -qb feature'); fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n'); git('add -A'); git('commit -qm change -m "Agent: builder-1"');
+});
+after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+test('FAIL verdict in an eng launch --keep worktree: launch down removes it and the FAIL stays in the repo log', () => {
+  const { wt, d } = keep(dir);
+  let r = eng(wt, 'verdict', 'FAIL', '--by', 'verifier-1');
+  assert.equal(r.status, 0, out(r));
+  r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(!fs.existsSync(d), 'launch dir removed');
+  assert.match(retro(), /FAIL by verifier-1/, 'eng retro in the main checkout reads the FAIL logged in the removed worktree');
+});
+
+test('FAIL verdict inside eng verdict round: the round is removed and the FAIL stays in the repo log', () => {
+  const r = eng(dir, 'verdict', 'round', '--', process.execPath, ENG, 'verdict', 'FAIL', '--by', 'verifier-2');
+  assert.equal(r.status, 0, out(r));
+  assert.deepEqual(fs.readdirSync(scratch).filter(n => n.includes('verdict')), [], 'verdict round removed');
+  assert.match(retro(), /FAIL by verifier-2/);
+});
+
+test('mistakesLog refuses a dir git cannot read instead of returning a relative path', () => {
+  const p = path.join(root, 'not-a-repo'); fs.mkdirSync(p);
+  assert.throws(() => mistakesLog(p), /no git common dir/);
+  assert.equal(mistakesLog(dir), path.join(fs.realpathSync(dir), '.git', 'eng', 'mistakes.jsonl'));
+});
+
+test('a pre-fix log in the checkout is still read', () => {
+  fs.mkdirSync(path.join(dir, '.eng'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.eng/mistakes.jsonl'), JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by checkout-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n');
+  try { assert.match(retro(), /FAIL by checkout-verifier/); } finally { fs.rmSync(path.join(dir, '.eng'), { recursive: true }); }
+});
+
+test('launch down still refuses other untracked work in the worktree', () => {
+  const { wt, d } = keep(dir);
+  fs.writeFileSync(path.join(wt, 'notes.txt'), 'unsaved\n');
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /git refused/);
+  assert.ok(fs.existsSync(path.join(wt, 'notes.txt')));
+  fs.rmSync(path.join(wt, 'notes.txt'));
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
+test('launch down leaves a pre-fix worktree log in place and refuses, so nothing is lost', () => {
+  const { wt, d } = keep(dir), line = '{"key":"verdict:FAIL","what":"FAIL by legacy-verifier"}\n';
+  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line);
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /git refused/);
+  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), line);
+  fs.rmSync(path.join(wt, '.eng'), { recursive: true });
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
