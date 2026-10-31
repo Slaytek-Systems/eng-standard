@@ -58,13 +58,12 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
 });
 
 // Motus PR470 (37d6e7a8, 1 Nov 2026): 24 findings. Each false positive below is the flagged code as written, in a file of
-// its language; each true positive must still fire, as must the near misses a mask could swallow (verifier round 1 too).
+// its language; each true positive must still fire, as must the near misses a mask could swallow (verifier rounds 1 and 2 too).
 test('disk rules: Motus PR470 false positives pass, its true positives and near misses still fire', () => {
   const rule = id => DISK_RULES.find(r => r.id === id), lines = (id, [f, t]) => lintText(rule(id), t, f).map(h => h.line);
   const quiet = {
     'script-bare-tmpdir': [
-      ['a.mjs', '      "--dev",\n      "/dev",\n      "--tmpfs",\n      "/tmp",\n      "--tmpfs",\n      "/home",'],
-      ['a.sh', 'bwrap --tmpfs /tmp --tmpfs=/var/tmp -- sh'],
+      ['a.mjs', 'spawnSync(bwrap,\n    [\n      "--dev",\n      "/dev",\n      "--tmpfs",\n      "/tmp",\n      "--tmpfs",\n      "/home",\n    ],\n  );'],
       ['a.mjs', '// /tmp is shared and cleaned, so state kept there can vanish mid-recovery or fill the disk.'],
       ['a.sh', '# never write to /tmp here'],
       ['a.sh', 'echo "Epic IDs saved to /tmp/linear-epic-ids.env"'],
@@ -93,7 +92,10 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
       ['a.sh', 'retained=$(mktemp -d "$evidence/run-XXXXXXXX")'], ['a.sh', 'd=$(mktemp -d "$scratch/run.XXXXXX")'],
       ['a.sh', 'd=$(mktemp -d /var/../tmp/run.XXXXXX)'], ['a.sh', 'd=$(mktemp -d /tmp/run.XXXXXX)'], ['a.sh', 'd=$(mktemp -t run.XXXXXX)'],
       ['a.sh', 'echo "$(mktemp -d)"'], ['a.sh', 'echo "a\\"$(mktemp -d)\\""'], ['a.sh', 'echo "ids" > /tmp/ids.env'], ['a.sh', 'echo "saved" | tee /tmp/log'],
-      ['a.mjs', '"--bind",\n"/tmp",'], ['a.sh', 'docker run --tmpfs /run -v /tmp/cache:/data alpine'],
+      ['a.mjs', '["--bind",\n"/tmp"]'], ['a.sh', 'bwrap --tmpfs /tmp -- sh'], ['a.mjs', 'copyFileSync("--tmpfs", "/tmp/output");'],
+      ['a.mjs', 'copyFileSync("--tmpfs", "/tmp");'], ['a.mjs', '["--tmpfs", "/tmp/x"]'], ['a.mjs', 'const sh = `\n//bin/mkdir -p /tmp/x\n`;'],
+      ['a.mjs', 'const sh = `throw new Error("x"); cp a /tmp/b`;'], ['a.mjs', 'const s = "// cp a /tmp/b";'], ['a.mjs', 'const re = /"/; const p = "/tmp/x";'],
+      ['a.sh', 'echo "`mktemp -d`"'], ['a.sh', 'cp -- "./--tmpfs" "/tmp"'], ['a.mjs', 'execSync(`\necho \'${mkdtempSync(tmpdir())}\'\n`);'], ['a.mjs', 'const sh = `echo "${fs.mkdtempSync("/tmp/x")}"`;'], ['a.sh', 'docker run --tmpfs /run -v /tmp/cache:/data alpine'],
       ['a.mjs', '#dir = fs.mkdtempSync(path.join(os.tmpdir(), "x-"));'], ['a.sh', 'cp x /tmp/out # copy'],
       ['a.sh', '//bin/mkdir -p /tmp/example'], ['a.mjs', '# cp x /tmp/out'], ['a.sh', 'readdir("/tmp")'],
       ['a.mjs', 'const f = join("/tmp", "x"); readdir("/tmp")'],
@@ -104,11 +106,12 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
       ['a.sh', 'docker run -d postgres:17'], ['a.mjs', 'execSync("docker run -d postgres:17");'], ['a.mjs', 'throw new Error("x"); docker run -d postgres:17'],
       ['a.sh', 'echo "$(docker run -d postgres:17)"'], ['a.sh', 'echo starting && docker run -d postgres:17'],
       ['a.sh', 'printf "%s\\n" "Error(\'$(docker run -d postgres:17)\')"'], ['a.sh', 'throw new Error("docker run -d postgres:17")'],
-      ['a.sh', '//usr/bin/docker run -d postgres:17'],
+      ['a.sh', '//usr/bin/docker run -d postgres:17'], ['a.sh', 'echo "`docker run -d postgres:17`"'], ['a.mjs', 'execSync(`printf "%s" "new Error(\'\\`docker run -d postgres:17\\`\')"`);'],
+      ['a.mjs', 'const sh = `\n// note\ndocker run -d postgres:17\n`;'], ['a.mjs', 'const sh = `new Error("x") docker run -d postgres:17`;'],
     ],
   };
   for (const [id, cases] of Object.entries(bite)) for (const c of cases) assert.equal(lines(id, c).length, 1, `${id} bites: ${c}`);
-  assert.deepEqual(lines('script-bare-tmpdir', ['a.mjs', '"--tmpfs",\n"/tmp",\ncp a /tmp/b']), [3], 'line numbers survive a multi-line mask');
+  assert.deepEqual(lines('script-bare-tmpdir', ['a.mjs', '["--tmpfs",\n"/tmp"];\ncp(a, "/tmp/b")']), [3], 'line numbers survive a multi-line mask');
 });
 
 test('evidence is per PR and only merged or closed PRs are removable', () => {

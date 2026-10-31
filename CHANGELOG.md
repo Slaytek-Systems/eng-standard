@@ -6,9 +6,9 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 **`eng lint` disk rules skip text that never runs and in-sandbox `/tmp`.** Motus PR470 (37d6e7a8) failed `eng lint` with 24 findings. Nine were false positives the flagged line itself disproves. Nine were real, and they still fire.
 
-- A rule can carry a `mask`: regexes for spans to blank before the line pattern runs, each for one language (`js` for `.js`/`.ts` and kin, `sh` for every other script path) or for all. Newlines are kept, so line numbers hold, and another match on the same line still fires. No masked string may hold a shell `$(...)`.
-- `script-bare-tmpdir` and `container-no-rm` mask a whole-line comment (`//` in JS, `#` and a space in shell, so `//bin/mkdir` and a JS `#field` are still code), a literal message passed to `new Error(...)`, `throw Error(...)` or `.toThrow(...)` in JS, and an `echo` of a literal string with no redirect, pipe or `$(...)`.
-- `script-bare-tmpdir` also masks a `--tmpfs /tmp` target (bwrap, docker or podman; the JS array form across lines too) and `readdir("/tmp")` in JS.
+- A rule can carry a `mask`: kinds of span to blank before the line pattern runs, `text` (never runs) or `tmp` (never touches host temp). Newlines are kept, so line numbers hold, and another match on the same line still fires. JS files (`.js`/`.ts` and kin) are tokenized, so shell inside a JS string or template literal is never masked. Other script paths are shell and are masked by regex.
+- `script-bare-tmpdir` and `container-no-rm` mask, in JS, a comment token and a string or template (with only `${a.b}` interpolations) passed to `new Error(`, `throw Error(` or `.toThrow(`. In shell they mask a whole-line `#` comment and an `echo` of a literal string with no `$`, backtick or backslash, and no redirect or pipe.
+- `script-bare-tmpdir` also masks, in JS, `"/tmp"` right after `"--tmpfs",` inside an array literal (a sandbox argv), and `readdir("/tmp")`.
 - Six Motus findings are false positives the line cannot disprove, and they still fire: shell inside a container's tmpfs (`scripts/postgres-fixture*.mjs`), a read-only `join("/tmp", name)`, and `mktemp` under a variable directory. eng-standard adds no per-line exception (decision 1 Nov 2026); the repo restructures such sites.
 
 ## 0.12.0 (31 Oct 2026)
