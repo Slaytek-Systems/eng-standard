@@ -35,8 +35,10 @@ test('no model id is hard-coded outside the config, vendored upstream text and h
 
 test('the guard pattern catches model ids and versioned names, not harness or provider names', () => {
   const ids = [['claude', 'opus', '5', '5'], ['gpt', '6.1', 'sol'], ['grok', '4.7', 'xhigh', 'fast'], ['deepseek', 'v4', 'pro'], ['glm', '5.3', 'flash'], ['gemini', '3.8', 'flash'], ['composer', '2']].map(p => p.join('-'));
-  for (const s of [...ids, ['Opus', '5.5'].join(' '), ['DeepSeek', 'V4 Pro'].join(' '), ['opencode', 'go/x'].join('-')]) assert.match(s, MODEL_ID, s);
-  for (const s of ['claude-code', 'codex', 'cursor-agent', '.claude/settings.json', 'agents/openai.yaml', 'model: none']) assert.doesNotMatch(s, MODEL_ID, s);
+  const api = [['deepseek', 'chat'], ['deepseek', 'reasoner'], ['kimi', 'k3'], ['mimo', 'v2.6', 'pro'], ['qwen' + '3.8', 'max'], ['o' + '4', 'mini']].map(p => p.join('-'));
+  const named = [['Opus', '5.5'], ['DeepSeek', 'V4 Pro'], ['GPT', '6.1'], ['Claude', '5'], ['Gemini', '4 Argon'], ['Kimi', 'K3']].map(p => p.join(' '));
+  for (const s of [...ids, ...api, ...named, 'use o' + '3 here', ['opencode', 'go/x'].join('-')]) assert.match(s, MODEL_ID, s);
+  for (const s of ['claude-code', 'Claude Code', 'codex', 'Codex', 'opencode', 'cursor-agent', 'Grok Bot', '.claude/settings.json', 'agents/openai.yaml', 'model: none', 'O(1)', 'proto3', 'DeepSeek', 'GPT models']) assert.doesNotMatch(s, MODEL_ID, s);
 });
 
 test('pstack roles come from setup-pstack, and models config is checked', () => {
@@ -48,7 +50,10 @@ test('pstack roles come from setup-pstack, and models config is checked', () => 
   assert.deepEqual(modelErrors({ pick: 'x' }), ['models.pick is not a setting (routing, pstack)']);
   assert.match(modelErrors({ pstack: { 'swarm worker': 'x' } }).join(), /models.pstack."swarm worker" is not a pstack role/);
   assert.match(modelErrors({ pstack: { 'swarm workers': [] } }).join(), /must be a model, inherit-parent, auto, or a non-empty list/);
-  assert.match(modelErrors({ routing: '' }).join(), /models.routing must be a non-empty string/);
+  assert.match(modelErrors({ routing: '' }).join(), /models.routing must be one line, a non-empty string/);
+  for (const m of [{ pstack: { 'swarm workers': 'inherit-parent\nhardest tasks: auto' } }, { pstack: { 'arena runners': ['auto', 'a\nhardest tasks: auto'] } }])
+    assert.match(modelErrors(m).join(), /must be a model, inherit-parent, auto, or a non-empty list/, 'a line break would add an undeclared role line');
+  assert.match(modelErrors({ routing: `${ROUTING}\nhardest tasks: auto` }).join(), /models.routing must be one line/);
 });
 
 test('eng sync: AGENTS.md and SHIPPING.md point to the routing note and name no model; no pstack-models file by default', () => {
