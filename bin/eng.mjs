@@ -147,7 +147,7 @@ function driftCheck() {
   for (const [l, t] of claudeLinks(cfg)) { let cur = null; try { cur = fs.readlinkSync(path.join(ROOT, l)); } catch {} if (cur !== t) bad.push(`${l}: symlink missing or wrong`); }
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
-  if (!same(lock.files, Object.keys(files)) || !same(lock.links, claudeLinks(cfg).map(([l]) => l))) bad.push('.eng/lock.json: config changed since last sync');
+  if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(claudeLinks(cfg).map(([l]) => l)))) bad.push('.eng/lock.json: config changed since last sync');
   if (bad.length) die(`drift-check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
   console.log(`eng drift-check: PASS (${Object.keys(files).length} generated files match config)`);
 }
