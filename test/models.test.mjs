@@ -35,10 +35,12 @@ test('no model id is hard-coded outside the config, vendored upstream text and h
 
 test('the guard pattern catches model ids and versioned names, not harness or provider names', () => {
   const ids = [['claude', 'opus', '5', '5'], ['gpt', '6.1', 'sol'], ['grok', '4.7', 'xhigh', 'fast'], ['deepseek', 'v4', 'pro'], ['glm', '5.3', 'flash'], ['gemini', '3.8', 'flash'], ['composer', '2']].map(p => p.join('-'));
-  const api = [['deepseek', 'chat'], ['deepseek', 'reasoner'], ['kimi', 'k3'], ['mimo', 'v2.6', 'pro'], ['qwen' + '3.8', 'max'], ['o' + '4', 'mini']].map(p => p.join('-'));
-  const named = [['Opus', '5.5'], ['DeepSeek', 'V4 Pro'], ['GPT', '6.1'], ['Claude', '5'], ['Gemini', '4 Argon'], ['Kimi', 'K3']].map(p => p.join(' '));
-  for (const s of [...ids, ...api, ...named, 'use o' + '3 here', ['opencode', 'go/x'].join('-')]) assert.match(s, MODEL_ID, s);
-  for (const s of ['claude-code', 'Claude Code', 'codex', 'Codex', 'opencode', 'cursor-agent', 'Grok Bot', '.claude/settings.json', 'agents/openai.yaml', 'model: none', 'O(1)', 'proto3', 'DeepSeek', 'GPT models']) assert.doesNotMatch(s, MODEL_ID, s);
+  const api = [['deepseek', 'chat'], ['deepseek', 'reasoner'], ['kimi', 'k3'], ['mimo', 'v2.6', 'pro'], ['qwen' + '3.8', 'max'], ['o' + '4', 'mini'],
+    ['grok', 'code', 'fast', '1'], ['codex', 'mini', 'latest'], ['mistral', 'nemo'], ['gemini', 'flash', 'lite'], ['gpt', '4o', 'mini'], ['claude', 'sonnet', 'latest'], ['gemma', '3', '27b'], ['devstral', 'small']].map(p => p.join('-'));
+  const named = [['Opus', '5.5'], ['DeepSeek', 'V4 Pro'], ['GPT', '6.1'], ['Claude', '5'], ['Gemini', '4 Argon'], ['Kimi', 'K3'], ['Claude', 'Haiku']].map(p => p.join(' '));
+  for (const s of [...ids, ...api, ...named, 'use o' + '3 here', ['opencode', 'go/x'].join('-'), ['openai', 'gpt'].join('/') + '-6.1-sol']) assert.match(s, MODEL_ID, s);
+  for (const s of ['claude-code', 'Claude Code', 'claude-plugin', 'codex', 'Codex', 'codex-cli', '~/.codex/sessions/', 'opencode', 'cursor-agent', 'Grok Bot', 'grok-notify', '.claude/settings.json',
+    'agents/openai.yaml', 'model: none', 'O(1)', 'proto3', 'DeepSeek', 'GPT models', 'ChatGPT subscription', 'a haiku-style note', 'Mistral AI']) assert.doesNotMatch(s, MODEL_ID, s);
 });
 
 test('pstack roles come from setup-pstack, and models config is checked', () => {
