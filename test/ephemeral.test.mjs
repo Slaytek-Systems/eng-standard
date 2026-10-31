@@ -461,30 +461,7 @@ test('isolation enforced: ~/.convex and the cache home are read-only, home state
   assert.deepEqual(rounds(), []);
 });
 
-test('isolation enforced: a process started through a tmux server that was already running fails the run, and is not stopped', t => {
-  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
-  const sock = path.join(root, 'tmux.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
-  tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
-  const run = n => eng('ephemeral', '--', `tmux -S ${sock} new-session -d -s ${n} 'sleep 605'`);
-  let r = run('w');
-  assert.equal(r.status, 0, out(r)); tmux('kill-session', '-t', 'w');
-  enforce(t);
-  r = run('e');
-  assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, /LEFT process \d+ \(sleep 605\): started during the run in its checkout but outside its process tree/);
-  assert.equal(tmux('has-session', '-t', 'e').status, 0, 'never signals what it cannot prove is the run\'s');
-});
 
-test('isolation enforced: a container made around the run\'s socket fails the run and is not removed', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  t.after(() => dk('rm', '-f', `${tag}-direct`));
-  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  enforce(t);
-  const r = eng('ephemeral', '--', `docker -H ${outside} run -d --name ${tag}-direct alpine:latest sleep 300 >/dev/null`);
-  assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-direct\\): made on this docker during the run without the run's label`));
-  assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-direct`).stdout.trim(), 'true');
-});
 
 test('a container with a restart policy is permanent and stays, as devbox-ops docker-ephemeral keeps it', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   t.after(() => dk('rm', '-f', '-v', `${tag}-rp`));
@@ -521,30 +498,7 @@ test('isolation enforced: ephemeral_runs mode off still watches the run, in eng 
   }
 });
 
-test('isolation enforced: the run\'s docker socket refuses a writable bind of ~/.convex; a read-only one is allowed', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  const home = path.join(root, 'home-bind'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
-  enforce(t);
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
-  let r = run(`docker run --rm -v "$HOME/.convex:/state" alpine:latest touch /state/${tag}`);
-  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /is read-only for this run \(protected home state\)/);
-  assert.ok(!fs.existsSync(path.join(home, '.convex', tag)), 'docker never wrote the shared Convex state');
-  r = run(`docker run --rm --mount type=bind,source="$HOME/.convex",target=/state alpine:latest true`);
-  assert.notEqual(r.status, 0, out(r));
-  r = run(`docker run --rm -v "$HOME/.convex:/state:ro" alpine:latest ls /state`);
-  assert.equal(r.status, 0, out(r));
-});
 
-test('isolation enforced: an unlabelled container whose inspect fails makes the run not fully watched, not a pass', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  t.after(() => dk('rm', '-f', `${tag}-blindspot`));
-  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  enforce(t);
-  const shim = path.join(root, 'inspect-shim'); fs.mkdirSync(shim, { recursive: true });
-  fs.writeFileSync(path.join(shim, 'docker'), `#!/bin/sh\n[ "$1" = container ] && [ "$2" = inspect ] && [ -z "$ENG_EPHEMERAL_RUN" ] && exit 1\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `${dockerAt} -H ${outside} run -d --name ${tag}-blindspot alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${shim}:${env.PATH}` } });
-  assert.equal(r.status, 1, out(r));
-  assert.match(r.stderr, /was not fully watched: docker: container inspect failed/);
-});
 
 test('eng clean --containers --apply keeps a repo volume that a container it does not remove still uses', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   const v = `${tag}-cl-shared`, c = `${tag}-cl-other`;
@@ -557,22 +511,6 @@ test('eng clean --containers --apply keeps a repo volume that a container it doe
   assert.match(r.stdout, new RegExp(`keep +volume ${v} \\(permanent: used by container \\w{12}, which this does not remove\\)`));
 });
 
-test('isolation enforced: a process started under an older tmux server with cwd / fails the run, and so does a write it makes to ~/.convex after it exits', t => {
-  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
-  const sock = path.join(root, 'tmux2.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
-  const home = path.join(root, 'home-mux'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
-  tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
-  enforce(t);
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
-  let r = run(`tmux -S ${sock} new-session -d -s root -c / 'sleep 606'`);
-  assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, /LEFT process \d+ \(sleep 606\): started during the run/);
-  r = run(`tmux -S ${sock} new-session -d -s w -c / 'touch ${home}/.convex/${tag}'; sleep 0.5`);
-  assert.ok(fs.existsSync(path.join(home, '.convex', tag)), 'the older server is outside the sandbox, so the write landed');
-  assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, new RegExp(`LEFT home ${home}/\\.convex/${tag}: appeared or changed during the run`));
-});
 
 test('eng clean --containers --apply keeps a marked anonymous volume of a container it removes', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   const c = `${tag}-cl-anon`; let vol = null;
@@ -584,4 +522,104 @@ test('eng clean --containers --apply keeps a marked anonymous volume of a contai
   assert.equal(dk('inspect', c).status, 1, 'the unmarked container is removed');
   assert.equal(dk('volume', 'inspect', vol).status, 0, 'its marked anonymous volume stays');
   assert.match(r.stdout, new RegExp(`keep +volume ${vol} \\(permanent: slaytek\\.persist=true\\)`));
+});
+
+test('isolation enforced: older servers\' sockets are hidden, so a tmux server that was already running can start nothing and write nothing', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
+  const sock = path.join(root, 'tmux.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
+  const home = path.join(root, 'home-mux'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true }); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  let r = run(`tmux -S ${sock} new-session -d -s w 'sleep 605'`);
+  assert.equal(r.status, 0, out(r)); tmux('kill-session', '-t', 'w');
+  enforce(t);
+  for (const cmd of [`tmux -S ${sock} new-session -d -s e -c / 'sleep 605'`, `tmux -S ${sock} run-shell 'cd /; sleep 607 >/dev/null 2>&1 & touch ${home}/.cache/${tag} ${home}/.convex/${tag}'`]) {
+    r = run(cmd);
+    assert.notEqual(r.status, 0, out(r)); assert.match(r.stdout, /socket\(s\) of older servers hidden from the run/);
+  }
+  assert.equal(tmux('has-session', '-t', 'e').status, 1, 'the older server started no session');
+  assert.equal(spawnSync('pgrep', ['-f', 'sleep 60[57]']).status, 1, 'nothing was started through it');
+  assert.ok(!fs.existsSync(path.join(home, '.cache', tag)) && !fs.existsSync(path.join(home, '.convex', tag)), 'nothing was written through it');
+});
+
+test('isolation enforced: the raw docker socket is hidden; a container another route makes during the run fails it and is not removed', { skip: !docker && 'no reachable docker with alpine:latest' }, async t => {
+  t.after(() => dk('rm', '-f', `${tag}-direct`, `${tag}-side`));
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  let r = eng('ephemeral', '--', `docker -H ${outside} run -d --name ${tag}-direct alpine:latest sleep 300 >/dev/null`);
+  assert.equal(r.status, 1, out(r));
+  assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-direct`).stdout.trim(), '', 'the run could not reach the raw socket');
+  r = await sideContainer(env);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-side\\): made on this docker during the run without the run's label`));
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-side`).stdout.trim(), 'true');
+});
+
+test('isolation enforced: an unlabelled container whose inspect fails makes the run not fully watched, not a pass', { skip: !docker && 'no reachable docker with alpine:latest' }, async t => {
+  t.after(() => dk('rm', '-f', `${tag}-side`));
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const shim = path.join(root, 'inspect-shim'); fs.mkdirSync(shim, { recursive: true });
+  fs.writeFileSync(path.join(shim, 'docker'), `#!/bin/sh\n[ "$1" = container ] && [ "$2" = inspect ] && [ -z "$ENG_EPHEMERAL_RUN" ] && exit 1\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
+  const r = await sideContainer({ ...env, PATH: `${shim}:${env.PATH}` });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /was not fully watched: docker: container inspect failed/);
+});
+
+// Runs `sleep 2` under the check while this test makes a container on the daemon directly: another route, or another session.
+function sideContainer(runEnv) {
+  return new Promise(resolve => {
+    const p = spawn(process.execPath, [ENG, 'ephemeral', '--', 'sleep 2'], { cwd: dir, env: runEnv });
+    let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d);
+    setTimeout(() => dk('run', '-d', '--name', `${tag}-side`, 'alpine:latest', 'sleep', '300'), 1000);
+    p.on('close', status => resolve({ status, out: o }));
+  });
+}
+
+test('isolation enforced: the run\'s docker socket refuses writable binds of protected home state, a parent of it, or a bind-backed volume; read-only passes', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-bind'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true }); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  const vol = `${tag}-bindvol`; t.after(() => dk('volume', 'rm', vol));
+  dk('volume', 'create', '--opt', 'type=none', '--opt', 'o=bind', '--opt', `device=${home}/.cache`, vol);
+  enforce(t);
+  // A fake HOME has no docker context: name the daemon the test made the volume on.
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  for (const mount of ['-v "$HOME/.convex:/s"', '--mount type=bind,source="$HOME/.convex",target=/s', '-v "$HOME:/s"', `-v ${vol}:/s`,
+    '--mount type=volume,target=/s,volume-driver=local,volume-opt=type=none,volume-opt=device="$HOME/.cache",volume-opt=o=bind']) {
+    const r = run(`docker run --rm ${mount} alpine:latest sh -c 'touch /s/${tag} /s/.cache/${tag} 2>/dev/null; true'`);
+    assert.notEqual(r.status, 0, `${mount}: ${out(r)}`); assert.match(out(r), /is read-only for this run \(protected home state\)/, mount);
+  }
+  assert.deepEqual(['.convex', '.cache', ''].filter(d => fs.existsSync(path.join(home, d, tag))), [], 'docker wrote nothing under the protected home');
+  const r = run('docker run --rm -v "$HOME/.convex:/s:ro" alpine:latest ls /s');
+  assert.equal(r.status, 0, out(r));
+});
+
+test('isolation enforced: a ~/.convex holding a symlink is refused, since a write could follow it out', t => {
+  const home = path.join(root, 'home-link'), elsewhere = path.join(root, 'elsewhere'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true }); fs.mkdirSync(elsewhere, { recursive: true });
+  fs.symlinkSync(elsewhere, path.join(home, '.convex', 'linked'));
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `touch "$HOME/.convex/linked/${tag}"`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stderr, /not started, because it could not be watched: .*\.convex: holds symlinks/);
+  assert.ok(!fs.existsSync(path.join(elsewhere, tag)));
+});
+
+test('a run container removed as a leftover keeps its anonymous volume when that volume is marked', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  let vol = null; t.after(() => { dk('rm', '-f', `${tag}-av`); if (vol) dk('volume', 'rm', vol); });
+  const r = eng('ephemeral', '--', `docker run -d --name ${tag}-av --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av > ${marks}/av`);
+  vol = mark('av');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-av\\): removed`));
+  assert.equal(dk('volume', 'inspect', vol).status, 0, 'the marked anonymous volume stays');
+});
+
+test('isolation enforced: another docker daemon\'s socket (the rootful one) is hidden from the run', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const rootful = '/var/run/docker.sock';
+  if (!fs.existsSync(rootful) || spawnSync('docker', ['-H', `unix://${rootful}`, 'version'], { timeout: 10e3 }).status !== 0) return t.skip('needs a reachable daemon at /var/run/docker.sock');
+  if (outside === `unix://${rootful}`) return t.skip('the rootful daemon is the run\'s own upstream here');
+  enforce(t);
+  const r = eng('ephemeral', '--', `docker -H unix://${rootful} version >/dev/null`);
+  assert.notEqual(r.status, 0, out(r));
 });
