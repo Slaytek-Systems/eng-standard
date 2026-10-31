@@ -16,17 +16,25 @@ const facts = (name, deps, packageManager = 'bun@1.4.4', ciBun = [], ciNode = []
 const brief = fs => fs.map(f => `${f.status} ${f.item} ${f.have} -> ${f.want}`);
 
 test('minVersion reads the lowest version a spec allows', () => {
-  assert.deepEqual(minVersion('^1.46.0'), [1, 46, 0]);
-  assert.deepEqual(minVersion('~6.0'), [6, 0, 0]);
-  assert.deepEqual(minVersion('npm:typescript@7.0.2'), [7, 0, 2]);
+  assert.equal(minVersion('^1.46.0'), '1.46.0');
+  assert.equal(minVersion('~6.0'), '6.0.0');
+  assert.equal(minVersion('npm:typescript@7.0.2'), '7.0.2');
   assert.equal(minVersion('workspace:*'), null);
   assert.equal(minVersion('github:a/b'), null);
-  assert.deepEqual(minVersion('^22 || ^20'), [20, 0, 0], 'an || range allows its lowest alternative');
+  assert.equal(minVersion('^22 || ^20'), '20.0.0', 'an || range allows its lowest alternative');
   assert.equal(minVersion('^1.49.0 || <1.49.0'), null, 'an alternative with no lower bound leaves no proven minimum');
   assert.equal(minVersion('^1.49.0 || *'), null);
-  assert.deepEqual(minVersion('>= 1.6 <1.7'), [1, 6, 0]);
-  assert.deepEqual(minVersion('<=1.7.0 >=1.6.0'), [1, 6, 0]);
-  assert.deepEqual(minVersion('20 - 24'), [20, 0, 0]);
+  assert.equal(minVersion('>= 1.6 <1.7'), '1.6.0');
+  assert.equal(minVersion('<=1.7.0 >=1.6.0'), '1.6.0');
+  assert.equal(minVersion('20 - 24'), '20.0.0');
+  assert.equal(minVersion('>1.48'), '1.49.0', 'an exclusive bound on a partial version means the next one');
+  assert.equal(minVersion('1.49.0-alpha.0'), '1.49.0-alpha.0');
+  assert.equal(minVersion('>=*'), null);
+});
+
+test('a prerelease of a floor is below the floor', () => {
+  assert.deepEqual(brief(audit(STD, facts('x', { convex: '1.49.0-alpha.0' }))), ['drift convex 1.49.0-alpha.0 -> >= 1.49.0']);
+  assert.deepEqual(audit(STD, facts('x', { convex: '>1.48' })), []);
 });
 
 test('upper-bound-only specs have no minimum and are not drift', () => {
@@ -122,10 +130,12 @@ test('nodePins reads engines, .nvmrc, CI node-version (lists and matrix too) and
 
 test('a Convex repo declaring Node 20 anywhere is below the floor; Node 22 and non-Convex repos pass', () => {
   const pin = (kind, spec, file = 'f') => ({ file, kind, spec });
-  const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
-    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25'), pin('engines', '^22 ||'), pin('engines', '|| ^22')];
-  assert.equal(convexNodeFindings(STD, { convex: '^1.49.0' }, low).length, low.length);
-  assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'), pin('ci', '${{ matrix.node }}')]), []);
+  const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('version-file', 'lts/gallium'), pin('ci', 'lts/argon'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
+    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25'), pin('engines', '^22 ||'), pin('engines', '|| ^22'),
+    pin('engines', '>=*'), pin('engines', 'x.x'), pin('engines', '^22 || >=*'), pin('engines', ''), pin('version-file', 'lts/fermium'), pin('ci', '20.1')];
+  assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, low).map(p => p.spec), low.map(p => p.spec));
+  assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'),
+    pin('ci', '${{ matrix.node }}'), pin('ci', '${{ fromJSON(env.NODE_VERSIONS)[0] }}'), pin('engines', '>21'), pin('engines', '>21.x'), pin('version-file', 'lts/*'), pin('version-file', 'node')]), []);
   assert.deepEqual(convexNodeFindings(STD, { svelte: '^5' }, low), []);
 });
 
@@ -200,7 +210,7 @@ test('the handle rule is off below convex 1.49, where v.function() does not exis
     const r = eng('lint');
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.doesNotMatch(eng('rules', 'prove').stdout, /convex-function-handle-validator/);
-    for (const convex of ['^1.49.0 || ^1.48.0', '^1.49.0 || <1.49.0', '^1.49.0 || *']) {
+    for (const convex of ['^1.49.0 || ^1.48.0', '^1.49.0 || <1.49.0', '^1.49.0 || *', '1.49.0-alpha.0']) {
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex } }));
       assert.equal(eng('lint').status, 0, `${convex} does not prove 1.49, so the rule stays off`);
     }
@@ -211,7 +221,7 @@ test('the handle rule is off below convex 1.49, where v.function() does not exis
       assert.equal(eng('lint').status, 0, `monorepo convex ${root} + ${web}: one package may be below 1.49, so the rule stays off`);
     }
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0' } }));
-    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: '~1.49.1' } }));
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: '>1.48' } }));
     assert.equal(eng('lint').status, 1, 'every package on 1.49+ turns the rule on');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
