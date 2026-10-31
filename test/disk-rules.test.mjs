@@ -212,6 +212,20 @@ test('eng downloads check: a real second download, an extracted runtime in the r
   rules({ pinned_downloads: { prepare: `mkdir -p "$ENG_DOWNLOAD_CACHE/test-1/deeper" && { test -e "$ENG_DOWNLOAD_CACHE/test-1/deeper/pinned.bin" || cp ${tarball} "$ENG_DOWNLOAD_CACHE/test-1/deeper/pinned.bin"; }` } });
   r = eng('downloads', 'check');
   assert.equal(r.status, 1); assert.match(r.stdout, /FAIL test-1\/deeper\/pinned\.bin is not beside a checksummed artifact/);
+  const big = path.join(root, 'big'); write(path.join(big, 'runtime'), crypto.randomBytes(2 * 1048576));
+  const bigTar = path.join(root, 'big.tar'), bigZip = path.join(root, 'big.zip');
+  execSync(`tar -cf ${bigTar} -C ${big} runtime && cd ${big} && zip -q ${bigZip} runtime`);
+  for (const [a, x] of [[bigTar, 'tar -xOf "$f" runtime'], [bigZip, 'unzip -p "$f" runtime']]) {
+    const s2 = crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex');
+    rules({ pinned_downloads: { prepare: `f=$(node ${ENG} fetch big 1 ${pathToFileURL(a).href} ${s2}) && ${x} > "$ENG_RUN_DIR/runtime-v24"` } });
+    r = eng('downloads', 'check');
+    assert.equal(r.status, 1, `a 2 MiB member installed under another name fails (${path.extname(a)}): ${r.stdout}`);
+    assert.match(r.stdout, /FAIL run-1\/runtime-v24 is runtime extracted from cached big-1\/big\.(tar|zip)/);
+  }
+  rules({ pinned_downloads: { prepare: `test -e "$ENG_DOWNLOAD_CACHE/top.sha256" || head -c 13000 /dev/zero > "$ENG_DOWNLOAD_CACHE/top.sha256"; mkdir -p "$ENG_DOWNLOAD_CACHE/x-1"; test -e "$ENG_DOWNLOAD_CACHE/x-1/orphan.sha256" || echo payload > "$ENG_DOWNLOAD_CACHE/x-1/orphan.sha256"` } });
+  r = eng('downloads', 'check');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /FAIL top\.sha256 sits at the top of the cache with no checksum/); assert.match(r.stdout, /FAIL x-1\/orphan\.sha256 is a checksum with no orphan beside it/);
   rules({ pinned_downloads: { prepare: `test -e "$ENG_DOWNLOAD_CACHE/loose.bin" || cp ${tarball} "$ENG_DOWNLOAD_CACHE/loose.bin"` } });
   r = eng('downloads', 'check');
   assert.equal(r.status, 1); assert.match(r.stdout, /FAIL loose\.bin sits at the top of the cache with no checksum/);
