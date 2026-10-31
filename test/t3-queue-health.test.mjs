@@ -51,8 +51,9 @@ test('rendered thread guidance treats queued as stored and requires run confirma
   assert.match(guidance, /Use `mode: "auto"` for time-critical or approved sends/);
 });
 
-test('CLI warns and exits nonzero for a stale queued item', () => {
+test('CLI warns and exits nonzero for a stale queued item', t => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 't3-queue-health-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const snapshot = path.join(dir, 'snapshot.json');
   const script = fileURLToPath(new URL('../lib/t3-queue-health.mjs', import.meta.url));
   fs.writeFileSync(snapshot, JSON.stringify({ threads: [{ threadId: 'thread-1', items: [{ queuedRunId: 'run-1', createdAt: '2026-10-26T00:00:00Z' }] }] }));
@@ -63,8 +64,9 @@ test('CLI warns and exits nonzero for a stale queued item', () => {
   assert.match(result.stderr, /queued run run-1/);
 });
 
-test('CLI rejects non-decimal thresholds and escapes control characters in warnings', () => {
+test('CLI rejects non-decimal thresholds and escapes control characters in warnings', t => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 't3-queue-health-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const snapshot = path.join(dir, 'snapshot.json');
   const script = fileURLToPath(new URL('../lib/t3-queue-health.mjs', import.meta.url));
   fs.writeFileSync(snapshot, JSON.stringify({ threads: [{ threadId: 'thread-1', title: 'coordinator\n::warning::forged', items: [{ queuedRunId: 'run-1', createdAt: '2026-10-26T00:00:00Z' }] }] }));

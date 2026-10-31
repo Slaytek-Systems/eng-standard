@@ -13,6 +13,13 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - AGENTS.md gets an isolation rule row only in repos whose config has `isolation:`.
 ## Unreleased (26 Oct 2026)
 
+**Runs are ephemeral by default** (Matt, 30 Oct 2026; Core decision nd78q9vjkp392tp223ng7g6ydx8h9vcn). Every local test, review and probe run is thrown away when it ends, like a Boat sandbox. The devbox enforces part of this at the system level (devbox-ops PR #14). This is the repo side: a repo declares its runs, and a check fails when one leaves something behind.
+
+- New `hygiene.run_rules.ephemeral_runs` in `eng.config.yml`, in the same registry shape as the disk rules (`lib/ephemeral.mjs`). Options: `mode: fail | warn | off` (default `fail`), `runs` (default `test`, plus `launch` when `launch.up` and `launch.down` are declared), `persist_label` (default `slaytek.persist=true`, the label the devbox keeps), `persist_env` (default `SLAYTEK_PERSIST=true`) and `source`. Config validation rejects unknown rules, options, values and runs. `eng doctor` fails `mode: off`.
+- `eng ephemeral check | run <name> | -- <cmd>` runs a command and then checks what is left, not which flags were used. Each run gets its own run id, TMPDIR, private `/tmp` (bubblewrap, where the host allows it), scratch dir for nested eng rounds, and a `docker`/`podman` wrapper that labels `run`, `create` and `volume create`. Docker events tie each container and volume to the run. Afterwards it fails on leftover containers, volumes (including anonymous ones from `docker rm` without `-v`), temp entries and processes, and removes them. It never removes a compose container from this checkout that lacks the run label; it reports that container. It also never touches other containers on the host.
+- `eng gate` runs each required step that is a declared run through the check, so tests run once. Declared runs that are not steps are added as `ephemeral:<name>`. An interrupt still stops the gate.
+- CI runs `node bin/eng.mjs ephemeral check` instead of `npm test`. The first run found two `t3-queue-health` tests and the renovate launch test leaving temp dirs, which are now fixed (the same fix as PR #31).
+
 **T3 queued message delivery and coordinator health.** A queued result confirms storage, not run start; coordinators now have a 30-minute on-demand queue-age check with a configurable limit.
 
 **Self-merge runs on events and merges without a wait** (Matt, 26 Oct 2026: "No wait. Merge as soon as it's verified; post-merge checks roll back breakage.").

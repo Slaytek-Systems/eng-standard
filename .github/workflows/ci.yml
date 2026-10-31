@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
-      - run: npm test
+      - run: node bin/eng.mjs ephemeral check   # npm test, then nothing it made may be left (hygiene.run_rules.ephemeral_runs)
       - run: node bin/eng.mjs --help
   start-self-merge:
     # The post-merge check on main, or an auto-revert branch's test, just finished: self-merge reads the result now (a red

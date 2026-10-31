@@ -24,7 +24,8 @@ before(() => {
   fs.mkdirSync(base); git(`init -q --bare -b main ${remote}`, root); git(`clone -q ${remote} repo`, root);
   git('config user.email t@t'); git('config user.name t');
   fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml'));
-  setCfg(c => { c.project.name = 'hyg'; c.gates.required = ['test']; });
+  // These tests pin the gate's own ENG_TMP; wrapping steps in ephemeral runs is tested in ephemeral.test.mjs.
+  setCfg(c => { c.project.name = 'hyg'; c.gates.required = ['test']; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.eng/mistakes.jsonl\n');
   git('add -A'); git('commit -qm base'); git('push -q -u origin main');
 });
