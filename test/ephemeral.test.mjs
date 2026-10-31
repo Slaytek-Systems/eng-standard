@@ -193,11 +193,11 @@ test('the run\'s docker socket survives a malformed create request', { skip: (!d
   assert.match(r.stdout, /^ok$/m);
 });
 
-for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 'ps -a failed, so leftovers may be missing']]) test(`a run whose docker ${fails} fails is not fully watched, and its labelled container is still removed`, { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 'ps -a failed, so leftovers may be missing'], ['volume', 'volume ls failed, so leftovers may be missing']]) test(`a run whose docker ${fails} fails is not fully watched, and its labelled container is still removed`, { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
   const bin = path.join(root, `no${fails}`); fs.mkdirSync(bin, { recursive: true });
   // ps fails only for the check's own inventory query (its run-label filter), so the run itself still works.
-  fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\ncase "$1 $*" in events*|"ps "*label=eng.ephemeral.run*) [ "$1" = ${fails} ] && exit 1 ;; esac\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-e${fails} alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${bin}:${env.PATH}` } });
+  fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\ncase "$1 $*" in events*|"ps "*label=eng.ephemeral.run*|"volume volume ls"*) [ "$1" = ${fails} ] && exit 1 ;; esac\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-e${fails} -v /data alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${bin}:${env.PATH}` } });
   assert.equal(r.status, 1, out(r));
   assert.match(r.stderr, new RegExp(`run command was not fully watched: docker: ${says}`));
   if (fails === 'events') {
@@ -212,13 +212,20 @@ test('a run whose docker socket dies part way fails as not fully watched', { ski
   assert.match(r.stderr, /run command was not fully watched: docker: the run's labelling socket died during the run/);
 });
 
-test('a volume or network replaced by another owner under the same name while the run shuts down is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
-  const swap = `DOCKER_HOST=${outside} docker volume rm ${tag}-r; DOCKER_HOST=${outside} docker volume create --label owner=outside ${tag}-r; DOCKER_HOST=${outside} docker network rm ${tag}-rn; DOCKER_HOST=${outside} docker network create --label owner=outside ${tag}-rn`;
-  const r = eng('ephemeral', '--', `docker volume create ${tag}-r >/dev/null; docker network create ${tag}-rn >/dev/null; env -u ENG_EPHEMERAL_RUN bash -c 'trap "${swap.replaceAll('"', '\\"')} >/dev/null 2>&1; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
+test('a network replaced by another owner under the same name while the run shuts down is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+  const swap = `DOCKER_HOST=${outside} docker network rm ${tag}-rn; DOCKER_HOST=${outside} docker network create --label owner=outside ${tag}-rn; touch ${marks}/swapped`;
+  const r = eng('ephemeral', '--', `docker network create ${tag}-rn >/dev/null; env -u ENG_EPHEMERAL_RUN bash -c 'trap "${swap} >/dev/null 2>&1; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
   assert.equal(r.status, 1, out(r));
-  assert.equal(dk('volume', 'inspect', '-f', '{{index .Labels "owner"}}', `${tag}-r`).stdout.trim(), 'outside', 'the replacement volume is untouched');
+  assert.ok(fs.existsSync(path.join(marks, 'swapped')), 'the swap finished inside the reaper\'s TERM grace');
   assert.equal(dk('network', 'inspect', '-f', '{{index .Labels "owner"}}', `${tag}-rn`).stdout.trim(), 'outside', 'the replacement network is untouched');
-  dk('volume', 'rm', `${tag}-r`); dk('network', 'rm', `${tag}-rn`);
+  dk('network', 'rm', `${tag}-rn`);
+});
+
+test('a descendant whose environment cannot be read (PR_SET_DUMPABLE=0) is stopped, not taken as marked permanent', t => {
+  t.after(() => kill('undump'));
+  const r = eng('ephemeral', '--', `SLAYTEK_PERSIST=nope python3 -c "import ctypes, os, time; open('${marks}/undump', 'w').write(str(os.getpid())); ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(300)" >/dev/null 2>&1 &`);
+  assert.equal(r.status, 1, out(r));
+  assert.ok(!running(Number(mark('undump'))), 'stopped');
 });
 
 test('a leftover process is signalled only while it is the same process (pid and start time)', t => {
