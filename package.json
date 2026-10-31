@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "semver": "^7.8.5",
     "yaml": "^2.9.1"
   },
   "bin": {

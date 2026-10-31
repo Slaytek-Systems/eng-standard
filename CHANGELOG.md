@@ -10,6 +10,16 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - `eng drift-check` keeps its checks. It still compares each rendered file with the file on disk. "config changed since last sync" now means the lock's paths differ from what the config renders, instead of any edit to `eng.config.yml`. A config edit that changes no generated file is no longer drift.
 - An older lock (`files` as `{ path: sha256 }`, plus `config_hash`) is still read, and the next `eng sync` rewrites it in the new format. The release that ships this change is the last to read the old format. The reader is removed in 0.13.0.
 
+**Convex 1.49: Node 22 floor, `v.function()` for function handles.** Convex 1.49.0 (30 Oct 2026) dropped Node 20 and added `v.function()`.
+
+- The Modern Stack backend floor is now `convex` 1.49.0, and the backend layer sets `node: 22`.
+- `eng stack-check` fails a repo that declares `convex` and pins Node below 22 in `engines.node`, `.nvmrc`/`.node-version` (nvm `lts/<codename>` too), a CI `node-version` or `convex.json` `node.nodeVersion`. CI files are parsed as YAML: comments do not count, while lists and `${{ matrix.<key> }}` do. Each line names its fix. It warns when such a repo pins no Node at all.
+- New `eng lint` rule `convex-function-handle-validator`, on only when every declared convex range is 1.49 or newer. It fails a `fnHandle`/`functionHandle`-named field validated with `v.string()` and an `as FunctionHandle<...>` cast under `convex/` (not `_generated/`). The starter config's stack notes make `v.function()` the default.
+- Version ranges are read with npm's `semver` (new dependency, 7.8.5) instead of a hand-written parser, in `eng stack-audit` too. `^22 || ^20` allows 20, `>1.48` means 1.49, and a prerelease sorts before its release, so `1.49.0-alpha.0` is below the 1.49.0 floor. A range with no lower bound (`*`, `<2`, `^1.49 || *`) has no proven minimum, which is the same as `*` alone. A Node pin fails `eng stack-check` when its lowest allowed version is below 22.0.0, as with `<22`, `*`, `>=*`, `""` or `v22.0.0-rc.2`. nvm `lts/<codename>` covers argon through krypton.
+- In a monorepo the handle rule is on only when every `package.json` that declares convex proves 1.49.
+- `eng stack-audit` reads Node pins with the same reader. `.nvmrc`/`.node-version` count at any depth, and every CI `node-version` value counts.
+- The eng-route skill names the formal skills by their `formal.stateful` and `formal.other` settings, not only the defaults.
+
 **pstack 0.15.36, and `statechart` is the default formal check for stateful flows.** In eng-sandbox PR #17, statechart's TLC run found five merge-flow holes and then proved the fixes.
 
 - pstack bumped from 0.15.19 to 0.15.36 (`c742dd6`). Six skills added: `statechart`, `create-formal-verification-skill`, `maintain-formal-verification-skill`, `sharpen`, `in-your-own-words`, `ketchup-video`. None removed or renamed. statechart's upstream test suite is not vendored (`vendor/PINS.txt`).
