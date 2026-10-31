@@ -276,7 +276,8 @@ test('docker by an absolute path is labelled; a volume made outside the run is r
 });
 
 test('mode warn reports and removes but passes; mode off skips the check and eng doctor fails it', () => {
-  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/w"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; });
+  // tests_leave_nothing keeps its own mode for temp leftovers (see the mixed-modes test): warn here too.
+  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/w"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
   let r = eng('ephemeral', 'check');
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /LEFT temp w /); assert.match(r.stdout, /eng ephemeral: WARN run test left 1 thing/);
@@ -286,8 +287,20 @@ test('mode warn reports and removes but passes; mode off skips the check and eng
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /eng ephemeral: off/); assert.doesNotMatch(r.stdout, /LEFT/);
   r = eng('doctor');
   assert.equal(r.status, 1); assert.match(r.stdout, /FAIL hygiene\.run_rules\.ephemeral_runs is on/);
-  setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; });
+  setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
   assert.deepEqual(rounds(), []);
+});
+
+test('mixed modes: ephemeral_runs warn still fails a temp leftover while tests_leave_nothing is fail, in eng ephemeral and eng gate', t => {
+  t.after(() => setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; }));
+  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/m"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
+  let r = eng('ephemeral', 'check');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /fails hygiene\.disk_rules\.tests_leave_nothing \(mode fail\)/);
+  r = eng('gate');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL\s+test\s/);
+  setCfg(c => { c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
+  r = eng('ephemeral', 'check');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /WARN run test left 1 thing/);
 });
 
 test('config: unknown rules or options, bad values and undeclared runs are rejected', () => {
