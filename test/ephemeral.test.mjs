@@ -507,3 +507,52 @@ test('eng clean --containers --apply keeps permanent containers and the volumes 
   assert.deepEqual(vols.map(v => exists('volume', v)), [true, false, true], 'the volume a permanent container uses and the marked volume stay');
   assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${names[2]} \\(permanent: restart policy unless-stopped\\)`));
 });
+
+test('isolation enforced: ephemeral_runs mode off still watches the run, in eng ephemeral check and eng gate', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-off'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
+  t.after(() => setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.project.commands.test = 'true'; }));
+  setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = 'touch ~/.convex/off'; });
+  enforce(t);
+  for (const cmd of [['ephemeral', 'check'], ['gate']]) {
+    const r = spawnSync(process.execPath, [ENG, ...cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+    assert.notEqual(r.status, 0, out(r));
+    assert.ok(!fs.existsSync(path.join(home, '.convex', 'off')), `${cmd.join(' ')}: the shared Convex state was never written`);
+  }
+});
+
+test('isolation enforced: the run\'s docker socket refuses a writable bind of ~/.convex; a read-only one is allowed', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-bind'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
+  enforce(t);
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  let r = run(`docker run --rm -v "$HOME/.convex:/state" alpine:latest touch /state/${tag}`);
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /is read-only for this run \(protected home state\)/);
+  assert.ok(!fs.existsSync(path.join(home, '.convex', tag)), 'docker never wrote the shared Convex state');
+  r = run(`docker run --rm --mount type=bind,source="$HOME/.convex",target=/state alpine:latest true`);
+  assert.notEqual(r.status, 0, out(r));
+  r = run(`docker run --rm -v "$HOME/.convex:/state:ro" alpine:latest ls /state`);
+  assert.equal(r.status, 0, out(r));
+});
+
+test('isolation enforced: an unlabelled container whose inspect fails makes the run not fully watched, not a pass', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  t.after(() => dk('rm', '-f', `${tag}-blindspot`));
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const shim = path.join(root, 'inspect-shim'); fs.mkdirSync(shim, { recursive: true });
+  fs.writeFileSync(path.join(shim, 'docker'), `#!/bin/sh\n[ "$1" = container ] && [ "$2" = inspect ] && [ -z "$ENG_EPHEMERAL_RUN" ] && exit 1\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `${dockerAt} -H ${outside} run -d --name ${tag}-blindspot alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${shim}:${env.PATH}` } });
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stderr, /was not fully watched: docker: container inspect failed/);
+});
+
+test('eng clean --containers --apply keeps a repo volume that a container it does not remove still uses', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  const v = `${tag}-cl-shared`, c = `${tag}-cl-other`;
+  t.after(() => { dk('rm', '-f', c); dk('volume', 'rm', v); });
+  dk('volume', 'create', '--label', 'eng.repo=eph', v);
+  dk('run', '-d', '--name', c, '--restart', 'unless-stopped', '-v', `${v}:/d`, 'alpine:latest', 'sleep', '300');
+  const r = eng('clean', '--containers', '--apply');
+  assert.equal(r.status, 0, out(r));
+  assert.equal(dk('volume', 'inspect', v).status, 0);
+  assert.match(r.stdout, new RegExp(`keep +volume ${v} \\(permanent: used by container \\w{12}, which this does not remove\\)`));
+});

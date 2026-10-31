@@ -957,7 +957,7 @@ function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
-  const eph = runRules(cfg).ephemeral_runs.mode === 'off' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
+  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && cfg.isolation?.mode !== 'fail' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} ephemeral run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
@@ -1119,8 +1119,10 @@ function cleanContainers(cfg, apply) {
     const restart = c.HostConfig?.RestartPolicy?.Name, keep = permanent({ labels: c.Config?.Labels, restart }, persist);
     return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (permanent({ labels: c.Config?.Labels }, persist) ? persist.label : `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
   });
-  const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols));
-  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: permanent({ labels: v.Labels }, persist) ? persist.label : used.has(v.Name) ? 'used by a permanent container' : null }));
+  const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols)), going = new Set(cs.filter(c => !c.why).map(c => c.id));
+  // Any container not removed here that uses a volume keeps it: a permanent one, or one without this repo's label.
+  const users = name => q(['ps', '-aq', '--no-trunc', '--filter', `volume=${name}`]).filter(id => !going.has(id));
+  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: permanent({ labels: v.Labels }, persist) ? persist.label : used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null }));
   const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
   for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : ' (with its anonymous volumes)'}`);
   for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
