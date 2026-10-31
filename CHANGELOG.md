@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.12.0 (31 Oct 2026)
+
+**Model choices move to config** (Matt, 30 Oct 2026). Model routing has one source of truth, the Core note 'Model routing: who uses which model' (nd77rx5dhdt899w2np5kjknqdd8g8y2d). The standard points to it and copies none of it.
+
+- New optional `models` block in `eng.config.yml` (`lib/models.mjs`). `models.routing` names the routing note (default: that note). `models.pstack` sets pstack roles, one model, `inherit-parent`, `auto` or a list per role. `eng sync` renders it as `.eng/pstack-models.md`, the file pstack's skills read. The role labels come from the vendored setup-pstack, and eng rejects an unknown role, an empty value, or a line break in a value (it would render as an extra role line).
+- AGENTS.md: the "Model roles" line, which sent agents to the pstack skill defaults, becomes a pointer to the routing note. The note wins over any skill default and over `models.pstack`.
+- Defaults do not change. With no `models.pstack`, eng renders no `.eng/pstack-models.md` and the vendored pstack skills keep their own defaults. The starter config sets `models.routing` only.
+- `test/models.test.mjs` fails on a model id or versioned model name in any tracked file except `eng.config.yml` files, `vendor/` (upstream text, pinned verbatim) and history (this file, `docs/evidence/`).
+
+0.12.0 also ships every Unreleased entry in this file.
+
 ## Unreleased (31 Oct 2026)
 
 **`.eng/lock.json` lists paths only.** The lock held a sha256 of each rendered file and of `eng.config.yml`. A repo-owned edit to a managed file (text outside the AGENTS.md block) changed a hash, so two branches that each made one conflicted in the lock on merge (Motus).

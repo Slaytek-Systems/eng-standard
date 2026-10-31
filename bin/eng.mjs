@@ -20,6 +20,7 @@ import { validateIsolation } from '../lib/isolation.mjs';
 import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
+import { modelErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
@@ -66,6 +67,7 @@ function configErrors(c) {
   errs.push(...diskRuleErrors(c.hygiene));
   errs.push(...runRuleErrors(c));
   errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
+  errs.push(...modelErrors(c.models));
   return errs;
 }
 
