@@ -57,6 +57,25 @@ ship:
     # verifier_logins: [<login>, <login>]   # once verifiers have their own GitHub identities: only these logins'
     #                               verdict comments count, one identity per login (docs/self-merge.md)
 
+hygiene:                          # Four disk rules (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs each check (.github/workflows/ci.yml).
+  disk_rules:
+    tests_leave_nothing:          # CI: eng leave-nothing -- npm test (the suite leaves its private TMPDIR empty)
+      mode: fail
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    no_cache_in_evidence:         # CI: eng evidence check (this repo keeps no run evidence; the check passes on none)
+      mode: fail
+      markers: [CACHEDIR.TAG]
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    pinned_downloads:             # CI: eng downloads check (this repo pins no downloads: prepare is null)
+      mode: fail
+      cache: "${XDG_CACHE_HOME}/eng/downloads"
+      prepare: null
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    evidence_budget:
+      mode: fail
+      max_mb: 100
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+
 gates:
   skipped_is_failed: true
   required: [test, verdict]

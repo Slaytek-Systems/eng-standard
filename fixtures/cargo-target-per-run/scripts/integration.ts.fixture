@@ -1,0 +1,2 @@
+// Core Edge org-native-transport-integration.ts: falls back to a fresh target per scratch dir
+const targetDir = process.env.CARGO_TARGET_DIR ?? join(scratch, "fresh-target");
