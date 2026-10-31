@@ -66,6 +66,18 @@ test('launch down after a move that stopped before the delete adds nothing twice
   assert.equal(retro().match(/FAIL by interrupted-verifier/g)?.length, 1);
 });
 
+test('launch down never follows a symlinked .eng out of the worktree', () => {
+  const { wt, d } = keep(dir), outside = path.join(root, 'outside'), file = path.join(outside, 'mistakes.jsonl');
+  fs.mkdirSync(outside); fs.writeFileSync(file, '{"key":"x","what":"not this worktree\'s"}\n');
+  fs.symlinkSync(outside, path.join(wt, '.eng'));
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r));
+  assert.equal(fs.readFileSync(file, 'utf8'), '{"key":"x","what":"not this worktree\'s"}\n', 'the file the link points at is untouched');
+  assert.doesNotMatch(retro(), /not this worktree's/);
+  fs.rmSync(path.join(wt, '.eng')); fs.rmSync(outside, { recursive: true });
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
 test('a pre-fix log in the checkout is still read', () => {
   fs.mkdirSync(path.join(dir, '.eng'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.eng/mistakes.jsonl'), JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by checkout-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n');
