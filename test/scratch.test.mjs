@@ -58,16 +58,16 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
 });
 
 // Motus PR470 (37d6e7a8, 1 Nov 2026): 24 findings. Each false positive below is the flagged code as written, in a file of
-// its language; each true positive must still fire, as must the near misses a mask could swallow (verifier rounds 1 and 2 too).
+// its language; each true positive must still fire, as must the near misses a mask could swallow (verifier rounds 1 to 3 too).
 test('disk rules: Motus PR470 false positives pass, its true positives and near misses still fire', () => {
   const rule = id => DISK_RULES.find(r => r.id === id), lines = (id, [f, t]) => lintText(rule(id), t, f).map(h => h.line);
   const quiet = {
     'script-bare-tmpdir': [
       ['a.mjs', 'spawnSync(bwrap,\n    [\n      "--dev",\n      "/dev",\n      "--tmpfs",\n      "/tmp",\n      "--tmpfs",\n      "/home",\n    ],\n  );'],
       ['a.mjs', '// /tmp is shared and cleaned, so state kept there can vanish mid-recovery or fill the disk.'],
-      ['a.sh', '# never write to /tmp here'],
+      ['a.sh', '# never write to /tmp here'], ['a.mjs', 'const sh = `\n# cp x /tmp/out\n`;'],
       ['a.sh', 'echo "Epic IDs saved to /tmp/linear-epic-ids.env"'],
-      ['a.mjs', '  for (const name of (await readdir("/tmp")).sort()) {'],
+      ['a.mjs', '  for (const name of (await readdir("/tmp")).sort()) {'], ['a.sh', 'readdir("/tmp")'],
       ['a.ts', 'throw new Error(`refused /tmp: ${dir}`);'],
     ],
     'container-no-rm': [
@@ -75,7 +75,7 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
       ['a.test.mjs', '  const busy = (message) => Object.assign(new Error("docker run failed"), { stderr: message });'],
       ['a.test.mjs', '    ).toThrow("docker run failed");'],
       ['a.sh', '# docker run -d postgres:17 leaves volumes behind'],
-      ['a.sh', "echo 'next: docker run -d postgres:17'"],
+      ['a.sh', "echo 'next: docker run -d postgres:17'"], ['a.sh', 'throw new Error("docker run -d postgres:17")'],
     ],
   };
   for (const [id, cases] of Object.entries(quiet)) for (const c of cases) assert.deepEqual(lines(id, c), [], `${id} passes: ${c}`);
@@ -95,9 +95,11 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
       ['a.mjs', '["--bind",\n"/tmp"]'], ['a.sh', 'bwrap --tmpfs /tmp -- sh'], ['a.mjs', 'copyFileSync("--tmpfs", "/tmp/output");'],
       ['a.mjs', 'copyFileSync("--tmpfs", "/tmp");'], ['a.mjs', '["--tmpfs", "/tmp/x"]'], ['a.mjs', 'const sh = `\n//bin/mkdir -p /tmp/x\n`;'],
       ['a.mjs', 'const sh = `throw new Error("x"); cp a /tmp/b`;'], ['a.mjs', 'const s = "// cp a /tmp/b";'], ['a.mjs', 'const re = /"/; const p = "/tmp/x";'],
-      ['a.sh', 'echo "`mktemp -d`"'], ['a.sh', 'cp -- "./--tmpfs" "/tmp"'], ['a.mjs', 'execSync(`\necho \'${mkdtempSync(tmpdir())}\'\n`);'], ['a.mjs', 'const sh = `echo "${fs.mkdtempSync("/tmp/x")}"`;'], ['a.sh', 'docker run --tmpfs /run -v /tmp/cache:/data alpine'],
+      ['a.sh', 'echo "`mktemp -d`"'], ['a.sh', 'cp -- "./--tmpfs" "/tmp"'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nwriteFileSync("/tmp/x", "");'],
+      ['a.sh', 'cat <<EOF\n# $(mktemp -d)\nEOF'], ['a.sh', 'bash -c "echo \'$(mktemp -d)\';"'], ['a.sh', '// x; cp a /tmp/b'],
+      ['a.mjs', 'execSync("new Error(`cp a /tmp/b`)");'], ['a.sh', 'new Error(`mktemp -d`)'], ['a.mjs', 'execSync(`\necho \'${mkdtempSync(tmpdir())}\'\n`);'], ['a.mjs', 'const sh = `echo "${fs.mkdtempSync("/tmp/x")}"`;'], ['a.sh', 'docker run --tmpfs /run -v /tmp/cache:/data alpine'],
       ['a.mjs', '#dir = fs.mkdtempSync(path.join(os.tmpdir(), "x-"));'], ['a.sh', 'cp x /tmp/out # copy'],
-      ['a.sh', '//bin/mkdir -p /tmp/example'], ['a.mjs', '# cp x /tmp/out'], ['a.sh', 'readdir("/tmp")'],
+      ['a.sh', '//bin/mkdir -p /tmp/example'],
       ['a.mjs', 'const f = join("/tmp", "x"); readdir("/tmp")'],
       ['a.mjs', 'throw new Error(`failed: ${fs.mkdtempSync("/tmp/x")}`);'],
       ['a.sh', 'printf "%s\\n" "Error(\'$(mktemp -d)\')"'], ['a.mjs', 'const sh = `printf "%s" "new Error(\'$(mktemp -d)\')"`;'],
@@ -105,8 +107,9 @@ test('disk rules: Motus PR470 false positives pass, its true positives and near 
     'container-no-rm': [
       ['a.sh', 'docker run -d postgres:17'], ['a.mjs', 'execSync("docker run -d postgres:17");'], ['a.mjs', 'throw new Error("x"); docker run -d postgres:17'],
       ['a.sh', 'echo "$(docker run -d postgres:17)"'], ['a.sh', 'echo starting && docker run -d postgres:17'],
-      ['a.sh', 'printf "%s\\n" "Error(\'$(docker run -d postgres:17)\')"'], ['a.sh', 'throw new Error("docker run -d postgres:17")'],
-      ['a.sh', '//usr/bin/docker run -d postgres:17'], ['a.sh', 'echo "`docker run -d postgres:17`"'], ['a.mjs', 'execSync(`printf "%s" "new Error(\'\\`docker run -d postgres:17\\`\')"`);'],
+      ['a.sh', 'printf "%s\\n" "Error(\'$(docker run -d postgres:17)\')"'],
+      ['a.sh', '//usr/bin/docker run -d postgres:17'], ['a.sh', 'echo "`docker run -d postgres:17`"'], ['a.sh', 'bash -c "echo \'$(docker run -d postgres:17)\';"'],
+      ['a.sh', 'cat <<EOF\n# $(docker run -d postgres:17)\nEOF'], ['a.mjs', 'if (ok) /[/*]/.test(input);\nexecSync("docker run -d postgres:17");'], ['a.mjs', 'execSync(`printf "%s" "new Error(\'\\`docker run -d postgres:17\\`\')"`);'],
       ['a.mjs', 'const sh = `\n// note\ndocker run -d postgres:17\n`;'], ['a.mjs', 'const sh = `new Error("x") docker run -d postgres:17`;'],
     ],
   };
