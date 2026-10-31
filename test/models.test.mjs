@@ -28,7 +28,7 @@ before(() => {
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 test('no model id is hard-coded outside the config, vendored upstream text and history', () => {
-  const files = execSync('git ls-files -z', { cwd: PKG, encoding: 'utf8' }).split('\0').filter(f => f && !ALLOWED.some(r => r.test(f)) && fs.existsSync(path.join(PKG, f)));
+  const files = execSync('git ls-files -z --cached --others --exclude-standard', { cwd: PKG, encoding: 'utf8' }).split('\0').filter(f => f && !ALLOWED.some(r => r.test(f)) && fs.existsSync(path.join(PKG, f)));
   const hits = files.flatMap(f => fs.readFileSync(path.join(PKG, f), 'utf8').split('\n').flatMap((l, i) => MODEL_ID.test(l) ? [`${f}:${i + 1}: ${l.trim().slice(0, 120)}`] : []));
   assert.deepEqual(hits, [], `model ids belong in eng.config.yml (models:), not in the standard:\n${hits.join('\n')}`);
 });
