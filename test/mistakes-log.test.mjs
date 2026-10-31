@@ -67,6 +67,21 @@ test('launch down after a move that stopped before the delete adds nothing twice
   assert.equal(retro().match(/FAIL by interrupted-verifier/g)?.length, 1);
 });
 
+test('launch down keeps an orphaned launch dir whose worktree was moved inside it, or whose launch time was edited', () => {
+  const mk = name => { const p = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', name, 'repo'); fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p); fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p); return p; };
+  const p1 = mk('eng-repo-moved-wt'), a = keep(p1);
+  fs.renameSync(a.wt, path.join(a.d, 'wt-retained')); fs.writeFileSync(path.join(a.d, 'wt-retained', 'f'), 'edited\n'); fs.renameSync(p1, p1 + '-renamed');
+  assert.equal(eng(dir, 'launch', 'down', a.d).status, 1);
+  assert.equal(fs.readFileSync(path.join(a.d, 'wt-retained', 'f'), 'utf8'), 'edited\n');
+  const p2 = mk('eng-repo-edited-at'), b = keep(p2), lj = path.join(b.d, 'launch.json');
+  fs.writeFileSync(path.join(b.wt, 'f'), 'edited\n');
+  fs.writeFileSync(lj, JSON.stringify({ ...JSON.parse(fs.readFileSync(lj, 'utf8')), at: new Date(Date.now() + 3600e3).toISOString() }));
+  fs.rmSync(path.dirname(p2), { recursive: true });
+  assert.equal(eng(dir, 'launch', 'down', b.d).status, 1);
+  assert.equal(fs.readFileSync(path.join(b.wt, 'f'), 'utf8'), 'edited\n');
+  for (const x of [a.d, b.d, path.dirname(p1)]) fs.rmSync(x, { recursive: true });
+});
+
 test('launch down never follows a symlinked .eng out of the worktree', () => {
   const { wt, d } = keep(dir), outside = path.join(root, 'outside'), file = path.join(outside, 'mistakes.jsonl');
   fs.mkdirSync(outside); fs.writeFileSync(file, '{"key":"x","what":"not this worktree\'s"}\n');
