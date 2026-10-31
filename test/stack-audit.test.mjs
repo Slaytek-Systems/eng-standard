@@ -116,12 +116,14 @@ test('nodePins reads engines, .nvmrc, CI node-version (lists and matrix too) and
     'package.json engines >=20', '.nvmrc version-file lts/iron', '.github/workflows/ci.yml ci 20', '.github/workflows/ci.yml ci 22',
     '.github/workflows/ci.yml ci 21', '.github/workflows/ci.yml ci 24', '.github/workflows/ci.yml ci 19', 'convex.json convex 22']);
   assert.deepEqual(nodePins(['.github/workflows/x.yml'], () => 'a: &a [*a, {node-version: 20}]\n'), [], 'a self-referencing alias yields nothing, not a crash');
+  assert.deepEqual(nodePins(['.nvmrc', 'web/.node-version'], f => (f === '.nvmrc' ? '# pinned for Convex\n20 # migrate to 24\n' : '\n22\n')).map(p => p.spec), ['20', '22'],
+    'version files ignore comments and blank lines, as nvm does');
 });
 
 test('a Convex repo declaring Node 20 anywhere is below the floor; Node 22 and non-Convex repos pass', () => {
   const pin = (kind, spec, file = 'f') => ({ file, kind, spec });
   const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
-    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25')];
+    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25'), pin('engines', '^22 ||'), pin('engines', '|| ^22')];
   assert.equal(convexNodeFindings(STD, { convex: '^1.49.0' }, low).length, low.length);
   assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'), pin('ci', '${{ matrix.node }}')]), []);
   assert.deepEqual(convexNodeFindings(STD, { svelte: '^5' }, low), []);
