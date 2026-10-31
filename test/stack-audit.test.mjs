@@ -132,7 +132,8 @@ test('a Convex repo declaring Node 20 anywhere is below the floor; Node 22 and n
   const pin = (kind, spec, file = 'f') => ({ file, kind, spec });
   const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('version-file', 'lts/gallium'), pin('ci', 'lts/argon'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
     pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25'), pin('engines', '^22 ||'), pin('engines', '|| ^22'),
-    pin('engines', '>=*'), pin('engines', 'x.x'), pin('engines', '^22 || >=*'), pin('engines', ''), pin('version-file', 'lts/fermium'), pin('ci', '20.1')];
+    pin('engines', '>=*'), pin('engines', 'x.x'), pin('engines', '^22 || >=*'), pin('engines', ''), pin('version-file', 'lts/fermium'), pin('ci', '20.1'),
+    pin('version-file', 'v20.0.0-rc.3'), pin('version-file', 'v21.0.0-rc.1'), pin('version-file', 'v22.0.0-rc.2')];
   assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, low).map(p => p.spec), low.map(p => p.spec));
   assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'),
     pin('ci', '${{ matrix.node }}'), pin('ci', '${{ fromJSON(env.NODE_VERSIONS)[0] }}'), pin('engines', '>21'), pin('engines', '>21.x'), pin('version-file', 'lts/*'), pin('version-file', 'node')]), []);
