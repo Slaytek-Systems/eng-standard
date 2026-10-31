@@ -648,3 +648,30 @@ test('a run container removed as a leftover keeps its anonymous volumes when the
   assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-av2\\): removed`));
   assert.equal(dk('volume', 'inspect', vol).status, 0, 'a volume whose labels could not be read is kept');
 });
+
+test('isolation enforced: the run may not exec into, start, copy into or remove a container it did not make, or prune', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-exec'); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  const c = `${tag}-older`; t.after(() => dk('rm', '-f', c));
+  dk('run', '-d', '--name', c, '-v', `${home}/.cache:/c`, 'alpine:latest', 'sleep', '300');
+  enforce(t);
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  for (const cmd of [`docker exec ${c} touch /c/${tag}`, `docker cp ${marks} ${c}:/c/`, `docker restart ${c}`, `docker rm -f ${c}`, 'docker container prune -f']) {
+    const r = run(cmd);
+    assert.notEqual(r.status, 0, `${cmd}: ${out(r)}`); assert.match(out(r), /may not change (container .*, which the run did not make|a prune)/, cmd);
+  }
+  assert.ok(!fs.existsSync(path.join(home, '.cache', tag)), 'nothing was written through the older container');
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', c).stdout.trim(), 'true', 'the older container is untouched');
+  const own = run(`docker run --rm alpine:latest true && docker run -d --name ${tag}-mine alpine:latest sleep 30 >/dev/null && docker exec ${tag}-mine true && docker rm -f ${tag}-mine >/dev/null`);
+  assert.equal(own.status, 0, `the run still works with its own containers: ${out(own)}`);
+});
+
+test('isolation enforced: the run\'s upstream docker socket is hidden too, when it is the rootful one', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const rootful = '/var/run/docker.sock';
+  if (!fs.existsSync(rootful) || spawnSync('docker', ['-H', `unix://${rootful}`, 'version'], { timeout: 10e3 }).status !== 0) return t.skip('needs a reachable daemon at /var/run/docker.sock');
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker -H unix://${rootful} version >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: `unix://${rootful}` } });
+  assert.notEqual(r.status, 0, out(r));
+  assert.match(r.stdout, /labelling docker socket/, 'the run still had its own socket');
+});
