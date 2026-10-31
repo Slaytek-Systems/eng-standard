@@ -204,7 +204,7 @@ test('eng downloads check: a real second download, an extracted runtime in the r
   const tsum = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex'), fetchTar = `node ${ENG} fetch runtime 1 ${pathToFileURL(tarball).href} ${tsum}`;
   rules({ pinned_downloads: { prepare: `f=$(${fetchTar}) && tar -xf "$f" -C "$ENG_RUN_DIR"` } });
   let r = eng('downloads', 'check');
-  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL run-1\/bin\/runtime is bin\/runtime extracted from cached runtime-1\/runtime\.tar/);
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL run-1\/bin\/runtime is a copy of bin\/runtime unpacked from cached runtime-1\/runtime\.tar/);
   rules({ pinned_downloads: { prepare: `f=$(${fetchTar}) && d="$(dirname "$f")/x" && { test -d "$d" || { mkdir "$d" && tar -xf "$f" -C "$d"; }; } && ln -sfn "$d" "$ENG_RUN_DIR/rt"` } });
   r = eng('downloads', 'check');
   assert.equal(r.status, 0, `extracting once beside the verified archive passes: ${r.stdout}${r.stderr}`);
@@ -220,15 +220,41 @@ test('eng downloads check: a real second download, an extracted runtime in the r
     rules({ pinned_downloads: { prepare: `f=$(node ${ENG} fetch big 1 ${pathToFileURL(a).href} ${s2}) && ${x} > "$ENG_RUN_DIR/runtime-v24"` } });
     r = eng('downloads', 'check');
     assert.equal(r.status, 1, `a 2 MiB member installed under another name fails (${path.extname(a)}): ${r.stdout}`);
-    assert.match(r.stdout, /FAIL run-1\/runtime-v24 is runtime extracted from cached big-1\/big\.(tar|zip)/);
+    assert.match(r.stdout, /FAIL run-1\/runtime-v24 is a copy of runtime unpacked from cached big-1\/big\.(tar|zip)/);
   }
   rules({ pinned_downloads: { prepare: `test -e "$ENG_DOWNLOAD_CACHE/top.sha256" || head -c 13000 /dev/zero > "$ENG_DOWNLOAD_CACHE/top.sha256"; mkdir -p "$ENG_DOWNLOAD_CACHE/x-1"; test -e "$ENG_DOWNLOAD_CACHE/x-1/orphan.sha256" || echo payload > "$ENG_DOWNLOAD_CACHE/x-1/orphan.sha256"` } });
   r = eng('downloads', 'check');
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /FAIL top\.sha256 sits at the top of the cache with no checksum/); assert.match(r.stdout, /FAIL x-1\/orphan\.sha256 is a checksum with no orphan beside it/);
+  assert.match(r.stdout, /FAIL top\.sha256 sits at the top of the cache with no checksum/); assert.match(r.stdout, /FAIL x-1\/orphan\.sha256 has no orphan\.sha256\.sha256 checksum/);
   rules({ pinned_downloads: { prepare: `test -e "$ENG_DOWNLOAD_CACHE/loose.bin" || cp ${tarball} "$ENG_DOWNLOAD_CACHE/loose.bin"` } });
   r = eng('downloads', 'check');
   assert.equal(r.status, 1); assert.match(r.stdout, /FAIL loose\.bin sits at the top of the cache with no checksum/);
+  setCfg(c => { delete c.hygiene.disk_rules; });
+});
+
+test('eng downloads check: archive members are compared exactly as extraction writes them (round 3 cases)', { skip: NO_NET }, () => {
+  const pin = (name, file, then) => { const h = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); rules({ pinned_downloads: { prepare: `f=$(node ${ENG} fetch ${name} 1 ${pathToFileURL(file).href} ${h}) && ${then}` } }); return eng('downloads', 'check'); };
+  const src = path.join(root, 'r3'); fs.mkdirSync(src);
+  write(path.join(src, 'runtime  file'), Buffer.alloc(4096, 37)); write(path.join(src, 'x'), Buffer.alloc(4096, 37));
+  write(path.join(src, 'runtime*'), Buffer.alloc(4096, 37)); write(path.join(src, 'runtime2'), Buffer.alloc(4096, 38));
+  const tarA = path.join(root, 'r3a.tar'), zipA = path.join(root, 'r3a.zip'), zipW = path.join(root, 'r3w.zip'), dup = path.join(root, 'r3d.tar');
+  execSync(`tar -cf ${tarA} -C ${src} 'runtime  file' && cd ${src} && zip -q ${zipA} x && zip -q ${zipW} 'runtime*' runtime2`);
+  const report = 'head -c 4096 /dev/zero > "$ENG_RUN_DIR/report.bin"';
+  let r = pin('sp', tarA, report);
+  assert.equal(r.status, 0, `an unrelated report beside a member named with two spaces passes: ${r.stdout}${r.stderr}`);
+  r = pin('one', zipA, report);
+  assert.equal(r.status, 0, `an unrelated report beside a one-character zip member passes: ${r.stdout}${r.stderr}`);
+  r = pin('wild', zipW, 'unzip -p "$f" "runtime[*]" > "$ENG_RUN_DIR/runtime-copy"');
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL run-1\/runtime-copy is a copy of runtime\* unpacked from cached wild-1\/r3w\.zip/);
+  const d1 = path.join(root, 'd1'), d2 = path.join(root, 'd2'); write(path.join(d1, 'runtime'), Buffer.alloc(4096, 37)); write(path.join(d2, 'runtime'), Buffer.alloc(4096, 38));
+  execSync(`tar -cf ${dup} -C ${d1} runtime && tar -rf ${dup} -C ${d2} runtime`);
+  r = pin('dup', dup, 'tar -xf "$f" -C "$ENG_RUN_DIR"');
+  assert.equal(r.status, 1, `the last of two same-name entries is caught: ${r.stdout}`); assert.match(r.stdout, /FAIL run-1\/runtime is a copy of runtime unpacked from cached dup-1\/r3d\.tar/);
+  r = pin('dup', dup, 'tar -xOf "$f" --occurrence=1 runtime > "$ENG_RUN_DIR/first"');
+  assert.equal(r.status, 1, `the first of two same-name entries is caught: ${r.stdout}`); assert.match(r.stdout, /FAIL run-1\/first is a copy of runtime\.~1~ unpacked/);
+  const manifest = path.join(root, 'manifest.sha256'); fs.writeFileSync(manifest, `${'a'.repeat(64)}  runtime\n`);
+  r = pin('edge', manifest, 'true');
+  assert.equal(r.status, 0, `a pinned artifact whose name ends in .sha256 passes: ${r.stdout}${r.stderr}`);
   setCfg(c => { delete c.hygiene.disk_rules; });
 });
 

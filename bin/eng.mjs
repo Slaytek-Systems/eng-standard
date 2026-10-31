@@ -1025,7 +1025,7 @@ function downloadsCheck() {
     if (r.status !== 0) offline = `the second prepare run failed with no network (exit ${r.status}), so it downloads again on every run: ${tail}`;
     snaps.push(snapshot(cache));
   }
-  const found = [...(offline ? [offline] : []), ...downloadFindings(cache, snaps[0], snaps[1], runs)];
+  const found = [...(offline ? [offline] : []), ...downloadFindings(cache, snaps[0], snaps[1], runs, path.join(round.dir, 'unpacked'))];
   for (const f of found) console.log(`  ${p.mode === 'fail' ? 'FAIL' : 'WARN'} ${f} (pinned_downloads, ${p.source})`);
   if (found.length && p.mode === 'fail') die(`downloads check: ${found.length} problem(s) above`);
   console.log(found.length ? `eng downloads check: WARN (${found.length} warning(s) above)` : `eng downloads check: PASS (prepare ran twice, the second with no network; ${snaps[0].size} cached file(s), none fetched twice, unchecked or copied or extracted into a run dir)`);
