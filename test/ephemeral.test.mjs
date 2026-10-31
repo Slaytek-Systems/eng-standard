@@ -209,7 +209,7 @@ test('the run\'s docker socket survives a malformed create request', { skip: (!d
   assert.match(r.stdout, /^ok$/m);
 });
 
-for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 'ps -a failed, so leftovers may be missing'], ['volume', 'volume ls failed, so leftovers may be missing']]) test(`a run whose docker ${fails} fails is not fully watched, and its labelled container is still removed`, { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 'ps -aq failed, so leftovers may be missing'], ['volume', 'volume ls failed, so leftovers may be missing']]) test(`a run whose docker ${fails} fails is not fully watched, and its labelled container is still removed`, { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
   const bin = path.join(root, `no${fails}`); fs.mkdirSync(bin, { recursive: true });
   // ps fails only for the check's own inventory query (its run-label filter), so the run itself still works.
   fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\ncase "$1 $*" in events*|"ps "*label=eng.ephemeral.run*|"volume volume ls"*) [ "$1" = ${fails} ] && exit 1 ;; esac\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
@@ -251,6 +251,19 @@ test('a leftover process is signalled only while it is the same process (pid and
   assert.ok(running(p.pid), 'a different start time: not signalled');
   assert.equal(removeLeftover({ kind: 'process', id: p.pid, start }), true);
   assert.ok(!running(p.pid), 'stopped');
+});
+
+test('a label value holding a comma can neither fake nor hide the permanent marker', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  t.after(() => dk('rm', '-f', '-v', `${tag}-real`));
+  const r = eng('ephemeral', '--', [
+    `docker run -d --name ${tag}-real --label slaytek.persist=true --label 'zzz=a,slaytek.persist=false' -v /data alpine:latest sh -c 'echo kept > /data/s; sleep 300' >/dev/null`,
+    `docker run -d --name ${tag}-fake --label 'zzz=a,slaytek.persist=true' alpine:latest sleep 300 >/dev/null`,
+  ].join('; '));
+  assert.equal(r.status, 1, out(r));
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-real`).stdout.trim(), 'true', 'the really marked container stays');
+  assert.equal(dk('exec', `${tag}-real`, 'cat', '/data/s').stdout.trim(), 'kept', 'with its data');
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-fake\\): removed`));
+  assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-fake`).stdout.trim(), '', 'a comma in another label does not make it permanent');
 });
 
 test('a container marked with persist_label stays, with its volume', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
