@@ -41,10 +41,11 @@ test('the guard pattern catches model ids and versioned names, not harness or pr
   const named = [['Opus', '5.5'], ['DeepSeek', 'V4 Pro'], ['GPT', '6.1'], ['Claude', '5'], ['Gemini', '4 Argon'], ['Kimi', 'K3'], ['Claude', 'Haiku']].map(p => p.join(' '));
   const tagged = [['mistral', '7b'], ['mixtral', '8x7b'], ['gemma', '7b'], ['qwen', '7b'], ['qwq', '32b'], ['llama' + '3.1', '8b']].map(p => p.join(':'));
   const glued = ['claude' + '3', 'gemini' + '2', 'mistral' + '7b'];
-  for (const s of [...ids, ...api, ...named, ...tagged, ...glued, ['DeepSeek', 'R1'].join(' '), 'use o' + '3 here', ['opencode', 'go/x'].join('-'), ['openai', 'gpt'].join('/') + '-6.1-sol']) assert.match(s, MODEL_ID, s);
+  for (const s of [...ids, ...api, ...named, ...tagged, ...glued, ['DeepSeek', 'R1'].join(' '), ['Phi', 'mini', 'MoE', 'instruct'].join('-'), ['Phi', 'tiny', 'MoE', 'instruct'].join('-'), 'use o' + '3 here', ['opencode', 'go/x'].join('-'), ['openai', 'gpt'].join('/') + '-6.1-sol']) assert.match(s, MODEL_ID, s);
   for (const s of ['claude-code', 'Claude Code', 'claude-plugin', 'codex', 'Codex', 'codex-cli', '~/.codex/sessions/', 'opencode', 'cursor-agent', 'Grok Bot', 'grok-notify', '.claude/settings.json',
     'agents/openai.yaml', 'model: none', 'O(1)', 'proto3', 'DeepSeek', 'GPT models', 'ChatGPT subscription', 'a haiku-style note', 'Mistral AI', 'docs/harness/claude-code.md', 'Claude-only', 'codex-mcp-add', 'gemini-cli', 'llama-cpp', 'the grok-notify callback',
-    'Read codex-rs/README.md for CLI development.', 'Download codex-x86_64-unknown-linux-musl.tar.gz.', 'codex-aarch64-apple-darwin', 'gemini: { key: 1 }', 'DeepSeek on 2 nodes']) assert.doesNotMatch(s, MODEL_ID, s);
+    'Read codex-rs/README.md for CLI development.', 'Download codex-x86_64-unknown-linux-musl.tar.gz.', 'codex-aarch64-apple-darwin', 'gemini: { key: 1 }', 'DeepSeek on 2 nodes',
+    'uses: openai/codex-action@v1', 'mistralai/mistral-inference', 'Build with CFLAGS=-O3', 'gcc -O2 -O1']) assert.doesNotMatch(s, MODEL_ID, s);
 });
 
 test('pstack roles come from setup-pstack, and models config is checked', () => {
