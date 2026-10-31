@@ -58,6 +58,14 @@ test('launch down moves a pre-fix log out of the worktree, once, then removes it
   assert.equal(retro().match(/FAIL by legacy-verifier/g)?.length, 1, 'the legacy entry is kept exactly once');
 });
 
+test('launch down after a move that stopped before the delete adds nothing twice', () => {
+  const { wt, d } = keep(dir), line = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by interrupted-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() });
+  fs.mkdirSync(path.join(wt, '.eng')); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), line + '\n');
+  fs.appendFileSync(path.join(git('rev-parse --path-format=absolute --git-common-dir'), 'eng', 'mistakes.jsonl'), line + '\n');
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+  assert.equal(retro().match(/FAIL by interrupted-verifier/g)?.length, 1);
+});
+
 test('a pre-fix log in the checkout is still read', () => {
   fs.mkdirSync(path.join(dir, '.eng'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.eng/mistakes.jsonl'), JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by checkout-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n');
