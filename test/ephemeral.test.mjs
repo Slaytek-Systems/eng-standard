@@ -556,3 +556,32 @@ test('eng clean --containers --apply keeps a repo volume that a container it doe
   assert.equal(dk('volume', 'inspect', v).status, 0);
   assert.match(r.stdout, new RegExp(`keep +volume ${v} \\(permanent: used by container \\w{12}, which this does not remove\\)`));
 });
+
+test('isolation enforced: a process started under an older tmux server with cwd / fails the run, and so does a write it makes to ~/.convex after it exits', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
+  const sock = path.join(root, 'tmux2.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
+  const home = path.join(root, 'home-mux'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
+  tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
+  enforce(t);
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  let r = run(`tmux -S ${sock} new-session -d -s root -c / 'sleep 606'`);
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /LEFT process \d+ \(sleep 606\): started during the run/);
+  r = run(`tmux -S ${sock} new-session -d -s w -c / 'touch ${home}/.convex/${tag}'; sleep 0.5`);
+  assert.ok(fs.existsSync(path.join(home, '.convex', tag)), 'the older server is outside the sandbox, so the write landed');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, new RegExp(`LEFT home ${home}/\\.convex/${tag}: appeared or changed during the run`));
+});
+
+test('eng clean --containers --apply keeps a marked anonymous volume of a container it removes', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  const c = `${tag}-cl-anon`; let vol = null;
+  t.after(() => { dk('rm', '-f', c); if (vol) dk('volume', 'rm', vol); });
+  dk('run', '-d', '--name', c, '--label', 'eng.repo=eph', '--mount', 'type=volume,target=/d,volume-label=slaytek.persist=true', 'alpine:latest', 'sleep', '300');
+  vol = dk('inspect', '-f', '{{range .Mounts}}{{.Name}}{{end}}', c).stdout.trim();
+  const r = eng('clean', '--containers', '--apply');
+  assert.equal(r.status, 0, out(r));
+  assert.equal(dk('inspect', c).status, 1, 'the unmarked container is removed');
+  assert.equal(dk('volume', 'inspect', vol).status, 0, 'its marked anonymous volume stays');
+  assert.match(r.stdout, new RegExp(`keep +volume ${vol} \\(permanent: slaytek\\.persist=true\\)`));
+});

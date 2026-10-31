@@ -169,7 +169,8 @@ isolation:
 - The run's docker socket refuses a writable bind mount (or a bind-backed volume) of `~/.convex` or the cache home, because the daemon mounts outside the run's sandbox. A read-only bind is allowed.
 - `~/.convex` and the cache home (`~/.cache`, `$XDG_CACHE_HOME`) are read-only inside the run, except the checkout, the run's own folder, this repo's `${XDG_CACHE_HOME}/eng/<repo>` caches and the pinned download cache. A write there fails the command. One of those folders that did not exist and appears during the run fails the check.
 - A container made on the run's docker daemon during the run without the run's label (a client that went around `DOCKER_HOST`, or another session) fails the run, unless it is permanent. It is reported, never removed.
-- A process started during the run with its working directory in the checkout or the run folder, but outside the run's process tree (for example through a tmux server that was already running), fails the run. It is reported, never signalled.
+- A process started during the run outside the run's process tree fails the run when its working directory is in the checkout or the run folder, or when it runs under a tmux or screen server older than the run (`tmux new-session -c /` passes neither the run's environment nor its folder). It is reported, never signalled.
+- `~/.convex` is snapshotted before and after the run. Any entry that appears or changes fails the run, whatever wrote it (a server older than the run is outside the sandbox). Over 20000 entries, the run is refused as not watchable.
 
 The last two can also catch another session working in the same checkout at the same moment. That fails closed, and nothing of theirs is touched.
 

@@ -1124,9 +1124,14 @@ function cleanContainers(cfg, apply) {
   const users = name => q(['ps', '-aq', '--no-trunc', '--filter', `volume=${name}`]).filter(id => !going.has(id));
   const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: permanent({ labels: v.Labels }, persist) ? persist.label : used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null }));
   const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
-  for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : ' (with its anonymous volumes)'}`);
+  // rm -v takes a container's anonymous volumes too, which carry no repo label: a marked one keeps its container's -v off.
+  const marked = new Set(inspect('volume', [...new Set(rmC.flatMap(c => c.vols))]).filter(v => permanent({ labels: v.Labels }, persist)).map(v => v.Name));
+  const [plain, holding] = [rmC.filter(c => !c.vols.some(v => marked.has(v))), rmC.filter(c => c.vols.some(v => marked.has(v)))];
+  for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : holding.includes(c) ? ' (without its volumes: one is marked permanent)' : ' (with its anonymous volumes)'}`);
   for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
-  if (apply && rmC.length) q(['rm', '-f', '-v', ...rmC.map(c => c.id)]);
+  for (const v of marked) if (!vs.some(x => x.name === v)) console.log(`  keep         volume ${v} (permanent: ${persist.label})`);
+  if (apply && plain.length) q(['rm', '-f', '-v', ...plain.map(c => c.id)]);
+  if (apply && holding.length) q(['rm', '-f', ...holding.map(c => c.id)]);
   if (apply && rmV.length) q(['volume', 'rm', ...rmV.map(v => v.name)]);
   console.log(`eng clean --containers: ${rmC.length} container(s), ${rmV.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}; ${cs.length - rmC.length + vs.length - rmV.length} permanent kept`);
 }
