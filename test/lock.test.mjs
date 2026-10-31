@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -63,13 +64,18 @@ test('eng sync on unchanged inputs leaves the lock byte-identical', () => {
   assert.equal(r.read('.eng/lock.json'), lock);
 });
 
+const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
+// Writes the lock as eng 0.11.0 did ({ path: sha256 } and a config_hash) for the paths sync manages now, plus extra.
+function writeOldLock(r, extra = []) {
+  const now = JSON.parse(r.read('.eng/lock.json')), paths = Array.isArray(now.files) ? now.files : Object.keys(now.files);
+  const files = Object.fromEntries([...paths, ...extra].sort().map(p => [p, sha256(p)]));
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ links: now.links, config_hash: sha256(r.read('eng.config.yml')), package: '0.11.0', files }, null, 2) + '\n');
+  return paths;
+}
+
 test('an old-format lock (path: sha256, config_hash) is read, then rewritten in the new format by eng sync', () => {
   const r = repo();
-  const now = JSON.parse(r.read('.eng/lock.json')), paths = Array.isArray(now.files) ? now.files : Object.keys(now.files);
-  const hash = s => execSync('sha256sum', { input: s, encoding: 'utf8' }).split(' ')[0];
-  const files = Object.fromEntries([...paths, 'docs/OLD-RENDER.md'].sort().map(p => [p, hash(p)]));
-  const old = { links: now.links, config_hash: hash(r.read('eng.config.yml')), package: '0.11.0', files };
-  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(old, null, 2) + '\n');
+  const paths = writeOldLock(r, ['docs/OLD-RENDER.md']);
   fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/OLD-RENDER.md'), 'rendered by an older config\n');
   const d = r.eng('drift-check');
   assert.notEqual(d.status, 0, 'a path the old lock manages but the config no longer renders is drift');
@@ -86,10 +92,7 @@ test('an old-format lock (path: sha256, config_hash) is read, then rewritten in 
 
 test('an old-format lock that matches the config passes drift-check before any sync', () => {
   const r = repo();
-  const now = JSON.parse(r.read('.eng/lock.json')), paths = Array.isArray(now.files) ? now.files : Object.keys(now.files);
-  const hash = s => execSync('sha256sum', { input: s, encoding: 'utf8' }).split(' ')[0];
-  const old = { links: now.links, config_hash: hash(r.read('eng.config.yml')), package: '0.11.0', files: Object.fromEntries(paths.map(p => [p, hash(p)])) };
-  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(old, null, 2) + '\n');
+  writeOldLock(r);
   const d = r.eng('drift-check'); assert.equal(d.status, 0, d.stderr);
 });
 
