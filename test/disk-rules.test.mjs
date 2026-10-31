@@ -184,14 +184,15 @@ test('eng downloads check: passes when prepare fetches once into the cache; fail
 });
 
 test('eng downloads check: a real second download, an extracted runtime in the run dir or an unchecked file at any depth fails', { skip: NO_NET }, async () => {
-  let gets = 0;
-  const server = http.createServer((q, s) => { gets++; s.end('pinned over http'); });
+  // Count only this test's path: other test files probe localhost ports while the suite runs.
+  let gets = 0; const token = crypto.randomBytes(8).toString('hex');
+  const server = http.createServer((q, s) => { if (q.url === `/${token}/net.bin`) gets++; s.end('pinned over http'); });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  const url = `http://127.0.0.1:${server.address().port}/net.bin`, sum = crypto.createHash('sha256').update('pinned over http').digest('hex');
+  const url = `http://127.0.0.1:${server.address().port}/${token}/net.bin`, sum = crypto.createHash('sha256').update('pinned over http').digest('hex');
   try {
     rules({ pinned_downloads: { prepare: `node ${ENG} fetch net 1 ${url} ${sum} >/dev/null` } });
     let r = await engAsync('downloads', 'check');
-    assert.equal(r.status, 0, r.out); assert.equal(gets, 1, 'eng fetch downloads once; the second run reads the cache');
+    assert.equal(r.status, 0, r.out); assert.equal(gets, 1, `eng fetch downloads once; the second run reads the cache (${gets} GETs): ${r.out}`);
     gets = 0;
     rules({ pinned_downloads: { prepare: `node ${ENG} fetch net 1 ${url} ${sum} >/dev/null; curl -fsS ${url} -o /dev/null` } });
     r = await engAsync('downloads', 'check');
@@ -252,6 +253,18 @@ test('eng downloads check: archive members are compared exactly as extraction wr
   assert.equal(r.status, 1, `the last of two same-name entries is caught: ${r.stdout}`); assert.match(r.stdout, /FAIL run-1\/runtime is a copy of runtime unpacked from cached dup-1\/r3d\.tar/);
   r = pin('dup', dup, 'tar -xOf "$f" --occurrence=1 runtime > "$ENG_RUN_DIR/first"');
   assert.equal(r.status, 1, `the first of two same-name entries is caught: ${r.stdout}`); assert.match(r.stdout, /FAIL run-1\/first is a copy of runtime\.~1~ unpacked/);
+  const lone = path.join(root, 'node-bin'); fs.writeFileSync(lone, crypto.randomBytes(50000));
+  for (const [cmd, ext] of [['gzip', 'gz'], ['xz', 'xz'], ['zstd', 'zst'], ['bzip2', 'bz2']]) {
+    execSync(`${cmd} -c ${lone} > ${lone}.${ext}`);
+    r = pin(`lone${ext}`, `${lone}.${ext}`, `${cmd} -dc "$f" > "$ENG_RUN_DIR/node"`);
+    assert.equal(r.status, 1, `a decompressed ${ext} runtime in the run dir fails: ${r.stdout}`);
+    assert.match(r.stdout, new RegExp(`FAIL run-1/node is a copy of node-bin unpacked from cached lone${ext}-1/node-bin\\.${ext}`));
+  }
+  const z1 = path.join(root, 'z1'), z2 = path.join(root, 'z2'), zipDup = path.join(root, 'dup.zip');
+  write(path.join(z1, 'runtime'), Buffer.alloc(4096, 37)); write(path.join(z2, 'runtime'), Buffer.alloc(4096, 38));
+  execSync(`cd ${z1} && zip -q ${zipDup} runtime && cd ${z2} && zip -q ${zipDup}.2 runtime && python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'a'); z.writestr('runtime', open(sys.argv[2],'rb').read()); z.close()" ${zipDup} ${path.join(z2, 'runtime')} 2>/dev/null; rm -f ${zipDup}.2`);
+  r = pin('zdup', zipDup, 'unzip -qq -n "$f" -d "$ENG_RUN_DIR"');
+  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL zdup-1\/dup\.zip is a zip with a repeated entry name/);
   const manifest = path.join(root, 'manifest.sha256'); fs.writeFileSync(manifest, `${'a'.repeat(64)}  runtime\n`);
   r = pin('edge', manifest, 'true');
   assert.equal(r.status, 0, `a pinned artifact whose name ends in .sha256 passes: ${r.stdout}${r.stderr}`);
