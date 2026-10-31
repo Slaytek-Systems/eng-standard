@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.12.1 (1 Nov 2026)
+
+**Isolation fixes before enforcement** (Matt, 1 Nov 2026: devbox project isolation will be enforced; Core decision nd74kgtnr9qpq1ztyrasyt84518ha76q). A TLA+ model of devbox run isolation (eng-sandbox PR #19) found the holes. Warn mode, the default, behaves as before. Enforcement is `isolation.mode: fail`, which each repo's lead turns on.
+
+- **One meaning of permanent.** A container is permanent when it has the persist label (`slaytek.persist=true`) or a restart policy other than `no`, as devbox-ops docker-ephemeral already treats it (`permanent()` in `lib/ephemeral.mjs`). `eng ephemeral` used to `docker rm -f` a restart-policy container a run made. It now keeps it.
+- **`eng clean --containers --apply` keeps permanent containers**, a volume with the persist label, and the volumes a permanent container uses. It removed every container and volume with the repo label, marked or not.
+- **`isolation.mode: fail` enforces isolation in `eng ephemeral`** (CI and `eng gate`), whatever `ephemeral_runs.mode` says. A run with no private `/tmp` is refused. `/dev/shm` is private. `~/.convex` and the cache home are read-only inside the run, except the checkout, the run folder, this repo's eng caches and the pinned download cache, and one of them that appears fails the run. An unlabelled, non-permanent container made during the run fails it, as does a process started in the checkout outside the run's process tree (a tmux server that was already running). Neither is removed or signalled.
+- **New isolation rule `convex-url`.** A service that runs a convex program must set `connect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }`, so `eng connect` clients reach the backend eng started, not one found by deployment name. It warns in warn mode and fails in fail mode, like every rule. The starter `templates/isolation/project.toml` sets it.
+- An unnamed compose file already failed `eng isolation check` in fail mode. A test now pins that.
+
 ## 0.12.0 (31 Oct 2026)
 
 **Model choices move to config** (Matt, 30 Oct 2026). Model routing has one source of truth, the Core note 'Model routing: who uses which model' (nd77rx5dhdt899w2np5kjknqdd8g8y2d). The standard points to it and copies none of it.

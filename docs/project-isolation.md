@@ -151,6 +151,7 @@ For an image whose stock entrypoint puts a secret on argv (the Convex local back
 | `inline-code` | package scripts, hooks | inline code or a split string (`node -e`, `python -c`, `deno eval`, `sh -c`, `env -S`) |
 | `shell-string` | package scripts, hooks | a line that is opaque to a static read (a shell with `-c`, quotes, `$`, backticks or backslashes) and touches docker, podman, compose, convex, kill or a secret flag: run it as argv through `eng connect` instead |
 | `bare-kill` | package scripts, hooks | `kill`, `pkill`, `killall` (also by path), and docker/podman/compose `stop`, `kill`, `rm`, `down`, `restart`, `pause`, found after global options too (`docker --context x stop y`) |
+| `convex-url` | `.eng/project.toml` | a service whose `command` or a `connect` entry runs a convex program (`convex`, `convex-local-backend`) without `connect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }`. Without it a client finds a backend by deployment name (`CONVEX_DEPLOYMENT` in `.env.local`, state in `~/.convex`), which can be another project's. The admin key goes in `.eng/secrets/<svc>.connect.env` |
 | `secret-argv` | package scripts, hooks, compose, shell scripts | a flag ending in secret, password, passphrase, token, or api-, admin-, access-, private-, secret-, signing-, encryption-, master- or session-key, with a value (`--instance-secret x`, `--token=x`). Also `env NAME=value` with a secret-looking name, and both forms inside one argument (`bash -c 'client --token "$T"'`) and across a multi-line compose `command:` or `entrypoint:` list or block scalar (`>-`, `|`). The next token counts as the value even when it starts with `-`. `-file` and `--no-` flags pass |
 
 Hooks are `.githooks/*`, `.husky/*`, `lefthook.yml` and `.pre-commit-config.yaml`. Findings print the file, line and rule, never the line's text.
@@ -160,6 +161,16 @@ isolation:
   mode: warn    # warn: report, exit 0. fail: exit 1 on any finding.
 ```
 
+`isolation.mode: fail` also enforces isolation in `eng ephemeral` (CI and `eng gate`), whatever `hygiene.run_rules.ephemeral_runs.mode` says:
+
+- A run with no private `/tmp` (bwrap missing or refused, or the run folder under `/tmp`) is refused before it starts.
+- `/dev/shm` is private to the run, like `/tmp`.
+- `~/.convex` and the cache home (`~/.cache`, `$XDG_CACHE_HOME`) are read-only inside the run, except the checkout, the run's own folder, this repo's `${XDG_CACHE_HOME}/eng/<repo>` caches and the pinned download cache. A write there fails the command. One of those folders that did not exist and appears during the run fails the check.
+- A container made on the run's docker daemon during the run without the run's label (a client that went around `DOCKER_HOST`, or another session) fails the run, unless it is permanent. It is reported, never removed.
+- A process started during the run with its working directory in the checkout or the run folder, but outside the run's process tree (for example through a tmux server that was already running), fails the run. It is reported, never signalled.
+
+The last two can also catch another session working in the same checkout at the same moment. That fails closed, and nothing of theirs is touched.
+
 `--config-from <ref>` (passed to git as an argument, never through a shell) reads the mode from that ref's `eng.config.yml`, so CI can use main's copy and a branch cannot switch itself back to warn.
 
 ## Adopting it
@@ -167,7 +178,7 @@ isolation:
 1. Copy `templates/isolation/project.toml` to `.eng/project.toml` (or run `eng renovate apply launch`, which seeds it and `isolation.mode: warn`). Set the owner, a unique port range and the services. Add `.eng/state/` and `.eng/secrets/` to `.gitignore`.
 2. Move service secrets into `.eng/secrets/<svc>.env` (0600).
 3. Route scripts and hooks through the helper: `eng run-service backend`, `eng connect backend -- npx convex codegen`, `eng stop backend`.
-4. Run `eng isolation check` until it passes, then set `isolation.mode: fail`.
+4. Run `eng isolation check` and `eng ephemeral check` until both pass, then set `isolation.mode: fail`. The second shows what the enforced run refuses: run it once with `isolation.mode: fail` on a branch first.
 
 ## Not in this release
 
