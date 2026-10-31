@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
+import { mistakesLog } from '../lib/hygiene.mjs';
 // eng's scratch root lives under XDG_CACHE_HOME: keep it inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
@@ -88,6 +89,42 @@ test('launch down never follows a worktree replaced by a symlink', () => {
   assert.doesNotMatch(retro(), /outside repo/);
   fs.rmSync(wt); fs.renameSync(wt + '-real', wt); fs.rmSync(outside, { recursive: true });
   assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
+test('launch down never follows a worktree linked to another worktree of the same clone', () => {
+  const a = keep(dir), b = keep(dir), log = JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL in worktree b', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n';
+  fs.mkdirSync(path.join(b.wt, '.eng')); fs.writeFileSync(path.join(b.wt, '.eng/mistakes.jsonl'), log);
+  fs.renameSync(a.wt, a.wt + '-real'); fs.symlinkSync(b.wt, a.wt);
+  assert.equal(eng(dir, 'launch', 'down', a.d).status, 1);
+  assert.equal(fs.readFileSync(path.join(b.wt, '.eng/mistakes.jsonl'), 'utf8'), log, "worktree b's log is untouched");
+  fs.rmSync(a.wt); fs.renameSync(a.wt + '-real', a.wt);
+  for (const x of [a, b]) assert.equal(eng(dir, 'launch', 'down', x.d).status, 0);
+});
+
+test('launch down never moves a log from a worktree replaced by another repo', () => {
+  const { wt, d } = keep(dir), log = '{"key":"x","what":"other repo log"}\n';
+  fs.renameSync(wt, wt + '-real'); fs.mkdirSync(path.join(wt, '.eng'), { recursive: true }); git('init -q', wt); fs.writeFileSync(path.join(wt, '.eng/mistakes.jsonl'), log);
+  assert.equal(eng(dir, 'launch', 'down', d).status, 1);
+  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), log);
+  assert.doesNotMatch(retro(), /other repo log/);
+  fs.rmSync(wt, { recursive: true }); fs.renameSync(wt + '-real', wt);
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
+test('launch down never reads a log that is a symlink', () => {
+  const { wt, d } = keep(dir), outside = path.join(root, 'outside-log.jsonl');
+  fs.writeFileSync(outside, '{"key":"x","what":"linked log"}\n');
+  fs.mkdirSync(path.join(wt, '.eng')); fs.symlinkSync(outside, path.join(wt, '.eng/mistakes.jsonl'));
+  assert.equal(eng(dir, 'launch', 'down', d).status, 1);
+  assert.doesNotMatch(retro(), /linked log/);
+  fs.rmSync(path.join(wt, '.eng'), { recursive: true }); fs.rmSync(outside);
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
+test('mistakesLog refuses a dir git cannot read instead of returning a relative path', () => {
+  const p = path.join(root, 'not-a-repo'); fs.mkdirSync(p);
+  assert.throws(() => mistakesLog(p), /no git common dir/);
+  assert.equal(mistakesLog(dir), path.join(fs.realpathSync(dir), '.git', 'eng', 'mistakes.jsonl'));
 });
 
 test('launch down touches nothing when git cannot read the source repo', () => {
