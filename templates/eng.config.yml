@@ -71,6 +71,11 @@ agents:
     - fallow/fallow                 # official, version-matched to the pinned CLI (pkg/vendor/PINS.txt)
     - fallow/fallow-setup
 
+models:                           # Which model does which job. The standard names none: AGENTS.md points agents to the routing note.
+  routing: core:nd77rx5dhdt899w2np5kjknqdd8g8y2d   # Core note 'Model routing: who uses which model'. Matt edits routing there. Default: this note.
+  # pstack:                       # Optional per-role picks for pstack skills; eng sync renders .eng/pstack-models.md. Roles: setup-pstack step 5.
+  #   swarm workers: inherit-parent   # A role not set keeps the pstack skill default. A panel role (arena runners ...) takes a list.
+
 fallow:                           # JS/TS repos. Config lives in .fallowrc.json (entry, ignoreDependencies, rules, boundaries).
   version: 3.33.1                 # exact; must equal node_modules fallow --version and the vendored skill
   mode: greenfield                # greenfield = whole repo clean (bare `fallow`). brownfield = new findings only vs baselines.
