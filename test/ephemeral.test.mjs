@@ -637,3 +637,14 @@ test('isolation enforced: ~/.convex growing past the snapshot limit during the r
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /LEFT home .*\.convex \(now more than 20000 entries\)/);
 });
+
+test('a run container removed as a leftover keeps its anonymous volumes when their labels cannot be read', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  let vol = null; t.after(() => { dk('rm', '-f', `${tag}-av2`); if (vol) dk('volume', 'rm', vol); });
+  const shim = path.join(root, 'volume-shim'); fs.mkdirSync(shim, { recursive: true });
+  fs.writeFileSync(path.join(shim, 'docker'), `#!/bin/sh\n[ "$1" = volume ] && [ "$2" = inspect ] && [ -z "$ENG_EPHEMERAL_RUN" ] && exit 1\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-av2 --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av2 > ${marks}/av2`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${shim}:${env.PATH}` } });
+  vol = mark('av2');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-av2\\): removed`));
+  assert.equal(dk('volume', 'inspect', vol).status, 0, 'a volume whose labels could not be read is kept');
+});
