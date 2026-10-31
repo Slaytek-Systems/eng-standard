@@ -314,7 +314,7 @@ function lintFiles(rule, files, base) {
   for (const f of files) {
     const name = f.replace(/\.fixture$/, '');
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
-    for (const h of lintText(rule, fs.readFileSync(path.join(base, f), 'utf8'))) hits.push({ file: f, ...h, rule: rule.id, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
+    for (const h of lintText(rule, fs.readFileSync(path.join(base, f), 'utf8'), name)) hits.push({ file: f, ...h, rule: rule.id, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
   }
   return hits;
 }
