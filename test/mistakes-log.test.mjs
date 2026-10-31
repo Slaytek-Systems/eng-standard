@@ -78,6 +78,33 @@ test('launch down never follows a symlinked .eng out of the worktree', () => {
   assert.equal(eng(dir, 'launch', 'down', d).status, 0);
 });
 
+test('launch down never follows a worktree replaced by a symlink', () => {
+  const { wt, d } = keep(dir), outside = path.join(root, 'outside-repo'), file = path.join(outside, '.eng/mistakes.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true }); git('init -q', outside); fs.writeFileSync(file, '{"key":"x","what":"outside repo"}\n');
+  fs.renameSync(wt, wt + '-real'); fs.symlinkSync(outside, wt);
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r));
+  assert.equal(fs.readFileSync(file, 'utf8'), '{"key":"x","what":"outside repo"}\n');
+  assert.doesNotMatch(retro(), /outside repo/);
+  fs.rmSync(wt); fs.renameSync(wt + '-real', wt); fs.rmSync(outside, { recursive: true });
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+});
+
+test('launch down touches nothing when git cannot read the source repo', () => {
+  const p = path.join(root, 'tracked'), log = '{"key":"x","what":"tracked log"}\n';
+  fs.mkdirSync(path.join(p, '.eng'), { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p);
+  fs.writeFileSync(path.join(p, '.eng/mistakes.jsonl'), log); git('add -A', p); git('commit -qm x', p);
+  const { wt, d } = keep(p);
+  fs.renameSync(path.join(p, '.git'), path.join(p, '.git-moved'));
+  const r = eng(dir, 'launch', 'down', d);
+  assert.equal(r.status, 1, out(r));
+  assert.equal(fs.readFileSync(path.join(wt, '.eng/mistakes.jsonl'), 'utf8'), log, 'the tracked log stays in the worktree');
+  assert.ok(!fs.existsSync(path.join(dir, 'eng')), 'nothing written relative to the caller');
+  fs.renameSync(path.join(p, '.git-moved'), path.join(p, '.git'));
+  assert.equal(eng(dir, 'launch', 'down', d).status, 0);
+  fs.rmSync(p, { recursive: true });
+});
+
 test('a pre-fix log in the checkout is still read', () => {
   fs.mkdirSync(path.join(dir, '.eng'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.eng/mistakes.jsonl'), JSON.stringify({ key: 'verdict:FAIL', what: 'FAIL by checkout-verifier', sha: git('rev-parse HEAD'), source: 'verdict', at: new Date().toISOString() }) + '\n');
