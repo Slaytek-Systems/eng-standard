@@ -71,7 +71,8 @@ test('launch down keeps an orphaned launch dir whose worktree was moved inside i
   const mk = name => { const p = path.join(process.env.XDG_CACHE_HOME, 'eng', 'repo', 'scratch', name, 'repo'); fs.mkdirSync(p, { recursive: true }); git('init -q -b main', p); git('config user.email t@t', p); git('config user.name t', p); fs.writeFileSync(path.join(p, 'f'), 'x\n'); git('add -A', p); git('commit -qm x', p); return p; };
   const p1 = mk('eng-repo-moved-wt'), a = keep(p1);
   fs.renameSync(a.wt, path.join(a.d, 'wt-retained')); fs.writeFileSync(path.join(a.d, 'wt-retained', 'f'), 'edited\n'); fs.renameSync(p1, p1 + '-renamed');
-  assert.equal(eng(dir, 'launch', 'down', a.d).status, 1);
+  const r = eng(dir, 'launch', 'down', a.d);
+  assert.equal(r.status, 1); assert.match(out(r), /eng: FAIL launch down: repo .* is gone and .* changed after launch/, 'a named refusal, not a crash');
   assert.equal(fs.readFileSync(path.join(a.d, 'wt-retained', 'f'), 'utf8'), 'edited\n');
   const p2 = mk('eng-repo-edited-at'), b = keep(p2), lj = path.join(b.d, 'launch.json');
   fs.writeFileSync(path.join(b.wt, 'f'), 'edited\n');
