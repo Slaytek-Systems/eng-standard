@@ -41,9 +41,9 @@ eng stack-audit <repos> --json                   # findings as JSON
 eng stack-audit <repos> --core                   # Core work.followup-create inputs, one per drift; printed, never sent
 ```
 
-The audit is read-only and makes no network calls. A floor applies only when a repo declares that package. Exit 1 means drift.
+The audit is read-only and makes no network calls. A floor applies only when a repo declares that package. Exit 1 means drift. Each `--core` item has a stable `dedupe_key`; skip any item whose key already has an open follow-up. Its `idempotency_key` carries the run month in Australia/Sydney.
 
-Two Convex rules run in each repo's own gate, not in the audit. `eng stack-check` fails a repo that declares `convex` and pins Node below the backend layer's `node` (22) in `engines.node`, `.nvmrc`, `.node-version`, a CI `node-version` or `convex.json` `node.nodeVersion`. It warns when such a repo pins no Node at all. Once a repo is on convex 1.49, `eng lint` rule `convex-function-handle-validator` fails a `v.string()` handle field or an `as FunctionHandle<...>` cast under `convex/`. Use `v.function()` instead. A brownfield repo baselines its existing hits with `eng renovate baseline --kind lint`. Each `--core` item has a stable `dedupe_key`; skip any item whose key already has an open follow-up. Its `idempotency_key` carries the run month in Australia/Sydney.
+Two Convex rules run in each repo's own gate, not in the audit. `eng stack-check` fails a repo that declares `convex` and pins Node below the backend layer's `node` (22) in `engines.node`, `.nvmrc`, `.node-version`, a CI `node-version` or `convex.json` `node.nodeVersion`. It warns when such a repo pins no Node at all. Once a repo is on convex 1.49, `eng lint` rule `convex-function-handle-validator` fails a `fnHandle`- or `functionHandle`-named field validated with `v.string()`, and an `as FunctionHandle<...>` cast, under `convex/`. Use `v.function()` instead. A brownfield repo baselines its existing hits with `eng renovate baseline --kind lint`.
 
 ## Not verified
 

@@ -299,7 +299,8 @@ function builtinRules(cfg) {
   if (cfg.flags?.file) r.push({ id: 'flags-default-off', paths: cfg.flags.file, pattern: ':\\s*true\\b', flags: '',
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
-  if (usesHandleRule(treeDeps(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean))))
+  let files = []; try { files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean); } catch {} // rules prove runs outside git too
+  if (usesHandleRule(treeDeps(files)))
     r.push({ ...CONVEX_HANDLE_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${CONVEX_HANDLE_RULE.id}` } });
   const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
   if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || cacheMode !== 'off')
