@@ -21,7 +21,7 @@ import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { modelErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
@@ -1107,17 +1107,26 @@ function cleanCmd() {
   if (reported.length) console.log(`  REPORT to the repo lead (never deleted):\n    ${reported.join('\n    ')}`);
   console.log(`eng clean --worktrees: ${removed} worktree(s) ${apply ? 'removed' : 'removable (dry run; --apply to remove)'}, ${rows.length - removed} kept`);
 }
-// Containers this repo labelled (hygiene.containers.label=<repo>) are removed with their volumes; nothing else is touched.
+// Containers this repo labelled (hygiene.containers.label=<repo>) are removed with their volumes, except permanent ones
+// (permanent() in lib/ephemeral.mjs: the persist label or a restart policy) and the volumes they use. Nothing else is touched.
 function cleanContainers(cfg, apply) {
   const cli = ['docker', 'podman'].find(c => spawnSync(c, ['--version']).status === 0) || die('clean --containers: no docker or podman');
-  const label = `${cfg.hygiene?.containers?.label ?? 'eng.repo'}=${slug(cfg.project.name)}`;
+  const label = `${cfg.hygiene?.containers?.label ?? 'eng.repo'}=${slug(cfg.project.name)}`, persist = { label: runRules(cfg).ephemeral_runs.persist_label };
   const q = args => { const r = spawnSync(cli, args, { encoding: 'utf8' }); if (r.status !== 0) die(`clean --containers: ${cli} ${args.join(' ')}: ${r.stderr.trim()}`); return r.stdout.split('\n').filter(Boolean); };
-  const cs = q(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.ID}} {{.Names}} {{.Status}}']), vs = q(['volume', 'ls', '--filter', `label=${label}`, '--format', '{{.Name}}']);
-  for (const c of cs) console.log(`  ${apply ? 'removed' : 'would remove'} container ${c} (with its anonymous volumes)`);
-  for (const v of vs) console.log(`  ${apply ? 'removed' : 'would remove'} volume ${v}`);
-  if (apply && cs.length) q(['rm', '-f', '-v', ...cs.map(c => c.split(' ')[0])]);
-  if (apply && vs.length) q(['volume', 'rm', ...vs]);
-  console.log(`eng clean --containers: ${cs.length} container(s), ${vs.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}`);
+  // Labels and restart policy come from inspect's JSON: ls prints labels as "k=v,k=v", which a comma in a value makes ambiguous.
+  const inspect = (kind, ids) => ids.length ? JSON.parse(q([kind, 'inspect', ...ids]).join('\n')) : [];
+  const cs = inspect('container', q(['ps', '-aq', '--no-trunc', '--filter', `label=${label}`])).map(c => {
+    const restart = c.HostConfig?.RestartPolicy?.Name, keep = permanent({ labels: c.Config?.Labels, restart }, persist);
+    return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (permanent({ labels: c.Config?.Labels }, persist) ? persist.label : `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
+  });
+  const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols));
+  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: permanent({ labels: v.Labels }, persist) ? persist.label : used.has(v.Name) ? 'used by a permanent container' : null }));
+  const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
+  for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : ' (with its anonymous volumes)'}`);
+  for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
+  if (apply && rmC.length) q(['rm', '-f', '-v', ...rmC.map(c => c.id)]);
+  if (apply && rmV.length) q(['volume', 'rm', ...rmV.map(v => v.name)]);
+  console.log(`eng clean --containers: ${rmC.length} container(s), ${rmV.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}; ${cs.length - rmC.length + vs.length - rmV.length} permanent kept`);
 }
 function cleanEvidence(cfg, apply) {
   const d = path.join(ROOT, cfg.e2e?.evidence_dir ?? '.eng/evidence'); const names = fs.existsSync(d) ? fs.readdirSync(d) : [];

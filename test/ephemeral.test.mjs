@@ -398,3 +398,112 @@ test('findLeftovers: only labelled objects are the run\'s; volumes are reported,
   assert.deepEqual(left.map(f => [f.kind, f.id, f.owner]), [['container', 'c1', 'run'], ['network', 'n1', 'run'], ['volume', 'named1', 'named'], ['volume', 'anon1', 'unproven']]);
   assert.deepEqual(unattributed.map(f => f.id), ['x9']);
 });
+
+// ---------- one meaning of permanent, and enforced isolation (isolation.mode: fail) ----------
+test('findLeftovers: a restart policy makes a container permanent, as devbox-ops docker-ephemeral treats it', () => {
+  const persist = { label: 'slaytek.persist=true', env: 'SLAYTEK_PERSIST=true' }, key = 'eng.ephemeral.run.r2';
+  const ev = (ID, Attributes) => ({ Type: 'container', Action: 'create', Actor: { ID, Attributes } });
+  const live = { containers: new Map([['c1', { labels: { [key]: 'true' }, restart: 'unless-stopped' }], ['c2', { labels: { [key]: 'true' }, restart: 'no' }], ['c3', { labels: { [key]: 'true' }, restart: '' }]]),
+    networks: new Map(), volumes: new Map(), mounted: new Map(), others: new Map() };
+  const { left } = findLeftovers({ run: { id: 'r2' }, persist, events: ['c1', 'c2', 'c3'].map(c => ev(c, { [key]: 'true' })), live, volumesBefore: new Set(), temp: [], procs: [] });
+  assert.deepEqual(left.map(f => f.id), ['c2', 'c3']);
+});
+
+test('findLeftovers, isolation enforced: an unlabelled container, a stray process and new home state are leftovers that are never removed', () => {
+  const persist = { label: 'slaytek.persist=true', env: 'SLAYTEK_PERSIST=true' };
+  const ev = ID => ({ Type: 'container', Action: 'create', Actor: { ID, Attributes: {} } });
+  const live = { containers: new Map(), networks: new Map(), volumes: new Map(), mounted: new Map(),
+    others: new Map([['x1', { image: 'alpine', name: 'direct', labels: {}, restart: 'no' }], ['x2', { image: 'pg', name: 'theirs-dev', labels: {}, restart: 'always' }]]) };
+  const args = { run: { id: 'r3' }, persist, events: [ev('x1'), ev('x2')], live, volumesBefore: new Set(), temp: [], procs: [],
+    strays: [{ pid: 4242, env: [], cmd: 'sleep 601' }, { pid: 4243, env: ['SLAYTEK_PERSIST=true'], cmd: 'dev server' }], home: ['/home/u/.convex'] };
+  const off = findLeftovers(args);
+  assert.deepEqual(off.left, [], 'warn mode (the default) is unchanged: these are not leftovers');
+  assert.deepEqual(off.unattributed.map(f => f.id), ['x1', 'x2']);
+  const on = findLeftovers({ ...args, isolate: true });
+  assert.deepEqual(on.left.map(f => [f.kind, f.id, f.owner]), [['container', 'x1', 'unproven'], ['process', 4242, 'unproven'], ['home', '/home/u/.convex', 'unproven']]);
+  assert.deepEqual(on.unattributed.map(f => f.id), ['x2'], 'a permanent container made outside the run stays a note');
+});
+
+const sandboxed = () => { const probe = fs.mkdtempSync(path.join(root, 'probe-')); return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, '/tmp', '--', 'true']).status === 0 && !xdg.startsWith('/tmp/'); };
+const NEEDS_SANDBOX = 'needs a usable bwrap and a run folder outside /tmp (nested bwrap is refused, so this runs under plain npm test with ENG_TMP outside /tmp)';
+const enforce = t => { setCfg(c => { c.isolation = { mode: 'fail' }; }); t.after(() => setCfg(c => { c.isolation = { mode: 'warn' }; })); };
+
+test('isolation enforced: a run with no private /tmp is refused before it starts; in warn mode it still runs', t => {
+  const base = path.join('/tmp', `${tag}-base`); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const run = () => spawnSync(process.execPath, [ENG, 'ephemeral', '--', `echo ran >> ${marks}/notmp`], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+  let r = run();
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /TMPDIR only: no usable bwrap/);
+  enforce(t);
+  r = run();
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stderr, /run command not started, because it could not be watched: \/tmp: isolation\.mode is fail, and the run gets no private \/tmp/);
+  assert.equal(mark('notmp'), 'ran', 'only the warn-mode run ran');
+});
+
+test('isolation enforced: ~/.convex and the cache home are read-only, home state that appears fails, and /dev/shm is private', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
+  const shm = `/dev/shm/${tag}`; t.after(() => fs.rmSync(shm, { force: true }));
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  let r = run('touch ~/.convex/state');
+  assert.equal(r.status, 0, out(r)); fs.rmSync(path.join(home, '.convex', 'state'));
+  enforce(t);
+  r = run('touch ~/.convex/state');
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /Read-only file system/);
+  assert.ok(!fs.existsSync(path.join(home, '.convex', 'state')), 'the shared Convex state was never written');
+  r = run(`touch "$XDG_CACHE_HOME/${tag}"; mkdir -p ~/.cache/x; touch ${shm}`);
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /Read-only file system/);
+  assert.ok(!fs.existsSync(path.join(xdg, tag)), 'the cache home was never written');
+  assert.match(r.stdout, new RegExp(`LEFT home ${home}/\\.cache: appeared during the run outside its temp folders, so not removed`));
+  assert.match(r.stdout, new RegExp(`LEFT temp shm/${tag} `));
+  assert.ok(!fs.existsSync(shm), 'the real /dev/shm never saw the write');
+  assert.deepEqual(rounds(), []);
+});
+
+test('isolation enforced: a process started through a tmux server that was already running fails the run, and is not stopped', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
+  const sock = path.join(root, 'tmux.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
+  tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
+  const run = n => eng('ephemeral', '--', `tmux -S ${sock} new-session -d -s ${n} 'sleep 605'`);
+  let r = run('w');
+  assert.equal(r.status, 0, out(r)); tmux('kill-session', '-t', 'w');
+  enforce(t);
+  r = run('e');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /LEFT process \d+ \(sleep 605\): started during the run in its checkout but outside its process tree/);
+  assert.equal(tmux('has-session', '-t', 'e').status, 0, 'never signals what it cannot prove is the run\'s');
+});
+
+test('isolation enforced: a container made around the run\'s socket fails the run and is not removed', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  t.after(() => dk('rm', '-f', `${tag}-direct`));
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const r = eng('ephemeral', '--', `docker -H ${outside} run -d --name ${tag}-direct alpine:latest sleep 300 >/dev/null`);
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-direct\\): made on this docker during the run without the run's label`));
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-direct`).stdout.trim(), 'true');
+});
+
+test('a container with a restart policy is permanent and stays, as devbox-ops docker-ephemeral keeps it', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  t.after(() => dk('rm', '-f', '-v', `${tag}-rp`));
+  const r = eng('ephemeral', '--', `docker run -d --name ${tag}-rp --restart unless-stopped alpine:latest sleep 300 >/dev/null`);
+  assert.equal(r.status, 0, out(r));
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-rp`).stdout.trim(), 'true');
+});
+
+test('eng clean --containers --apply keeps permanent containers and the volumes they use, and removes the rest', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  const repo = 'eng.repo=eph', names = ['plain', 'label', 'restart'].map(n => `${tag}-cl-${n}`), vols = ['used', 'loose', 'marked'].map(n => `${tag}-cl-${n}`);
+  t.after(() => { for (const n of names) dk('rm', '-f', n); for (const v of vols) dk('volume', 'rm', v); });
+  dk('volume', 'create', '--label', repo, vols[0]); dk('volume', 'create', '--label', repo, vols[1]); dk('volume', 'create', '--label', repo, '--label', 'slaytek.persist=true', vols[2]);
+  dk('run', '-d', '--name', names[0], '--label', repo, 'alpine:latest', 'sleep', '300');
+  dk('run', '-d', '--name', names[1], '--label', repo, '--label', 'slaytek.persist=true', 'alpine:latest', 'sleep', '300');
+  dk('run', '-d', '--name', names[2], '--label', repo, '--restart', 'unless-stopped', '-v', `${vols[0]}:/d`, 'alpine:latest', 'sleep', '300');
+  const r = eng('clean', '--containers', '--apply');
+  assert.equal(r.status, 0, out(r));
+  const exists = (kind, n) => dk(kind, 'inspect', n).status === 0;
+  assert.deepEqual(names.map(n => exists('container', n)), [false, true, true], 'only the plain container is removed');
+  assert.deepEqual(vols.map(v => exists('volume', v)), [true, false, true], 'the volume a permanent container uses and the marked volume stay');
+  assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${names[2]} \\(permanent: restart policy unless-stopped\\)`));
+});
