@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
-import { DISK_RULES, doctorConfig, evidenceKey, classifyEvidence, cacheEnv, scratchRoot, underTmp, HYGIENE_DEFAULTS } from '../lib/hygiene.mjs';
+import { DISK_RULES, lintText, doctorConfig, evidenceKey, classifyEvidence, cacheEnv, scratchRoot, underTmp, HYGIENE_DEFAULTS } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
@@ -52,10 +52,59 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
   };
   assert.deepEqual(Object.keys(cases).sort(), DISK_RULES.map(r => r.id).sort());
   for (const r of DISK_RULES) {
-    const re = new RegExp(r.pattern, r.flags);
-    for (const l of cases[r.id][0]) assert.ok(re.test(l), `${r.id} bites: ${l}`);
-    for (const l of cases[r.id][1]) assert.ok(!re.test(l), `${r.id} passes: ${l}`);
+    for (const l of cases[r.id][0]) assert.equal(lintText(r, l).length, 1, `${r.id} bites: ${l}`);
+    for (const l of cases[r.id][1]) assert.equal(lintText(r, l).length, 0, `${r.id} passes: ${l}`);
   }
+});
+
+// Motus PR470 (37d6e7a8, 1 Nov 2026): 24 findings. Each false positive below is the flagged code as written; each true
+// positive must still fire, as must the near misses a mask could swallow.
+test('disk rules: Motus PR470 false positives pass, its true positives and near misses still fire', () => {
+  const rule = id => DISK_RULES.find(r => r.id === id), lines = (id, t) => lintText(rule(id), t).map(h => h.line);
+  const quiet = {
+    'script-bare-tmpdir': [
+      'mkdir -p "$evidence"\nretained=$(mktemp -d "$evidence/run-XXXXXXXX")',
+      '      "--dev",\n      "/dev",\n      "--tmpfs",\n      "/tmp",\n      "--tmpfs",\n      "/home",',
+      'bwrap --tmpfs /tmp --tmpfs=/var/tmp -- sh',
+      '// /tmp is shared and cleaned, so state kept there can vanish mid-recovery or fill the disk.',
+      '# never write to /tmp here',
+      'echo "Epic IDs saved to /tmp/linear-epic-ids.env"',
+      '  for (const name of (await readdir("/tmp")).sort()) {',
+      'throw new Error(`refused /tmp: ${dir}`);',
+    ],
+    'container-no-rm': [
+      '      throw new Error(`docker run failed: ${started.stderr}`);',
+      '  const busy = (message) => Object.assign(new Error("docker run failed"), { stderr: message });',
+      '    ).toThrow("docker run failed");',
+      '# docker run -d postgres:17 leaves volumes behind',
+      "echo 'next: docker run -d postgres:17'",
+    ],
+  };
+  for (const [id, cases] of Object.entries(quiet)) for (const t of cases) assert.deepEqual(lines(id, t), [], `${id} passes: ${t}`);
+  const bite = {
+    'script-bare-tmpdir': [
+      'const work = await fs.mkdtemp(path.join(os.tmpdir(), "calendly-allowlist-"));',
+      '  const backupDirectory = await mkdtemp(join(tmpdir(), "motus-zoom-delete-"));',
+      'cat > /tmp/linear-epic-ids.env << ENVEOF',
+      '    tls.sslmode === "disable" ? null : await fs.mkdtemp(path.join(os.tmpdir(), "pg-migrate-ca-"));',
+      '  const caDir = fs.mkdtempSync(path.join(os.tmpdir(), "pg-schema-dump-ca-"));',
+      'const tempFile = join(tmpdir(), "email-preview.html");',
+      '  const scratch = mkdtempSync(path.join(tmpdir(), "ui-evidence-"));',
+      'TMP_DIR="$(mktemp -d)"',
+      'd=$(mktemp -d /tmp/run.XXXXXX)', 'd=$(mktemp -d "$TMPDIR/run.XXXXXX")', 'd=$(mktemp -t run.XXXXXX)',
+      'echo "$(mktemp -d)"', 'echo "ids" > /tmp/ids.env', 'echo "saved" | tee /tmp/log',
+      '"--bind",\n"/tmp",', 'docker run --tmpfs /run -v /tmp/cache:/data alpine',
+      '#dir = fs.mkdtempSync(path.join(os.tmpdir(), "x-"));', 'cp x /tmp/out # copy',
+      'const f = join("/tmp", "x"); readdir("/tmp")',
+      'throw new Error(`failed: ${fs.mkdtempSync("/tmp/x")}`);',
+    ],
+    'container-no-rm': [
+      'docker run -d postgres:17', 'execSync("docker run -d postgres:17");', 'throw new Error("x"); docker run -d postgres:17',
+      'echo "$(docker run -d postgres:17)"', 'echo starting && docker run -d postgres:17',
+    ],
+  };
+  for (const [id, cases] of Object.entries(bite)) for (const t of cases) assert.equal(lines(id, t).length, 1, `${id} bites: ${t}`);
+  assert.deepEqual(lines('script-bare-tmpdir', '"--tmpfs",\n"/tmp",\ncp a /tmp/b'), [3], 'line numbers survive a multi-line mask');
 });
 
 test('evidence is per PR and only merged or closed PRs are removable', () => {

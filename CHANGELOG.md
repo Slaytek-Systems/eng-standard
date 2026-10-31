@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.12.1 (1 Nov 2026)
+
+**`eng lint` disk rules skip text that never runs and in-sandbox `/tmp`.** Motus PR470 (37d6e7a8) failed `eng lint` with 24 findings. Ten were false positives the flagged line itself disproves. Nine were real, and they still fire.
+
+- A rule can carry a `mask`: regexes for spans to blank before the line pattern runs. Newlines are kept, so line numbers hold, and another match on the same line still fires. `script-bare-tmpdir` and `container-no-rm` mask a whole-line comment (`//`, or `#` followed by a space, so a JS `#field` is still code), a literal message passed to `Error(...)` or `toThrow(...)`, and an `echo` of a literal string with no redirect, pipe or `$(...)`.
+- `script-bare-tmpdir` also masks a `--tmpfs /tmp` target (bwrap, docker or podman, the JS array form across lines too), `mktemp` given a template with a directory that is not a temp root (`mktemp -d "$evidence/run-XXXXXXXX"`; bare `mktemp -d`, `-t`, `/tmp/...` and `$TMPDIR/...` still fire), and `readdir("/tmp")`.
+- Five Motus findings remain false positives the line cannot disprove: shell inside a container's tmpfs (`scripts/postgres-fixture*.mjs`) and a read-only `join("/tmp", name)`. They still fire. Exempting them needs a reviewed exception mechanism, which is a policy decision.
+
 ## 0.12.0 (31 Oct 2026)
 
 **Model choices move to config** (Matt, 30 Oct 2026). Model routing has one source of truth, the Core note 'Model routing: who uses which model' (nd77rx5dhdt899w2np5kjknqdd8g8y2d). The standard points to it and copies none of it.

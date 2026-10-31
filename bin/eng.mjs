@@ -10,7 +10,7 @@ import YAML from 'yaml';
 import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, lintText, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
 import { audit, corePayloads, sydneyMonth, SKIP_DIRS, lowestDeps, nodePins, convexNodeFindings, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
@@ -310,11 +310,11 @@ function builtinRules(cfg) {
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
-  const re = new RegExp(rule.pattern, rule.flags ?? ''), pre = [].concat(rule.paths).map(glob2re), ex = [].concat(rule.exclude ?? []).map(glob2re), hits = [];
+  const pre = [].concat(rule.paths).map(glob2re), ex = [].concat(rule.exclude ?? []).map(glob2re), hits = [];
   for (const f of files) {
     const name = f.replace(/\.fixture$/, '');
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
-    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => { if (re.test(line)) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) }); });
+    for (const h of lintText(rule, fs.readFileSync(path.join(base, f), 'utf8'))) hits.push({ file: f, ...h, rule: rule.id, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
   }
   return hits;
 }
