@@ -22,7 +22,11 @@ test('minVersion reads the lowest version a spec allows', () => {
   assert.equal(minVersion('workspace:*'), null);
   assert.equal(minVersion('github:a/b'), null);
   assert.deepEqual(minVersion('^22 || ^20'), [20, 0, 0], 'an || range allows its lowest alternative');
-  assert.deepEqual(minVersion('<1 || ^1.48.0'), [1, 48, 0]);
+  assert.equal(minVersion('^1.49.0 || <1.49.0'), null, 'an alternative with no lower bound leaves no proven minimum');
+  assert.equal(minVersion('^1.49.0 || *'), null);
+  assert.deepEqual(minVersion('>= 1.6 <1.7'), [1, 6, 0]);
+  assert.deepEqual(minVersion('<=1.7.0 >=1.6.0'), [1, 6, 0]);
+  assert.deepEqual(minVersion('20 - 24'), [20, 0, 0]);
 });
 
 test('upper-bound-only specs have no minimum and are not drift', () => {
@@ -111,11 +115,13 @@ test('nodePins reads engines, .nvmrc, CI node-version (lists and matrix too) and
   assert.deepEqual(nodePins(Object.keys(tree), f => tree[f]).map(p => `${p.file} ${p.kind} ${p.spec}`), [
     'package.json engines >=20', '.nvmrc version-file lts/iron', '.github/workflows/ci.yml ci 20', '.github/workflows/ci.yml ci 22',
     '.github/workflows/ci.yml ci 21', '.github/workflows/ci.yml ci 24', '.github/workflows/ci.yml ci 19', 'convex.json convex 22']);
+  assert.deepEqual(nodePins(['.github/workflows/x.yml'], () => 'a: &a [*a, {node-version: 20}]\n'), [], 'a self-referencing alias yields nothing, not a crash');
 });
 
 test('a Convex repo declaring Node 20 anywhere is below the floor; Node 22 and non-Convex repos pass', () => {
   const pin = (kind, spec, file = 'f') => ({ file, kind, spec });
-  const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20')];
+  const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
+    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25')];
   assert.equal(convexNodeFindings(STD, { convex: '^1.49.0' }, low).length, low.length);
   assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'), pin('ci', '${{ matrix.node }}')]), []);
   assert.deepEqual(convexNodeFindings(STD, { svelte: '^5' }, low), []);
@@ -192,8 +198,19 @@ test('the handle rule is off below convex 1.49, where v.function() does not exis
     const r = eng('lint');
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.doesNotMatch(eng('rules', 'prove').stdout, /convex-function-handle-validator/);
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0 || ^1.48.0' } }));
-    assert.equal(eng('lint').status, 0, 'a range that still allows 1.48 keeps the rule off');
+    for (const convex of ['^1.49.0 || ^1.48.0', '^1.49.0 || <1.49.0', '^1.49.0 || *']) {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex } }));
+      assert.equal(eng('lint').status, 0, `${convex} does not prove 1.49, so the rule stays off`);
+    }
+    fs.mkdirSync(path.join(dir, 'apps/web'), { recursive: true });
+    for (const [root, web] of [['^1.49.0', '*'], ['*', '^1.49.0']]) {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: root } }));
+      fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: web } }));
+      assert.equal(eng('lint').status, 0, `monorepo convex ${root} + ${web}: one package may be below 1.49, so the rule stays off`);
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0' } }));
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: '~1.49.1' } }));
+    assert.equal(eng('lint').status, 1, 'every package on 1.49+ turns the rule on');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -9,7 +9,8 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - The Modern Stack backend floor is now `convex` 1.49.0, and the backend layer sets `node: 22`.
 - `eng stack-check` fails a repo that declares `convex` and pins Node below 22 in `engines.node`, `.nvmrc`/`.node-version` (nvm `lts/<codename>` too), a CI `node-version` or `convex.json` `node.nodeVersion`. CI files are parsed as YAML: comments do not count, while lists and `${{ matrix.<key> }}` do. Each line names its fix. It warns when such a repo pins no Node at all.
 - New `eng lint` rule `convex-function-handle-validator`, on only when every declared convex range is 1.49 or newer. It fails a `fnHandle`/`functionHandle`-named field validated with `v.string()` and an `as FunctionHandle<...>` cast under `convex/` (not `_generated/`). The starter config's stack notes make `v.function()` the default.
-- A version range with `||` counts its lowest alternative (`^22 || ^20` allows 20), in `eng stack-audit` too.
+- Version ranges are read per comparator set. A range with `||` counts its lowest alternative (`^22 || ^20` allows 20). One alternative with no lower bound (`*`, `<2`) leaves no proven minimum, which is the same as `*` alone. In `eng stack-audit` too. A Node pin that allows anything below 22 (`<22`, `*`, `^22 || <22`) fails `eng stack-check`.
+- In a monorepo the handle rule is on only when every `package.json` that declares convex proves 1.49.
 - `eng stack-audit` reads Node pins with the same reader. `.nvmrc`/`.node-version` count at any depth, and every CI `node-version` value counts.
 - The eng-route skill names the formal skills by their `formal.stateful` and `formal.other` settings, not only the defaults.
 

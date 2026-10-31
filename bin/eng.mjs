@@ -241,7 +241,7 @@ function stackCheck() {
   const fail = [];
   if (bad.length) fail.push(`off-stack additions:\n  ${bad.join('\n  ')}\n  Fix: remove it, or add stack.exceptions: [{kind, name, reason}] to eng.config.yml (Matt approves).`);
   // Convex 1.49 dropped Node 20: a Convex repo may not declare a Node below the standard's backend node floor.
-  const std = YAML.parse(fs.readFileSync(path.join(PKG, 'standard/modern-stack.yml'), 'utf8')), deps = treeDeps(files);
+  const std = YAML.parse(fs.readFileSync(path.join(PKG, 'standard/modern-stack.yml'), 'utf8')), deps = lowestDeps(treeManifests(files));
   const pins = nodePins(files, f => readOr(f, '')), low = convexNodeFindings(std, deps, pins), floor = std.layers.backend.node;
   if (low.length) fail.push(`Convex repo declares Node below ${floor} (Convex 1.49 dropped Node 20):\n  ${low.map(p => `${p.where} "${p.spec}": ${p.fix}`).join('\n  ')}`);
   if (fail.length) die(`stack-check: ${fail.join('\nstack-check: ')}`);
@@ -249,8 +249,8 @@ function stackCheck() {
   mergeQueueWarn(cfg);
   console.log(`eng stack-check: PASS (languages: ${[...langs].join(', ')})`);
 }
-// Working-tree deps, read the way stack-audit reads them at a ref.
-const treeDeps = files => lowestDeps(files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return JSON.parse(readOr(f, '{}')); } catch { return {}; } }));
+// Working-tree package.json files, read the way stack-audit reads them at a ref.
+const treeManifests = files => files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return JSON.parse(readOr(f, '{}')); } catch { return {}; } });
 
 // ---------- stack-audit: read-only. Declared deps, packageManager and CI pins at a git ref vs standard/modern-stack.yml floors.
 function repoFacts(name, dir, ref) {
@@ -300,7 +300,7 @@ function builtinRules(cfg) {
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
   let files = []; try { files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean); } catch {} // rules prove runs outside git too
-  if (usesHandleRule(treeDeps(files)))
+  if (usesHandleRule(treeManifests(files)))
     r.push({ ...CONVEX_HANDLE_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${CONVEX_HANDLE_RULE.id}` } });
   const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
   if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || cacheMode !== 'off')
