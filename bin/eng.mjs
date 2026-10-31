@@ -7,7 +7,7 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
+import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
@@ -19,6 +19,7 @@ import { validateAuto } from '../lib/merge-queue.mjs';
 import { validateIsolation } from '../lib/isolation.mjs';
 import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
+import { formalErrors } from '../lib/formal.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 
@@ -63,10 +64,12 @@ function configErrors(c) {
   errs.push(...trustErrors(c.trust));
   errs.push(...diskRuleErrors(c.hygiene));
   errs.push(...runRuleErrors(c));
+  errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
   return errs;
 }
 
 const cfgHash = () => sha256(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
+const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 
 function render(cfg) {
@@ -86,14 +89,14 @@ function claudeLinks(cfg) {
 
 function sync() {
   const cfg = loadConfig();
-  const files = render(cfg);
+  const files = render(cfg), exec = executables(cfg);
   let changed = 0;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
-    if (readOr(p) === content) continue;
+    if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, content);
-    if (p.startsWith('.githooks/')) fs.chmodSync(abs, 0o755);
+    if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
   for (const [l, t] of claudeLinks(cfg)) {
@@ -125,7 +128,7 @@ function init() {
   sync();
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
-  console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText()}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
+  console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
   console.log(`Branch ruleset advice (apply by hand; eng never edits rulesets):\n${rulesetAdvice(cfg)}\n`);
   mergeQueueWarn(cfg);
   if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng launch-check.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
@@ -141,6 +144,7 @@ function driftCheck() {
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
+  for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   for (const [l, t] of claudeLinks(cfg)) { let cur = null; try { cur = fs.readlinkSync(path.join(ROOT, l)); } catch {} if (cur !== t) bad.push(`${l}: symlink missing or wrong`); }
   const lock = JSON.parse(readOr('.eng/lock.json', '{}'));
   if (lock.config_hash !== cfgHash()) bad.push('.eng/lock.json: config changed since last sync');
