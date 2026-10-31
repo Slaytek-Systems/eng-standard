@@ -11,7 +11,7 @@ import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAd
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
-import { audit, corePayloads, minVersion, cmp, sydneyMonth } from '../lib/stack-audit.mjs';
+import { audit, corePayloads, sydneyMonth, SKIP_DIRS, lowestDeps, nodePins, convexNodeFindings, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
 import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
@@ -238,30 +238,32 @@ function stackCheck() {
   }
   const pm = String(s.defaults.package_manager.use).trim().split(/\s+/)[0].toLowerCase(); // first word names the PM ("bun via vp install ...")
   for (const f of files) { const k = LOCKS[path.basename(f)]; if (k && k !== pm && !exc('package_manager', k)) bad.push(`lockfile ${f} (${k}); package manager is ${pm}`); }
-  if (bad.length) die(`stack-check: off-stack additions:\n  ${bad.join('\n  ')}\n  Fix: remove it, or add stack.exceptions: [{kind, name, reason}] to eng.config.yml (Matt approves).`);
+  const fail = [];
+  if (bad.length) fail.push(`off-stack additions:\n  ${bad.join('\n  ')}\n  Fix: remove it, or add stack.exceptions: [{kind, name, reason}] to eng.config.yml (Matt approves).`);
+  // Convex 1.49 dropped Node 20: a Convex repo may not declare a Node below the standard's backend node floor.
+  const std = YAML.parse(fs.readFileSync(path.join(PKG, 'standard/modern-stack.yml'), 'utf8')), deps = lowestDeps(treeManifests(files));
+  const pins = nodePins(files, f => readOr(f, '')), low = convexNodeFindings(std, deps, pins), floor = std.layers.backend.node;
+  if (low.length) fail.push(`Convex repo declares Node below ${floor} (Convex 1.49 dropped Node 20):\n  ${low.map(p => `${p.where} "${p.spec}": ${p.fix}`).join('\n  ')}`);
+  if (fail.length) die(`stack-check: ${fail.join('\nstack-check: ')}`);
+  if (deps.convex !== undefined && !pins.length) console.log(`  WARN Convex repo declares no Node version: add "engines": { "node": ">=${floor}" } to package.json`);
   mergeQueueWarn(cfg);
   console.log(`eng stack-check: PASS (languages: ${[...langs].join(', ')})`);
 }
+// Working-tree package.json files, read the way stack-audit reads them at a ref.
+const treeManifests = files => files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return JSON.parse(readOr(f, '{}')); } catch { return {}; } });
 
 // ---------- stack-audit: read-only. Declared deps, packageManager and CI pins at a git ref vs standard/modern-stack.yml floors.
 function repoFacts(name, dir, ref) {
   const git = (...g) => { const r = spawnSync('git', ['-C', dir, ...g], { encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
   ref ||= ['origin/main', 'origin/master', 'main', 'HEAD'].find(r => git('rev-parse', '--verify', '-q', `${r}^{commit}`));
   if (!ref || !git('rev-parse', '--verify', '-q', `${ref}^{commit}`)) die(`stack-audit: ${dir}: no readable ref${ref ? ` ${ref}` : ''}`);
-  const files = git('ls-tree', '-r', '--name-only', ref).split('\n').filter(Boolean);
-  const deps = {}; let packageManager = null;
-  for (const f of files.filter(f => path.basename(f) === 'package.json' && !/(^|\/)(node_modules|fixtures|examples)\//.test(f))) {
-    let pj; try { pj = JSON.parse(git('show', `${ref}:${f}`)); } catch { continue; }
-    if (f === 'package.json') packageManager = pj.packageManager || null;
-    for (const [n, spec] of Object.entries({ ...pj.dependencies, ...pj.devDependencies })) { // monorepo: the lowest declared minimum is the drift
-      const v = minVersion(spec), cur = minVersion(deps[n]);
-      if (!(n in deps) || (v && (!cur || cmp(v, cur) < 0))) deps[n] = spec;
-    }
-  }
-  const ci = files.filter(f => /^(\.github\/workflows|\.buildkite)\/.*\.ya?ml$/.test(f)).map(f => git('show', `${ref}:${f}`)).join('\n');
+  const files = git('ls-tree', '-r', '--name-only', ref).split('\n').filter(Boolean), show = f => git('show', `${ref}:${f}`) ?? '';
+  const manifests = files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return [f, JSON.parse(show(f))]; } catch { return [f, {}]; } });
+  const packageManager = manifests.find(([f]) => f === 'package.json')?.[1].packageManager || null;
+  const ci = files.filter(f => /^(\.github\/workflows|\.buildkite)\/.*\.ya?ml$/.test(f)).map(show).join('\n');
   const pins = re => [...new Set([...ci.matchAll(re)].map(m => m[1]))].sort();
-  const nodeFile = ['.node-version', '.nvmrc'].filter(f => files.includes(f)).map(f => git('show', `${ref}:${f}`).trim());
-  return { name, ref, deps, packageManager, ciBun: pins(/bun-version:\s*['"]?v?([\w.]+)/g), ciNode: [...new Set([...pins(/node-version:\s*['"]?v?([\w.]+)/g), ...nodeFile])] };
+  const ciNode = [...new Set(nodePins(files, show).filter(p => p.kind === 'ci' || p.kind === 'version-file').map(p => p.spec))];
+  return { name, ref, deps: lowestDeps(manifests.map(([, pj]) => pj)), packageManager, ciBun: pins(/bun-version:\s*['"]?v?([\w.]+)/g), ciNode };
 }
 function stackAudit() {
   const opt = k => { const i = a.indexOf(k); return i < 0 ? undefined : a.splice(i, 2)[1]; };
@@ -297,6 +299,9 @@ function builtinRules(cfg) {
   if (cfg.flags?.file) r.push({ id: 'flags-default-off', paths: cfg.flags.file, pattern: ':\\s*true\\b', flags: '',
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
+  let files = []; try { files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean); } catch {} // rules prove runs outside git too
+  if (usesHandleRule(treeManifests(files)))
+    r.push({ ...CONVEX_HANDLE_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${CONVEX_HANDLE_RULE.id}` } });
   const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
   if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || cacheMode !== 'off')
     .map(d => ({ ...d, ...(d.id === 'cargo-target-per-run' && cacheMode === 'warn' ? { warn: true } : {}), proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));

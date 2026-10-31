@@ -28,8 +28,9 @@ layers:
     alternative: "Astro 7 with Svelte islands for static or content sites"
     alternative_floors: { astro: 7.0.0 }
   backend:
-    tool: "Convex on Convex Cloud; @convex-dev/* components on their current 0.x lines"
-    floors: { convex: 1.46.0 }
+    tool: "Convex on Convex Cloud; @convex-dev/* components on their current 0.x lines; v.function() validates function handles"
+    floors: { convex: 1.49.0 }
+    node: 22   # Convex 1.49 dropped Node 20. eng stack-check fails a Convex repo that declares a lower Node (engines, .nvmrc, CI, convex.json).
     alternative: "self-hosted Convex on Railway when residency or the client requires it; PlanetScale when SQL earns its keep"
   auth:
     tool: "Better Auth ~1.6 + @convex-dev/better-auth 0.12 (held below Better Auth 1.7 by the adapter's peer range)"

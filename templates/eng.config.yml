@@ -41,6 +41,8 @@ stack:
     - "Bun vs Vite+: vp test/check/build run on Node (vp manages Node); bun is the package manager under vp (viteplus.dev/guide, llms-full.txt). Bun runtime is for scripts and the Convex CLI, run via `vp run` or `bun`."
     - "Confect needs Node >= 24 for its CLI, TS strict:true, and only a subset of Effect Schema (confect.dev quickstart)."
     - "Convex functions run in Convex's runtime regardless of local runtime choice; the toolchain only affects CLI, codegen, tests and the app shell."
+    - "Convex 1.49 needs Node 22 or newer. eng stack-check fails a Convex repo whose engines.node, .nvmrc/.node-version, CI node-version or convex.json node.nodeVersion is lower."
+    - "Validate a function handle with v.function({ fnType, args, returns }) (Convex 1.49+), not v.string() plus an `as FunctionHandle<...>` cast. Its type is FunctionHandle_future. eng lint rule convex-function-handle-validator enforces it once the repo is on convex 1.49."
 
 agents:
   harnesses: [claude-code, codex, cursor]   # AGENTS.md is read by Codex and Cursor; CLAUDE.md imports it.

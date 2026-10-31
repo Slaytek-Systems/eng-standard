@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
-import { minVersion, audit, corePayloads, sydneyMonth } from '../lib/stack-audit.mjs';
+import { minVersion, audit, corePayloads, sydneyMonth, nodePins, convexNodeFindings } from '../lib/stack-audit.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
@@ -16,11 +16,25 @@ const facts = (name, deps, packageManager = 'bun@1.4.4', ciBun = [], ciNode = []
 const brief = fs => fs.map(f => `${f.status} ${f.item} ${f.have} -> ${f.want}`);
 
 test('minVersion reads the lowest version a spec allows', () => {
-  assert.deepEqual(minVersion('^1.46.0'), [1, 46, 0]);
-  assert.deepEqual(minVersion('~6.0'), [6, 0, 0]);
-  assert.deepEqual(minVersion('npm:typescript@7.0.2'), [7, 0, 2]);
+  assert.equal(minVersion('^1.46.0'), '1.46.0');
+  assert.equal(minVersion('~6.0'), '6.0.0');
+  assert.equal(minVersion('npm:typescript@7.0.2'), '7.0.2');
   assert.equal(minVersion('workspace:*'), null);
   assert.equal(minVersion('github:a/b'), null);
+  assert.equal(minVersion('^22 || ^20'), '20.0.0', 'an || range allows its lowest alternative');
+  assert.equal(minVersion('^1.49.0 || <1.49.0'), null, 'an alternative with no lower bound leaves no proven minimum');
+  assert.equal(minVersion('^1.49.0 || *'), null);
+  assert.equal(minVersion('>= 1.6 <1.7'), '1.6.0');
+  assert.equal(minVersion('<=1.7.0 >=1.6.0'), '1.6.0');
+  assert.equal(minVersion('20 - 24'), '20.0.0');
+  assert.equal(minVersion('>1.48'), '1.49.0', 'an exclusive bound on a partial version means the next one');
+  assert.equal(minVersion('1.49.0-alpha.0'), '1.49.0-alpha.0');
+  assert.equal(minVersion('>=*'), null);
+});
+
+test('a prerelease of a floor is below the floor', () => {
+  assert.deepEqual(brief(audit(STD, facts('x', { convex: '1.49.0-alpha.0' }))), ['drift convex 1.49.0-alpha.0 -> >= 1.49.0']);
+  assert.deepEqual(audit(STD, facts('x', { convex: '>1.48' })), []);
 });
 
 test('upper-bound-only specs have no minimum and are not drift', () => {
@@ -35,13 +49,13 @@ test('the --core month is the Sydney calendar month, not the UTC one', () => {
 });
 
 test('a repo on the standard has no findings', () => {
-  assert.deepEqual(audit(STD, facts('x', { convex: '^1.46.2', '@sveltejs/kit': '2.70.1', typescript: '~6.0.3' }, 'bun@1.4.4', ['1.4.4'], ['24'])), []);
+  assert.deepEqual(audit(STD, facts('x', { convex: '^1.49.0', '@sveltejs/kit': '2.70.1', typescript: '~6.0.3' }, 'bun@1.4.4', ['1.4.4'], ['24'])), []);
 });
 
 test('below-floor deps, replaced tools, package manager and CI pins are drift', () => {
   const f = audit(STD, facts('x', { convex: '^1.36.0', eslint: '^9', '@workos-inc/node': '^8.0.0', 'left-pad': '1.0.0' }, 'bun@1.2.19', ['1.3.14'], ['22', '24']));
   assert.deepEqual(brief(f), [
-    'drift convex ^1.36.0 -> >= 1.46.0',
+    'drift convex ^1.36.0 -> >= 1.49.0',
     'drift @workos-inc/node ^8.0.0 -> >= 11.0.0',
     'drift eslint ^9 -> removed (replaced by the lint_format standard)',
     'drift packageManager bun@1.2.19 -> bun@1.4.4',
@@ -94,4 +108,131 @@ test('bun below 1.4.4 fails the standard; 1.4.4 passes (GHSA-cf8x-9m69-3gg3, GHS
     'drift ci bun 1.4.3 -> >= 1.4.4',
   ]);
   assert.deepEqual(audit(STD, facts('x', {}, 'bun@1.4.4', ['1.4.4'])), []);
+});
+
+test('nodePins reads engines, .nvmrc, CI node-version (lists and matrix too) and convex.json, outside fixtures and node_modules', () => {
+  const tree = {
+    'package.json': '{"engines":{"node":">=20"}}', 'apps/web/package.json': '{}', '.nvmrc': 'lts/iron\n',
+    '.github/workflows/ci.yml': [
+      'jobs:', '  a:', '    steps:', '      # node-version: 18', '      - with:', '          node-version: [20, "22"]', '          node-version-file: .node-version',
+      '  b:', '    strategy:', '      matrix:', '        node:', '          - 21', '          - 24', '    steps:', '      - with: { node-version: "${{ matrix.node }}" }',
+      '  c:', '    steps:', '      - with:', '          node-version:', '            - 19',
+    ].join('\n'),
+    'convex.json': '{"node":{"nodeVersion":"22"}}', 'node_modules/x/package.json': '{"engines":{"node":">=14"}}', 'fixtures/a/.nvmrc': '18',
+  };
+  assert.deepEqual(nodePins(Object.keys(tree), f => tree[f]).map(p => `${p.file} ${p.kind} ${p.spec}`), [
+    'package.json engines >=20', '.nvmrc version-file lts/iron', '.github/workflows/ci.yml ci 20', '.github/workflows/ci.yml ci 22',
+    '.github/workflows/ci.yml ci 21', '.github/workflows/ci.yml ci 24', '.github/workflows/ci.yml ci 19', 'convex.json convex 22']);
+  assert.deepEqual(nodePins(['.github/workflows/x.yml'], () => 'a: &a [*a, {node-version: 20}]\n'), [], 'a self-referencing alias yields nothing, not a crash');
+  assert.deepEqual(nodePins(['.nvmrc', 'web/.node-version'], f => (f === '.nvmrc' ? '# pinned for Convex\n20 # migrate to 24\n' : '\n22\n')).map(p => p.spec), ['20', '22'],
+    'version files ignore comments and blank lines, as nvm does');
+});
+
+test('a Convex repo declaring Node 20 anywhere is below the floor; Node 22 and non-Convex repos pass', () => {
+  const pin = (kind, spec, file = 'f') => ({ file, kind, spec });
+  const low = [pin('engines', '>=20', 'package.json'), pin('version-file', 'lts/iron', '.nvmrc'), pin('version-file', 'lts/gallium'), pin('ci', 'lts/argon'), pin('ci', '20'), pin('convex', '20', 'convex.json'), pin('engines', '^20 || ^22'), pin('engines', '^22 || ^20'),
+    pin('engines', '^22 || <22'), pin('engines', '<22'), pin('engines', '*'), pin('engines', '>= 18 <25'), pin('engines', '^22 ||'), pin('engines', '|| ^22'),
+    pin('engines', '>=*'), pin('engines', 'x.x'), pin('engines', '^22 || >=*'), pin('engines', ''), pin('version-file', 'lts/fermium'), pin('ci', '20.1'),
+    pin('version-file', 'v20.0.0-rc.3'), pin('version-file', 'v21.0.0-rc.1'), pin('version-file', 'v22.0.0-rc.2')];
+  assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, low).map(p => p.spec), low.map(p => p.spec));
+  assert.deepEqual(convexNodeFindings(STD, { convex: '^1.49.0' }, [pin('engines', '>=22'), pin('version-file', 'lts/jod'), pin('ci', '24'), pin('convex', '22'),
+    pin('ci', '${{ matrix.node }}'), pin('ci', '${{ fromJSON(env.NODE_VERSIONS)[0] }}'), pin('engines', '>21'), pin('engines', '>21.x'), pin('version-file', 'lts/*'), pin('version-file', 'node')]), []);
+  assert.deepEqual(convexNodeFindings(STD, { svelte: '^5' }, low), []);
+});
+
+test('the Modern Stack backend floor is convex 1.49.0 and Node 22', () => {
+  assert.deepEqual(brief(audit(STD, facts('x', { convex: '^1.48.0' }))), ['drift convex ^1.48.0 -> >= 1.49.0']);
+  assert.equal(STD.layers.backend.node, 22);
+});
+
+// The starter config, minus its example constraint rule (its proof fixture lives in a real repo's .eng/rule-proofs/).
+const TPL = YAML.parse(fs.readFileSync(new URL('../templates/eng.config.yml', import.meta.url), 'utf8'));
+TPL.constraints.rules = [];
+const writeConfig = dir => fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(TPL));
+function convexRepo(files) {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-convex-'));
+  execSync('git init -q -b main', { cwd: dir });
+  writeConfig(dir);
+  for (const [f, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), text); }
+  return { dir, eng: (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8' }) };
+}
+
+test('eng stack-check fails a Convex repo on Node 20 and names each fix; Node 22 passes', () => {
+  const { dir, eng } = convexRepo({
+    'package.json': JSON.stringify({ dependencies: { convex: '^1.49.0' }, engines: { node: '>=20' } }), '.nvmrc': '20\n',
+    '.github/workflows/ci.yml': 'steps:\n  - uses: actions/setup-node@v4\n    with:\n      node-version: 20\n', 'convex.json': '{"node":{"nodeVersion":"20"}}',
+  });
+  try {
+    let r = eng('stack-check');
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /Convex repo declares Node below 22/);
+    assert.match(r.stderr, /package\.json engines\.node ">=20": set "engines": \{ "node": ">=22" \}/);
+    assert.match(r.stderr, /\.nvmrc "20": write 24/);
+    assert.match(r.stderr, /\.github\/workflows\/ci\.yml node-version "20": set node-version: 24/);
+    assert.match(r.stderr, /convex\.json node\.nodeVersion "20": set "node": \{ "nodeVersion": "22" \}/);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0' }, engines: { node: '>=22' } }));
+    fs.writeFileSync(path.join(dir, '.nvmrc'), '22\n');
+    fs.writeFileSync(path.join(dir, '.github/workflows/ci.yml'), 'steps:\n  - uses: actions/setup-node@v4\n    with:\n      node-version: 22\n');
+    fs.writeFileSync(path.join(dir, 'convex.json'), '{"node":{"nodeVersion":"22"}}');
+    r = eng('stack-check');
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    for (const f of ['.nvmrc', '.github/workflows/ci.yml', 'convex.json']) fs.rmSync(path.join(dir, f));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0' } }));
+    r = eng('stack-check');
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /WARN Convex repo declares no Node version/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+const OLD_HANDLE = 'export const enqueue = mutation({\n  args: { fnHandle: v.string() },\n  handler: async (ctx, args) => {\n    const h = args.fnHandle as FunctionHandle<"mutation">;\n  },\n});\n';
+const NEW_HANDLE = 'export const enqueue = mutation({\n  args: { onComplete: v.function({ fnType: "mutation", args: { jobId: v.string() }, returns: v.null() }) },\n  handler: async (ctx, args) => { await ctx.scheduler.runAfter(0, args.onComplete, { jobId: "j1" }); },\n});\n';
+
+test('eng lint flags a function handle validated as v.string() in a repo on convex 1.49; v.function() passes', () => {
+  const { dir, eng } = convexRepo({ 'package.json': JSON.stringify({ dependencies: { convex: '^1.49.0' } }), 'convex/jobs.ts': OLD_HANDLE });
+  try {
+    let r = eng('lint');
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /convex\/jobs\.ts:2: \[convex-function-handle-validator\] .*v\.function/);
+    assert.match(r.stderr, /convex\/jobs\.ts:4: \[convex-function-handle-validator\]/);
+    const p = eng('rules', 'prove');
+    assert.equal(p.status, 0, p.stdout + p.stderr);
+    assert.match(p.stdout, /convex-function-handle-validator: bites/);
+    fs.writeFileSync(path.join(dir, 'convex/jobs.ts'), NEW_HANDLE);
+    fs.writeFileSync(path.join(dir, 'convex/users.ts'), 'export const users = defineTable({ twitterHandle: v.string(), handler: v.string(), callbackHandle: v.optional(v.string()) });\n');
+    fs.mkdirSync(path.join(dir, 'convex/_generated')); fs.writeFileSync(path.join(dir, 'convex/_generated/api.d.ts'), 'export type X = string as FunctionHandle<"query">;\n');
+    r = eng('lint');
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the handle rule is off below convex 1.49, where v.function() does not exist', () => {
+  const { dir, eng } = convexRepo({ 'package.json': JSON.stringify({ dependencies: { convex: '^1.46.0' } }), 'convex/jobs.ts': OLD_HANDLE });
+  try {
+    const r = eng('lint');
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.doesNotMatch(eng('rules', 'prove').stdout, /convex-function-handle-validator/);
+    for (const convex of ['^1.49.0 || ^1.48.0', '^1.49.0 || <1.49.0', '^1.49.0 || *', '1.49.0-alpha.0']) {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex } }));
+      assert.equal(eng('lint').status, 0, `${convex} does not prove 1.49, so the rule stays off`);
+    }
+    fs.mkdirSync(path.join(dir, 'apps/web'), { recursive: true });
+    for (const [root, web] of [['^1.49.0', '*'], ['*', '^1.49.0']]) {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: root } }));
+      fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: web } }));
+      assert.equal(eng('lint').status, 0, `monorepo convex ${root} + ${web}: one package may be below 1.49, so the rule stays off`);
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { convex: '^1.49.0' } }));
+    fs.writeFileSync(path.join(dir, 'apps/web/package.json'), JSON.stringify({ dependencies: { convex: '>1.48' } }));
+    assert.equal(eng('lint').status, 1, 'every package on 1.49+ turns the rule on');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('eng rules prove still runs outside a git repo', () => {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-nogit-'));
+  try {
+    writeConfig(dir);
+    const r = spawnSync(process.execPath, [ENG, 'rules', 'prove'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /eng rules prove: PASS/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
