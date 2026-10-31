@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
-      - run: node bin/eng.mjs leave-nothing -- npm test   # disk rule tests_leave_nothing
+      - run: node bin/eng.mjs leave-nothing -- node bin/eng.mjs ephemeral check   # npm test once: tests_leave_nothing and ephemeral_runs
       - run: node bin/eng.mjs evidence check              # no_cache_in_evidence, evidence_budget
       - run: node bin/eng.mjs downloads check             # pinned_downloads
       - run: node bin/eng.mjs --help

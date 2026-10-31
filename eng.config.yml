@@ -57,9 +57,9 @@ ship:
     # verifier_logins: [<login>, <login>]   # once verifiers have their own GitHub identities: only these logins'
     #                               verdict comments count, one identity per login (docs/self-merge.md)
 
-hygiene:                          # Four disk rules (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs each check (.github/workflows/ci.yml).
+hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs each check (.github/workflows/ci.yml).
   disk_rules:
-    tests_leave_nothing:          # CI: eng leave-nothing -- npm test (the suite leaves its private TMPDIR empty)
+    tests_leave_nothing:          # CI: eng leave-nothing -- eng ephemeral check (the suite leaves its private TMPDIR empty)
       mode: fail
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     no_cache_in_evidence:         # CI: eng evidence check (this repo keeps no run evidence; the check passes on none)
@@ -75,6 +75,13 @@ hygiene:                          # Four disk rules (Matt, 30 Oct 2026). Modes: 
       mode: fail
       max_mb: 100
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+  run_rules:
+    ephemeral_runs:               # CI: eng ephemeral check (npm test runs, then nothing it made may be left)
+      mode: fail
+      runs: [test]
+      persist_label: slaytek.persist=true
+      persist_env: SLAYTEK_PERSIST=true
+      source: core:nd78q9vjkp392tp223ng7g6ydx8h9vcn
 
 gates:
   skipped_is_failed: true
