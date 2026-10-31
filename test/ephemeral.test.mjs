@@ -623,3 +623,17 @@ test('isolation enforced: another docker daemon\'s socket (the rootful one) is h
   const r = eng('ephemeral', '--', `docker -H unix://${rootful} version >/dev/null`);
   assert.notEqual(r.status, 0, out(r));
 });
+
+test('isolation enforced: ~/.convex growing past the snapshot limit during the run fails it, not a pass', async t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-big'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
+  enforce(t);
+  const r = await new Promise(resolve => {
+    const p = spawn(process.execPath, [ENG, 'ephemeral', '--', 'sleep 2'], { cwd: dir, env: { ...env, HOME: home } });
+    let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d);
+    setTimeout(() => { for (let i = 0; i <= 20000; i++) fs.writeFileSync(path.join(home, '.convex', `f${i}`), ''); }, 1000);
+    p.on('close', status => resolve({ status, out: o }));
+  });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /LEFT home .*\.convex \(now more than 20000 entries\)/);
+});

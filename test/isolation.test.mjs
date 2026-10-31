@@ -443,10 +443,14 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   const toml = path.join(alpha, '.eng/project.toml'), was = fs.readFileSync(toml, 'utf8');
   fs.writeFileSync(toml, was.replace('env = { LOG_LEVEL = "debug" }\n', 'env = { LOG_LEVEL = "debug" }\nconnect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }\n'));
   fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'CONVEX_SELF_HOSTED_URL=http://127.0.0.1:59999\n', { mode: 0o600 });
+  const warn = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
+  fs.writeFileSync(path.join(alpha, 'eng.config.yml'), 'isolation:\n  mode: fail\n');
   r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
+  fs.rmSync(path.join(alpha, 'eng.config.yml'));
   fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env')); fs.writeFileSync(toml, was);
+  assert.equal(warn.status, 0, `warn mode is unchanged: ${out(warn)}`);
   assert.equal(r.status, 1, out(r));
-  assert.match(out(r), /connect: secrets may not set CONVEX_SELF_HOSTED_URL/, 'a secrets file cannot move the pinned Convex URL');
+  assert.match(out(r), /connect: secrets may not set CONVEX_SELF_HOSTED_URL/, 'with isolation enforced, a secrets file cannot move the pinned Convex URL');
 
   // A record for alpha's process placed where beta looks: beta's helper must refuse to signal or connect to it.
   fs.mkdirSync(path.dirname(recordPath(beta, 'beta', 'api')), { recursive: true, mode: 0o700 });
