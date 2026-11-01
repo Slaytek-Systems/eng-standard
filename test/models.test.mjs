@@ -106,7 +106,12 @@ test('eng rejects a never-list model in models.pstack and a Cursor agent command
   const audit = agent_command => neverErrors({ audits: { maintain_verification: { agent_command } } });
   assert.deepEqual(audit(`claude -p 'Follow {skill}. Verify cursor pagination and the composer lockfile.'`), [], 'a prompt may mention Cursor or Composer');
   assert.deepEqual(audit(`codex exec "Check grok-notify callbacks"`), [], 'a double-quoted prompt is prose too');
-  assert.match(audit(`cursor-agent -p --force 'Follow {skill}'`).join(), /runs Cursor/);
+  assert.deepEqual(audit(`claude -p "Follow {skill}. Verify \\"cursor pagination\\" and 'composer'."`), [], 'escaped quotes stay inside the prompt');
+  assert.deepEqual(audit(`FOO=1 codex exec --model some-model 'grok it' && echo cursor`), [], 'arguments to other programs are prose');
+  for (const [cmd, who] of [[`cursor-agent -p --force 'Follow {skill}'`, 'Cursor'], [`"/opt/agent tools/cursor-agent" -p 'Follow {skill}'`, 'Cursor'],
+    [`"grok" 'Follow {skill}'`, 'Grok'], [`agent -p 'Follow {skill}'`, 'Cursor'], [`sh -c 'cursor-agent -p "Follow {skill}"'`, 'Cursor'],
+    [`claude --model ${grok} -p 'x'`, 'Grok'], [`claude --model=${composer} -p 'x'`, 'Cursor'], [`cd repo && env FOO=1 /usr/local/bin/cursor-agent 'x'`, 'Cursor']])
+    assert.match(audit(cmd).join(), new RegExp(`runs ${who}`), cmd);
   withConfig(s => s.replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`).replace(/agent_command: ".*"/, `agent_command: "cursor-agent -p --force 'Follow {skill}'"`), () => {
     const r = eng('sync');
     assert.equal(r.status, 1);
