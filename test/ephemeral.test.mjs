@@ -731,3 +731,41 @@ test('isolation enforced: the run may not connect to or disconnect from a networ
   r = run(`docker network create ${tag}-own-net >/dev/null && docker run -d --name ${tag}-mine-c alpine:latest sleep 30 >/dev/null && docker network connect ${tag}-own-net ${tag}-mine-c && docker rm -f ${tag}-mine-c >/dev/null && docker network rm ${tag}-own-net >/dev/null`);
   assert.equal(r.status, 0, `the run still rewires its own networks: ${out(r)}`);
 });
+
+test('isolation enforced: the run\'s docker socket refuses, rather than forwards, a change whose owner or mounts it cannot look up', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-fu.sock`), sock = path.join(base, `${tag}-fp.sock`), script = path.join(root, 'proxy-fail.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  const forwarded = [];
+  // A daemon whose lookups error (500) and that records every change that reaches it.
+  const up = http.createServer((req, res) => {
+    if (req.method === 'GET') { res.writeHead(/\/gone\b/.test(req.url) ? 404 : 500, { 'content-type': 'application/json' }); return res.end('{"message":"boom"}'); }
+    req.resume(); req.on('end', () => { forwarded.push(req.url); res.writeHead(201, { 'content-type': 'application/json' }); res.end('{"Id":"x"}'); });
+  });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t2', JSON.stringify({ deny: [path.join(root, 'protected')], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  const post = (p, body = '{}') => new Promise((ok, no) => { const q = http.request({ socketPath: sock, method: 'POST', path: p, headers: { 'content-type': 'application/json' } }, r => { let b = ''; r.on('data', c => b += c); r.on('end', () => ok([r.statusCode, b])); }); q.on('error', no); q.end(body); });
+  let [code, body] = await post('/v1.52/containers/older/exec', JSON.stringify({ Cmd: ['true'] }));
+  assert.equal(code, 403, body); assert.match(body, /whose owner could not be checked/);
+  [code, body] = await post('/v1.52/exec/abc/start', JSON.stringify({ Detach: true }));
+  assert.equal(code, 403, body); assert.match(body, /whose container could not be checked/);
+  [code, body] = await post('/v1.52/containers/create', JSON.stringify({ HostConfig: { Binds: ['shared:/s'] } }));
+  assert.equal(code, 403, body); assert.match(body, /volume shared, which could not be checked/);
+  [code] = await post('/v1.52/containers/gone/start');
+  assert.equal(code, 201, 'a 404 lookup is an answer: the daemon itself reports the object missing');
+  assert.deepEqual(forwarded, ['/v1.52/containers/gone/start'], 'nothing it could not check reached the daemon');
+});
+
+test('isolation enforced: a cache the repo points outside eng/<repo> (hygiene.caches) stays writable', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const vite = path.join(xdg, 'elsewhere', 'vite');
+  t.after(() => { fs.rmSync(path.join(xdg, 'elsewhere'), { recursive: true, force: true }); setCfg(c => { delete c.hygiene.caches; }); });
+  setCfg(c => { c.hygiene.caches = { vite: vite }; });
+  enforce(t);
+  const r = eng('ephemeral', '--', `touch "$ENG_VITE_CACHE_DIR/${tag}"`);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(fs.existsSync(path.join(vite, tag)), 'the write reached the configured cache');
+});
