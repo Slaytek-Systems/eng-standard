@@ -8,7 +8,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 - The starter config sets every pstack role to `inherit-parent`, so each role runs on the launching agent's model. Panel roles keep two seats (`[inherit-parent, inherit-parent]`). A new repo now renders `.eng/pstack-models.md`.
 - The starter's `audits.maintain_verification.agent_command` runs Claude Code (`claude -p --permission-mode bypassPermissions`), in place of `cursor-agent -p --force`.
-- `eng` rejects a config whose `models.pstack` names a Grok or Cursor model (`grok`, `cursor`, `composer`), or whose audit `agent_command` runs Cursor or Grok (`neverErrors` in `lib/models.mjs`). The error names the field and the fix. A repo that kept the old starter's `cursor-agent` command fails `eng sync` until it changes that line.
+- `eng` rejects a config whose `models.pstack` names a Grok or Cursor model (`grok`, `cursor`, `composer`), or whose audit `agent_command` runs Cursor or Grok (`neverErrors` in `lib/models.mjs`). The error names the field and the fix. Quoted text in the command is the prompt and is not checked, so a prompt may mention Cursor. A repo that kept the old starter's `cursor-agent` command fails `eng sync` until it changes that line.
 - `test/models.test.mjs` fails when the starter leaves a pstack role unset, so a pstack bump that adds a role must add it to the starter.
 - Known gap: with `arena cross-judge pool: inherit-parent`, the vendored arena skill falls back to its own default pool for the judge. The routing note wins over that default (AGENTS.md says so), but no check enforces it.
 

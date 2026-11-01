@@ -103,6 +103,10 @@ test('eng rejects a never-list model in models.pstack and a Cursor agent command
   const grok = ['grok', '4.7', 'xhigh', 'fast'].join('-'), composer = ['composer', '2'].join('-');
   assert.deepEqual(neverErrors({ models: { pstack: { 'swarm workers': 'inherit-parent', 'arena runners': ['auto', 'inherit-parent'] } }, audits: { maintain_verification: { agent_command: "codex exec 'x'" } } }), []);
   assert.match(neverErrors({ models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }).join(), /models.pstack."arena runners": .* is Cursor/);
+  const audit = agent_command => neverErrors({ audits: { maintain_verification: { agent_command } } });
+  assert.deepEqual(audit(`claude -p 'Follow {skill}. Verify cursor pagination and the composer lockfile.'`), [], 'a prompt may mention Cursor or Composer');
+  assert.deepEqual(audit(`codex exec "Check grok-notify callbacks"`), [], 'a double-quoted prompt is prose too');
+  assert.match(audit(`cursor-agent -p --force 'Follow {skill}'`).join(), /runs Cursor/);
   withConfig(s => s.replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`).replace(/agent_command: ".*"/, `agent_command: "cursor-agent -p --force 'Follow {skill}'"`), () => {
     const r = eng('sync');
     assert.equal(r.status, 1);
