@@ -780,3 +780,16 @@ test('isolation enforced: the run may not connect a container it did not make to
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change container .*, which the run did not make/);
   assert.doesNotMatch(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other project\'s container never joined the run\'s network');
 });
+
+test('isolation enforced: a container may not mount a server socket outside the run, read-only or not; the run\'s own socket is allowed', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const raw = outside.replace(/^unix:\/\//, '');
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  for (const mount of [`-v ${raw}:/v.sock`, `-v ${raw}:/v.sock:ro`, `--mount type=bind,source=${raw},target=/v.sock,readonly`, `-v ${path.dirname(raw)}:/r:ro`]) {
+    const r = run(`docker run --rm ${mount} alpine:latest true`);
+    assert.notEqual(r.status, 0, `${mount}: ${out(r)}`); assert.match(out(r), /reaches a server socket outside the run/, mount);
+  }
+  const own = run('docker run --rm -v "${DOCKER_HOST#unix://}:/d.sock" alpine:latest test -S /d.sock');
+  assert.equal(own.status, 0, `the run's own labelling socket may be mounted: ${out(own)}`);
+});
