@@ -845,3 +845,32 @@ test('isolation enforced: the run\'s docker socket reads requests as docker does
   assert.deepEqual(JSON.parse(forwarded.at(-1)[1]).HostConfig, { AutoRemove: true }, 'docker gets exactly the JSON that was checked, so the earlier HostConfig cannot merge back in');
   assert.ok(forwarded.every(([u]) => u === '/v1.52/containers/create'), 'no refused request reached the daemon');
 });
+
+test('isolation enforced: the run\'s docker socket refuses keys docker folds from non-ASCII letters, and an attach to a container the run did not make even over a websocket GET', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-wu.sock`), sock = path.join(base, `${tag}-wp.sock`), script = path.join(root, 'proxy-fold.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  const prot = path.join(root, 'fold-protected'), reached = [];
+  const up = http.createServer((req, res) => {
+    if (req.method === 'GET' && /\/json$/.test(req.url)) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ Config: { Labels: /mine/.test(req.url) ? { 'eng.ephemeral.run.t4': 'true' } : {} } })); }
+    req.resume(); req.on('end', () => { reached.push(req.url); res.writeHead(201, { 'content-type': 'application/json' }); res.end('{"Id":"x"}'); });
+  });
+  up.on('upgrade', (req, s) => { reached.push(req.url); s.end('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n'); });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t4', JSON.stringify({ deny: [prot], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  const post = body => new Promise((ok, no) => { const q = http.request({ socketPath: sock, method: 'POST', path: '/v1.52/containers/create', headers: { 'content-type': 'application/json' } }, r => { let b = ''; r.on('data', c => b += c); r.on('end', () => ok([r.statusCode, b])); }); q.on('error', no); q.end(JSON.stringify(body)); });
+  for (const body of [{ HostConfig: { 'Bindſ': [`${prot}:/c`] } }, { 'Hoſtconfig': { Binds: ['/run/user/1/docker.sock:/s'] } }, { HostConfig: { 'Mountſ': [{ Type: 'bind', Source: prot, Target: '/c' }] } }, { HostConfig: { Mounts: [{ Type: 'bind', 'SourKe': prot }] } }]) {
+    const [code, out] = await post(body);
+    assert.equal(code, 403, `${JSON.stringify(body)}: ${out}`); assert.match(out, /body field spelled/);
+  }
+  const ws = id => new Promise((ok, no) => {
+    const q = http.request({ socketPath: sock, method: 'GET', path: `/v1.52/containers/${id}/attach/ws?stdin=1&stream=1`, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' } });
+    q.on('upgrade', (r, s) => { s.destroy(); ok(101); }); q.on('response', r => { r.resume(); ok(r.statusCode); }); q.on('error', no); q.end();
+  });
+  assert.notEqual(await ws('older'), 101, 'an attach over websocket to a container the run did not make is refused');
+  assert.equal(await ws('mine'), 101, 'the run may still attach to its own container');
+  assert.deepEqual(reached, ['/v1.52/containers/mine/attach/ws?stdin=1&stream=1'], 'nothing refused reached the daemon');
+});
