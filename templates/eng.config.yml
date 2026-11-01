@@ -114,6 +114,7 @@ formal:                           # Which skill formally checks what (lib/formal
 
 launch:                           # The repo owns its isolated local launch (pstack Launch/Doctor/Cleanup). The verify skill only CALLS these.
   # eng sets ENG_RUN_ID, ENG_PORT (free port picked per run) and ENG_RUN_DIR (outside the repo) for each command.
+  # basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts (eng ephemeral: <scratch root>/<id>; eng launch-check: <tmp>/eng-launch/<id>).
   up: sh scripts/launch.sh up         # start, return when ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}
   doctor: sh scripts/launch.sh doctor # read-only: exit 0 = this instance is worth driving
   down: sh scripts/launch.sh down     # stop only the PIDs in state.json; keep $ENG_RUN_DIR/evidence
