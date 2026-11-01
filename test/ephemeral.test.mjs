@@ -675,3 +675,33 @@ test('isolation enforced: the run\'s upstream docker socket is hidden too, when 
   assert.notEqual(r.status, 0, out(r));
   assert.match(r.stdout, /labelling docker socket/, 'the run still had its own socket');
 });
+
+test('isolation enforced: a bind source that does not exist yet is resolved through its symlinked parents', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-alias'); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  fs.symlinkSync(path.join(home, '.cache'), path.join(home, 'cache-alias'));
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run --rm -v "$HOME/cache-alias/new:/s" alpine:latest touch /s/${tag}`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /is read-only for this run \(protected home state\)/);
+  assert.ok(!fs.existsSync(path.join(home, '.cache', 'new')), 'docker created nothing under the protected cache');
+});
+
+test('isolation enforced: starting an exec made before the run, in a container the run did not make, is refused', { skip: !docker && 'no reachable docker with alpine:latest' }, async t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const home = path.join(root, 'home-execstart'); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  const c = `${tag}-older2`; t.after(() => dk('rm', '-f', c));
+  dk('run', '-d', '--name', c, '-v', `${home}/.cache:/c`, 'alpine:latest', 'sleep', '300');
+  const sock = outside.replace(/^unix:\/\//, '');
+  const execId = await new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: sock, method: 'POST', path: `/containers/${c}/exec`, headers: { 'content-type': 'application/json' } }, res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b).Id)); });
+    req.on('error', reject); req.end(JSON.stringify({ Cmd: ['touch', `/c/${tag}`] }));
+  });
+  fs.writeFileSync(path.join(marks, 'start-exec.cjs'), `const http = require('node:http'), u = process.env.DOCKER_HOST.replace('unix://', '');
+const r = http.request({ socketPath: u, method: 'POST', path: '/exec/${execId}/start', headers: { 'content-type': 'application/json' } }, res => { res.resume(); res.on('end', () => process.exit(res.statusCode < 300 ? 0 : 1)); });
+r.end(JSON.stringify({ Detach: true }));`);
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `node ${marks}/start-exec.cjs`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  await new Promise(res => setTimeout(res, 500));
+  assert.notEqual(r.status, 0, out(r));
+  assert.ok(!fs.existsSync(path.join(home, '.cache', tag)), 'the older container wrote nothing');
+});
