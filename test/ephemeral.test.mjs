@@ -724,7 +724,7 @@ test('isolation enforced: the run may not connect to or disconnect from a networ
   enforce(t);
   const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   let r = run(`docker network disconnect ${net} ${c}`);
-  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change network .*, which the run did not make/);
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change (network|container) .*, which the run did not make/);
   assert.match(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other session\'s container stays on its network');
   r = run(`docker run -d --name ${tag}-mine-c alpine:latest sleep 30 >/dev/null; docker network connect ${net} ${tag}-mine-c; s=$?; docker rm -f ${tag}-mine-c >/dev/null; exit $s`);
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change network/);
@@ -768,4 +768,15 @@ test('isolation enforced: a cache the repo points outside eng/<repo> (hygiene.ca
   const r = eng('ephemeral', '--', `touch "$ENG_VITE_CACHE_DIR/${tag}"`);
   assert.equal(r.status, 0, out(r));
   assert.ok(fs.existsSync(path.join(vite, tag)), 'the write reached the configured cache');
+});
+
+test('isolation enforced: the run may not connect a container it did not make to the run\'s own network', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const c = `${tag}-other-proj`, net = `${tag}-run-net`;
+  t.after(() => { dk('rm', '-f', c); dk('network', 'rm', net); });
+  dk('run', '-d', '--name', c, '--restart', 'unless-stopped', 'alpine:latest', 'sleep', '300');
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker network create ${net} >/dev/null; docker network connect ${net} ${c}; s=$?; docker network rm ${net} >/dev/null; exit $s`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change container .*, which the run did not make/);
+  assert.doesNotMatch(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other project\'s container never joined the run\'s network');
 });
