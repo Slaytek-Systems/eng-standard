@@ -79,13 +79,15 @@ test('disk rule tests_leave_nothing: a gate step that leaves a file in its TMPDI
 test('eng clean: dry run lists stale dirs only; --apply removes them', () => {
   const mk = (n, h) => { const p = path.join(base, n); fs.mkdirSync(p); fs.writeFileSync(path.join(p, 'f'), 'x'); const t = (Date.now() - h * 3600e3) / 1000; fs.utimesSync(p, t, t); return p; };
   const old = mk('eng-hyg-abc-999999999-x', 10), young = mk('eng-hyg-abd-999999999-y', 1), live = mk(`eng-hyg-abe-${process.pid}-z`, 10), other = mk('eng-other-abf-999999999-q', 10);
+  const run = mk('eng-eph-abg-999999999-0', 10), liveRun = mk(`eng-eph-abh-${process.pid}-0`, 10);
   let r = eng('clean');
-  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /would remove.*eng-hyg-abc/); assert.match(r.stdout, /1 stale eng temp dir/);
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /would remove.*eng-hyg-abc/); assert.match(r.stdout, /would remove.*eng-eph-abg/); assert.match(r.stdout, /2 stale eng temp dir/);
   assert.ok(fs.existsSync(old));
   r = eng('clean', '--apply', '--older-than', '6');
   assert.ok(!fs.existsSync(old)); assert.ok(fs.existsSync(young)); assert.ok(fs.existsSync(live)); assert.ok(fs.existsSync(other));
+  assert.ok(!fs.existsSync(run), 'a stale eng ephemeral run dir is removed'); assert.ok(fs.existsSync(liveRun), 'a live run\'s run dir is kept');
   assert.equal(staleTmpDirs('hyg', 0, { base }).filter(d => d.stale).length, 1); // young is stale at 0h; live pid never
-  for (const p of [young, live, other]) fs.rmSync(p, { recursive: true });
+  for (const p of [young, live, other, liveRun]) fs.rmSync(p, { recursive: true });
 });
 
 test('eng clean --worktrees: removes only merged/gone + pushed + clean; reports the rest', () => {
