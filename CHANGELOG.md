@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.12.1 (1 Nov 2026)
+
+**The starter config names no never-list model or harness.** Follow-up to 0.12.0. A new repo's config set no `models.pstack`, so pstack skills used their vendored grok-4.7-xhigh-fast default, and its daily audit ran `cursor-agent`. The routing note never uses Cursor or Grok for coding.
+
+- The starter config sets every pstack role to `inherit-parent`, so each role runs on the launching agent's model. Panel roles keep two seats (`[inherit-parent, inherit-parent]`). A new repo now renders `.eng/pstack-models.md`.
+- The starter's `audits.maintain_verification.agent_command` runs Claude Code (`claude -p --permission-mode bypassPermissions`), in place of `cursor-agent -p --force`.
+- `eng` rejects a config whose `models.pstack` names a Grok or Cursor model (`grok`, `cursor`, `composer`) (`neverErrors` in `lib/models.mjs`). The error names the role and the fix.
+- eng does not check an `agent_command`. Reading shell text could not tell the harness apart from the prompt, wrappers and substitutions (four verifier rounds on PR #40). A follow-up replaces it with a structured harness field. A repo that kept the old starter's `cursor-agent` command still syncs; change that line by hand.
+- `test/models.test.mjs` fails when the starter leaves a pstack role unset, so a pstack bump that adds a role must add it to the starter.
+- Known gap: with `arena cross-judge pool: inherit-parent`, the vendored arena skill falls back to its own default pool for the judge. The routing note wins over that default (AGENTS.md says so), but no check enforces it.
+
 ## 0.12.0 (31 Oct 2026)
 
 **Model choices move to config** (Matt, 30 Oct 2026). Model routing has one source of truth, the Core note 'Model routing: who uses which model' (nd77rx5dhdt899w2np5kjknqdd8g8y2d). The standard points to it and copies none of it.

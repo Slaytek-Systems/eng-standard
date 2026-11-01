@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
-import { MODEL_ID, ROUTING, modelErrors, pstackRoles } from '../lib/models.mjs';
+import { MODEL_ID, ROUTING, modelErrors, neverErrors, pstackRoles } from '../lib/models.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -18,6 +18,7 @@ let dir, cfgPath, base;
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8' });
 const withConfig = (edit, fn) => { fs.writeFileSync(cfgPath, edit(base)); try { return fn(); } finally { fs.writeFileSync(cfgPath, base); } };
 const ROUTING_LINE = `routing: ${ROUTING}`;
+const noPstack = s => s.replace(/^  pstack:.*\n(?: {4}.*\n)*/m, '');
 
 before(() => {
   dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-models-'));
@@ -65,33 +66,46 @@ test('pstack roles come from setup-pstack, and models config is checked', () => 
   assert.match(modelErrors({ routing: `${ROUTING}\nhardest tasks: auto` }).join(), /models.routing must be one line/);
 });
 
-test('eng sync: AGENTS.md and SHIPPING.md point to the routing note and name no model; no pstack-models file by default', () => {
+test('eng sync on the starter: AGENTS.md and SHIPPING.md name no model, and every pstack role runs on the parent model', () => {
   const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
   const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), shipping = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   assert.match(agents, new RegExp(`Models: this standard names no models\\. .*'Model routing: who uses which model' \\(\`${ROUTING}\`\\)`));
-  assert.match(agents, /add it under `models.pstack` in eng.config.yml/);
+  assert.match(agents, /pstack role lines are in `.eng\/pstack-models.md`/);
   for (const [n, t] of [['AGENTS.md', agents], ['SHIPPING.md', shipping]]) assert.doesNotMatch(t, MODEL_ID, n);
-  assert.equal(fs.existsSync(path.join(dir, '.eng/pstack-models.md')), false);
+  const lines = fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n');
+  for (const role of pstackRoles()) assert.ok(lines.some(l => new RegExp(`^${role}: inherit-parent(, inherit-parent)*$`).test(l)), `starter sets ${role} to inherit-parent; add the role under models.pstack in templates/eng.config.yml`);
+  assert.ok(lines.includes('arena runners: inherit-parent, inherit-parent'), 'a panel keeps two seats');
+  assert.ok(lines.includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
+  const d = eng('drift-check'); assert.equal(d.status, 0, d.stderr);
 });
 
-test('models.pstack renders .eng/pstack-models.md, sync then drift-check pass, and removing it removes the file', () => {
-  const pstack = `${ROUTING_LINE}\n  pstack:\n    swarm workers: inherit-parent\n    arena runners: [auto, inherit-parent]`;
-  withConfig(s => s.replace(ROUTING_LINE, pstack), () => {
+test('models.pstack renders as written, and removing it removes .eng/pstack-models.md', () => {
+  withConfig(s => s.replace('    arena runners: [inherit-parent, inherit-parent]', '    arena runners: [auto, inherit-parent]'), () => {
     const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
-    const lines = fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n');
-    assert.ok(lines.includes('swarm workers: inherit-parent') && lines.includes('arena runners: auto, inherit-parent'), lines.join('\n'));
-    assert.ok(lines.includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
-    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /pstack role lines are in `.eng\/pstack-models.md`/);
-    const d = eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+    assert.ok(fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n').includes('arena runners: auto, inherit-parent'));
   });
-  const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /removed .eng\/pstack-models.md/);
+  withConfig(noPstack, () => {
+    const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /removed .eng\/pstack-models.md/);
+    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /add it under `models.pstack` in eng.config.yml/);
+  });
 });
 
 test('eng rejects a models.pstack role pstack does not have', () => {
-  withConfig(s => s.replace(ROUTING_LINE, `${ROUTING_LINE}\n  pstack:\n    swarm worker: auto`), () => {
+  withConfig(s => s.replace('    swarm workers: inherit-parent', '    swarm worker: auto'), () => {
     const r = eng('sync');
     assert.equal(r.status, 1);
     assert.match(r.stderr, /config invalid:[\s\S]*models.pstack."swarm worker" is not a pstack role/);
+  });
+});
+
+test('eng rejects a never-list model in models.pstack and names the fix', () => {
+  const grok = ['grok', '4.7', 'xhigh', 'fast'].join('-'), composer = ['composer', '2'].join('-');
+  assert.deepEqual(neverErrors({ models: { pstack: { 'swarm workers': 'inherit-parent', 'arena runners': ['auto', 'inherit-parent'] } } }), []);
+  assert.match(neverErrors({ models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }).join(), /models.pstack."arena runners": .* is Cursor/);
+  withConfig(s => s.replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`), () => {
+    const r = eng('sync');
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, new RegExp(`models.pstack."swarm workers": ${grok} is Grok, which the routing note \\(${ROUTING}\\) never uses for coding. Set it to inherit-parent`));
   });
 });
