@@ -815,3 +815,33 @@ test('eng clean --containers --apply with a custom persist_label still keeps a c
   assert.equal(dk('inspect', plain).status, 1, 'the unmarked container is removed');
   assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${shared} \\(permanent: slaytek\\.persist=true\\)`));
 });
+
+test('isolation enforced: the run\'s docker socket reads requests as docker does: encoded paths, other-case fields and repeated keys cannot slip past its checks', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-cu.sock`), sock = path.join(base, `${tag}-cp.sock`), script = path.join(root, 'proxy-canon.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  const prot = path.join(root, 'canon-protected'), forwarded = [];
+  // A daemon that knows one container the run did not make, and records every change that reaches it.
+  const up = http.createServer((req, res) => {
+    if (req.method === 'GET') { res.writeHead(/older/.test(req.url) ? 200 : 404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ Config: { Labels: {} } })); }
+    let b = ''; req.on('data', c => b += c); req.on('end', () => { forwarded.push([req.url, b]); res.writeHead(201, { 'content-type': 'application/json' }); res.end('{"Id":"x"}'); });
+  });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t3', JSON.stringify({ deny: [prot], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  const post = (p, body = '{}') => new Promise((ok, no) => { const q = http.request({ socketPath: sock, method: 'POST', path: p, headers: { 'content-type': 'application/json' } }, r => { let b = ''; r.on('data', c => b += c); r.on('end', () => ok([r.statusCode, b])); }); q.on('error', no); q.end(body); });
+  for (const p of ['/%63ontainers/older/start', '/v1.52//containers/older/start', '/v1.52/containers/./older/start', '/v1.52/containers/x/../older/start']) {
+    const [code, body] = await post(p);
+    assert.equal(code, 403, `${p}: ${body}`); assert.match(body, /path in another form/);
+  }
+  for (const body of [{ hostconfig: { Binds: [`${prot}:/c`] } }, { HostConfig: { binds: [`${prot}:/c`] } }, { HostConfig: { Mounts: [{ type: 'bind', source: prot, Target: '/c' }] } }]) {
+    const [code, out] = await post('/v1.52/containers/create', JSON.stringify(body));
+    assert.equal(code, 403, out); assert.match(out, /body field spelled/);
+  }
+  const [code] = await post('/v1.52/containers/create', `{"HostConfig":{"Binds":["${prot}:/c"]},"HostConfig":{"AutoRemove":true}}`);
+  assert.equal(code, 201);
+  assert.deepEqual(JSON.parse(forwarded.at(-1)[1]).HostConfig, { AutoRemove: true }, 'docker gets exactly the JSON that was checked, so the earlier HostConfig cannot merge back in');
+  assert.ok(forwarded.every(([u]) => u === '/v1.52/containers/create'), 'no refused request reached the daemon');
+});
