@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import http from 'node:http';
+import net from 'node:net';
 import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -873,4 +874,75 @@ test('isolation enforced: the run\'s docker socket refuses keys docker folds fro
   assert.notEqual(await ws('older'), 101, 'an attach over websocket to a container the run did not make is refused');
   assert.equal(await ws('mine'), 101, 'the run may still attach to its own container');
   assert.deepEqual(reached, ['/v1.52/containers/mine/attach/ws?stdin=1&stream=1'], 'nothing refused reached the daemon');
+});
+
+test('isolation enforced: only attach and exec start may upgrade a connection, and a refused or failed upgrade never becomes a raw tunnel', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-tu.sock`), sock = path.join(base, `${tag}-tp.sock`), script = path.join(root, 'proxy-tunnel.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  const reached = [];
+  // A daemon that knows the run's container "mine" and answers its attach with 409 (no protocol switch).
+  const up = net.createServer(c => {
+    let buf = '';
+    c.on('data', d => {
+      buf += d;
+      for (let i = buf.indexOf('\r\n\r\n'); i >= 0; i = buf.indexOf('\r\n\r\n')) {
+        const line = buf.slice(0, buf.indexOf('\r\n')); buf = buf.slice(i + 4); const [method, url] = line.split(' ');
+        if (method === 'GET' && /\/json$/.test(url)) { const j = JSON.stringify({ Config: { Labels: { 'eng.ephemeral.run.t5': 'true' } } }); c.write(`HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(j)}\r\n\r\n${j}`); continue; }
+        reached.push(`${method} ${url}`);
+        c.write(/attach/.test(url) ? 'HTTP/1.1 409 Conflict\r\ncontent-length: 2\r\n\r\nno' : 'HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
+      }
+    });
+  });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t5', JSON.stringify({ deny: [path.join(root, 'tunnel-protected')], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  // Writes the first request as an upgrade, then a second request on the same connection; returns all it read back.
+  const raw = (first, second) => new Promise(resolve => {
+    const c = net.connect(sock); let got = '';
+    c.on('data', d => { got += d; if (second && /\r\n\r\n/.test(got)) { c.write(second); second = null; } });
+    c.on('close', () => resolve(got)); c.on('error', () => resolve(got)); setTimeout(() => { c.destroy(); resolve(got); }, 1500);
+    c.write(first);
+  });
+  const upgrade = (m, u) => `${m} ${u} HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Length: 0\r\n\r\n`;
+  const kill = 'POST /v1.52/containers/older/kill?signal=SIGKILL HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\n\r\n';
+  let got = await raw(upgrade('GET', '/_ping'), kill);
+  assert.match(got, /^HTTP\/1\.1 403/); assert.match(got, /only attach and exec start may upgrade/);
+  got = await raw(upgrade('POST', '/v1.52/containers/create'));
+  assert.match(got, /^HTTP\/1\.1 403/);
+  got = await raw(upgrade('POST', '/v1.52/containers/mine/attach?stream=1'), kill);
+  assert.match(got, /^HTTP\/1\.1 409/, 'the daemon\'s refusal is passed back');
+  assert.deepEqual(reached, ['POST /v1.52/containers/mine/attach?stream=1'], 'nothing else reached the daemon: no tunnel after a refused or failed upgrade');
+});
+
+test('isolation enforced: a container may not share the host\'s namespaces, run privileged or add an unlisted capability', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-hu.sock`), sock = path.join(base, `${tag}-hp.sock`), script = path.join(root, 'proxy-host.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  const reached = [];
+  const up = http.createServer((req, res) => { req.resume(); req.on('end', () => { reached.push(req.url); res.writeHead(201, { 'content-type': 'application/json' }); res.end('{"Id":"x"}'); }); });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t6', JSON.stringify({ deny: [path.join(root, 'host-protected')], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  const post = body => new Promise((ok, no) => { const q = http.request({ socketPath: sock, method: 'POST', path: '/v1.52/containers/create', headers: { 'content-type': 'application/json' } }, r => { let b = ''; r.on('data', c => b += c); r.on('end', () => ok([r.statusCode, b])); }); q.on('error', no); q.end(JSON.stringify(body)); });
+  for (const hc of [{ PidMode: 'host', CapAdd: ['SYS_PTRACE'] }, { PidMode: 'host' }, { IpcMode: 'host' }, { NetworkMode: 'host' }, { NetworkMode: 'container:abc' }, { Privileged: true }, { CapAdd: ['CAP_SYS_ADMIN'] }, { CapAdd: ['ALL'] }, { SecurityOpt: ['apparmor=unconfined'] }, { pidmode: 'host' }]) {
+    const [code, out] = await post({ Image: 'alpine', HostConfig: hc });
+    assert.equal(code, 403, `${JSON.stringify(hc)}: ${out}`);
+  }
+  const [ok] = await post({ Image: 'alpine', HostConfig: { CapAdd: ['NET_ADMIN'], NetworkMode: 'bridge' } });
+  assert.equal(ok, 201, 'a listed capability and an ordinary network still pass');
+  assert.equal(reached.length, 1);
+});
+
+test('isolation enforced: docker run --pid=host --cap-add SYS_PTRACE is refused by the run\'s socket', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'docker run --rm --pid=host --cap-add SYS_PTRACE alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /which reaches the host without a bind/);
+  const ok = spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'docker run --rm alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  assert.equal(ok.status, 0, `an ordinary foreground run (attach) still works: ${out(ok)}`);
 });
