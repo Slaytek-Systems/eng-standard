@@ -99,23 +99,29 @@ test('eng rejects a models.pstack role pstack does not have', () => {
   });
 });
 
-test('eng rejects a never-list model in models.pstack and a Cursor agent command, and names the fix', () => {
+test('eng rejects a never-list model in models.pstack, and an audit agent_command that runs anything but an approved harness', () => {
   const grok = ['grok', '4.7', 'xhigh', 'fast'].join('-'), composer = ['composer', '2'].join('-');
   assert.deepEqual(neverErrors({ models: { pstack: { 'swarm workers': 'inherit-parent', 'arena runners': ['auto', 'inherit-parent'] } }, audits: { maintain_verification: { agent_command: "codex exec 'x'" } } }), []);
   assert.match(neverErrors({ models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }).join(), /models.pstack."arena runners": .* is Cursor/);
   const audit = agent_command => neverErrors({ audits: { maintain_verification: { agent_command } } });
-  assert.deepEqual(audit(`claude -p 'Follow {skill}. Verify cursor pagination and the composer lockfile.'`), [], 'a prompt may mention Cursor or Composer');
-  assert.deepEqual(audit(`codex exec "Check grok-notify callbacks"`), [], 'a double-quoted prompt is prose too');
-  assert.deepEqual(audit(`claude -p "Follow {skill}. Verify \\"cursor pagination\\" and 'composer'."`), [], 'escaped quotes stay inside the prompt');
-  assert.deepEqual(audit(`FOO=1 codex exec --model some-model 'grok it' && echo cursor`), [], 'arguments to other programs are prose');
-  for (const [cmd, who] of [[`cursor-agent -p --force 'Follow {skill}'`, 'Cursor'], [`"/opt/agent tools/cursor-agent" -p 'Follow {skill}'`, 'Cursor'],
-    [`"grok" 'Follow {skill}'`, 'Grok'], [`agent -p 'Follow {skill}'`, 'Cursor'], [`sh -c 'cursor-agent -p "Follow {skill}"'`, 'Cursor'],
-    [`claude --model ${grok} -p 'x'`, 'Grok'], [`claude --model=${composer} -p 'x'`, 'Cursor'], [`cd repo && env FOO=1 /usr/local/bin/cursor-agent 'x'`, 'Cursor']])
-    assert.match(audit(cmd).join(), new RegExp(`runs ${who}`), cmd);
+  for (const cmd of [`claude -p 'Follow {skill}. Verify cursor pagination and the composer lockfile.'`, `codex exec "Check grok-notify callbacks"`,
+    `claude -p "Follow {skill}. Verify \\"cursor pagination\\" and 'composer'."`, `FOO=1 env -u CI -i BAR=2 /usr/local/bin/claude -p 'x'`,
+    `devin 'x' && amp -x 'y'`, `codex exec --model some-model 'x'`])
+    assert.deepEqual(audit(cmd), [], cmd);
+  const notHarness = prog => new RegExp(`agent_command runs ${prog.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which is not an approved harness \\(claude, codex, devin, amp\\)\\. .*claude -p`);
+  for (const [cmd, prog] of [[`cursor-agent -p --force 'Follow {skill}'`, 'cursor-agent'], [`"/opt/agent tools/cursor-agent" -p 'x'`, '/opt/agent tools/cursor-agent'],
+    [`"grok" 'x'`, 'grok'], [`agent -p 'x'`, 'agent'], [`composer install && claude -p 'x'`, 'composer'], [`claude -p 'x' && grok-notify --lead l --status done`, 'grok-notify'],
+    [`bash -lc 'cursor-agent -p x'`, 'bash'], [`sh -ec 'grok x'`, 'sh'], [`sh -c 'claude -p x'`, 'sh'], [`env -u CI cursor-agent 'x'`, 'cursor-agent'], [`exec cursor-agent 'x'`, 'exec'],
+    [`cd .;cursor-agent 'x'`, 'cd'], [`claude -p 'x';cursor-agent 'y'`, 'cursor-agent'], [`claude -p 'x'\ncursor-agent 'y'`, 'cursor-agent'], [`claude -p 'x'|grok`, 'grok'],
+    [`timeout 600 cursor-agent 'x'`, 'timeout'], [`npx cursor-agent 'x'`, 'npx'], [`bunx cursor-agent 'x'`, 'bunx'], [`claude -p 'x' & cursor-agent 'y'`, 'cursor-agent']])
+    assert.match(audit(cmd).join('\n'), notHarness(prog), cmd);
+  assert.match(audit('FOO=1 env -u CI').join(), /agent_command runs nothing/);
+  assert.match(audit(`claude --model ${grok} -p 'x'`).join(), /picks .* which is Grok/);
+  assert.match(audit(`codex exec --model=${composer} 'x'`).join(), /picks .* which is Cursor/);
   withConfig(s => s.replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`).replace(/agent_command: ".*"/, `agent_command: "cursor-agent -p --force 'Follow {skill}'"`), () => {
     const r = eng('sync');
     assert.equal(r.status, 1);
     assert.match(r.stderr, new RegExp(`models.pstack."swarm workers": ${grok} is Grok, which the routing note \\(${ROUTING}\\) never uses for coding. Set it to inherit-parent`));
-    assert.match(r.stderr, /audits.maintain_verification.agent_command runs Cursor, .* Use a Claude Code or Codex command/);
+    assert.match(r.stderr, /audits.maintain_verification.agent_command runs cursor-agent, which is not an approved harness .* claude -p/);
   });
 });
