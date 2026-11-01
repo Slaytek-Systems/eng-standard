@@ -221,7 +221,7 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
     ephemeral_runs:               # Every local test, review and probe run is thrown away when it ends, like a Boat sandbox.
       mode: fail                  # fail | warn | off. eng ephemeral check runs each run, then fails on a container, network, volume, temp entry or process it left; removes what carries the run's label, reports volumes. eng gate wraps those steps.
       runs: null                  # null = test, plus launch (up then down) when launch.up and launch.down are declared. Or a list of project.commands names and launch.
-      persist_label: slaytek.persist=true   # a container or volume with this label may outlive the run (a permanent dev server), as may a container with a restart policy. Same rule the devbox keeps.
+      persist_label: slaytek.persist=true   # a container or volume with this label may outlive the run (a permanent dev server), as may a container with a restart policy. slaytek.persist=true always counts too. Same rule the devbox keeps.
       persist_env: SLAYTEK_PERSIST=true     # a process with this in its environment may keep running, e.g. SLAYTEK_PERSIST=true pnpm dev.
       source: core:nd78q9vjkp392tp223ng7g6ydx8h9vcn
   # Clean up on merge or close (SHIPPING.md rule 18, §5): delete the PR's worktrees and evidence; one worktree per PR; no installs in review-only worktrees; shared package store and build cache; media off the box.

@@ -793,3 +793,25 @@ test('isolation enforced: a container may not mount a server socket outside the 
   const own = run('docker run --rm -v "${DOCKER_HOST#unix://}:/d.sock" alpine:latest test -S /d.sock');
   assert.equal(own.status, 0, `the run's own labelling socket may be mounted: ${out(own)}`);
 });
+
+test('a repo with its own persist_label still keeps containers and volumes marked slaytek.persist=true, the devbox-wide marker', () => {
+  const persist = { label: 'example.keep=true', env: 'SLAYTEK_PERSIST=true' }, key = 'eng.ephemeral.run.r9';
+  const live = { containers: new Map([['shared', { labels: { [key]: 'true', 'slaytek.persist': 'true' }, restart: 'no' }], ['own', { labels: { [key]: 'true', 'example.keep': 'true' }, restart: 'no' }], ['plain', { labels: { [key]: 'true' }, restart: 'no' }]]),
+    networks: new Map([['n1', { name: 'kept', labels: { [key]: 'true', 'slaytek.persist': 'true' } }]]), volumes: new Map([['v1', { [key]: 'true', 'slaytek.persist': 'true' }]]), mounted: new Map(), others: new Map() };
+  const ev = ID => ({ Type: 'container', Action: 'create', Actor: { ID, Attributes: { [key]: 'true' } } });
+  const { left } = findLeftovers({ run: { id: 'r9' }, persist, events: ['shared', 'own', 'plain'].map(ev), live, volumesBefore: new Set(), temp: [], procs: [] });
+  assert.deepEqual(left.map(f => f.id), ['plain']);
+});
+
+test('eng clean --containers --apply with a custom persist_label still keeps a container marked slaytek.persist=true', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  const shared = `${tag}-cl-shared-mark`, plain = `${tag}-cl-plain2`;
+  t.after(() => { dk('rm', '-f', shared, plain); setCfg(c => { c.hygiene.run_rules.ephemeral_runs.persist_label = 'slaytek.persist=true'; }); });
+  setCfg(c => { c.hygiene.run_rules.ephemeral_runs.persist_label = 'example.keep=true'; });
+  dk('run', '-d', '--name', shared, '--label', 'eng.repo=eph', '--label', 'slaytek.persist=true', 'alpine:latest', 'sleep', '300');
+  dk('run', '-d', '--name', plain, '--label', 'eng.repo=eph', 'alpine:latest', 'sleep', '300');
+  const r = eng('clean', '--containers', '--apply');
+  assert.equal(r.status, 0, out(r));
+  assert.equal(dk('inspect', '-f', '{{.State.Running}}', shared).stdout.trim(), 'true', 'the devbox-wide marker still counts');
+  assert.equal(dk('inspect', plain).status, 1, 'the unmarked container is removed');
+  assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${shared} \\(permanent: slaytek\\.persist=true\\)`));
+});

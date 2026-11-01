@@ -21,7 +21,7 @@ import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { modelErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
@@ -1117,19 +1117,19 @@ function cleanContainers(cfg, apply) {
   const inspect = (kind, ids) => ids.length ? JSON.parse(q([kind, 'inspect', ...ids]).join('\n')) : [];
   const cs = inspect('container', q(['ps', '-aq', '--no-trunc', '--filter', `label=${label}`])).map(c => {
     const restart = c.HostConfig?.RestartPolicy?.Name, keep = permanent({ labels: c.Config?.Labels, restart }, persist);
-    return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (permanent({ labels: c.Config?.Labels }, persist) ? persist.label : `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
+    return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (markedBy(c.Config?.Labels, persist) ?? `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
   });
   const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols)), going = new Set(cs.filter(c => !c.why).map(c => c.id));
   // Any container not removed here that uses a volume keeps it: a permanent one, or one without this repo's label.
   const users = name => q(['ps', '-aq', '--no-trunc', '--filter', `volume=${name}`]).filter(id => !going.has(id));
-  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: permanent({ labels: v.Labels }, persist) ? persist.label : used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null }));
+  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: markedBy(v.Labels, persist) ?? (used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null) }));
   const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
   // rm -v takes a container's anonymous volumes too, which carry no repo label: a marked one keeps its container's -v off.
-  const marked = new Set(inspect('volume', [...new Set(rmC.flatMap(c => c.vols))]).filter(v => permanent({ labels: v.Labels }, persist)).map(v => v.Name));
+  const markedVol = new Map(inspect('volume', [...new Set(rmC.flatMap(c => c.vols))]).map(v => [v.Name, markedBy(v.Labels, persist)]).filter(([, l]) => l)), marked = new Set(markedVol.keys());
   const [plain, holding] = [rmC.filter(c => !c.vols.some(v => marked.has(v))), rmC.filter(c => c.vols.some(v => marked.has(v)))];
   for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : holding.includes(c) ? ' (without its volumes: one is marked permanent)' : ' (with its anonymous volumes)'}`);
   for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
-  for (const v of marked) if (!vs.some(x => x.name === v)) console.log(`  keep         volume ${v} (permanent: ${persist.label})`);
+  for (const v of marked) if (!vs.some(x => x.name === v)) console.log(`  keep         volume ${v} (permanent: ${markedVol.get(v)})`);
   if (apply && plain.length) q(['rm', '-f', '-v', ...plain.map(c => c.id)]);
   if (apply && holding.length) q(['rm', '-f', ...holding.map(c => c.id)]);
   if (apply && rmV.length) q(['volume', 'rm', ...rmV.map(v => v.name)]);
