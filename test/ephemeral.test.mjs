@@ -705,3 +705,29 @@ r.end(JSON.stringify({ Detach: true }));`);
   assert.notEqual(r.status, 0, out(r));
   assert.ok(!fs.existsSync(path.join(home, '.cache', tag)), 'the older container wrote nothing');
 });
+
+test('isolation enforced: on a fresh runner the pinned download cache is created before the run, so it stays writable', t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const cache = path.join(xdg, 'eng', 'downloads');
+  fs.rmSync(cache, { recursive: true, force: true }); t.after(() => fs.rmSync(cache, { recursive: true, force: true }));
+  enforce(t);
+  const r = eng('ephemeral', '--', `mkdir -p "${cache}/fetched" && touch "${cache}/fetched/${tag}"`);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(fs.existsSync(path.join(cache, 'fetched', tag)), 'the write reached the shared download cache');
+});
+
+test('isolation enforced: the run may not connect to or disconnect from a network it did not make', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const net = `${tag}-foreign-net`, c = `${tag}-foreign-c`;
+  t.after(() => { dk('rm', '-f', c, `${tag}-mine-c`); dk('network', 'rm', net); });
+  dk('network', 'create', net); dk('run', '-d', '--name', c, '--network', net, 'alpine:latest', 'sleep', '300');
+  enforce(t);
+  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  let r = run(`docker network disconnect ${net} ${c}`);
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change network .*, which the run did not make/);
+  assert.match(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other session\'s container stays on its network');
+  r = run(`docker run -d --name ${tag}-mine-c alpine:latest sleep 30 >/dev/null; docker network connect ${net} ${tag}-mine-c; s=$?; docker rm -f ${tag}-mine-c >/dev/null; exit $s`);
+  assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change network/);
+  r = run(`docker network create ${tag}-own-net >/dev/null && docker run -d --name ${tag}-mine-c alpine:latest sleep 30 >/dev/null && docker network connect ${tag}-own-net ${tag}-mine-c && docker rm -f ${tag}-mine-c >/dev/null && docker network rm ${tag}-own-net >/dev/null`);
+  assert.equal(r.status, 0, `the run still rewires its own networks: ${out(r)}`);
+});
