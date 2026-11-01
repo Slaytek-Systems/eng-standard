@@ -354,6 +354,23 @@ test('eng gate runs a declared step once, through the check, and adds declared r
   assert.deepEqual(rounds(), []);
 });
 
+// Launch scripts check that the run dir is named for the run, and bind sockets in it: Motus's relay, $ENG_RUN_DIR/s4, must
+// fit in 107 bytes. In the scratch root itself the run dir costs the root plus the id, whatever the round folder is called.
+test('the launch run gets ENG_RUN_DIR named ENG_RUN_ID, outside the repo, in the scratch root, and removed after', () => {
+  setCfg(c => { c.launch = { up: `test -d "$ENG_RUN_DIR" && printf '%s\\n%s\\n' "$ENG_RUN_ID" "$ENG_RUN_DIR" > ${marks}/launch`, doctor: 'true', down: 'true' }; });
+  const r = eng('ephemeral', 'run', 'launch');
+  setCfg(c => { delete c.launch; });
+  assert.equal(r.status, 0, out(r));
+  const [id, runDir] = mark('launch').split('\n'), scratch = path.join(xdg, 'eng', 'eph', 'scratch');
+  assert.match(id, /^eng-eph-/);
+  assert.equal(path.basename(runDir), id);
+  assert.ok(path.isAbsolute(runDir) && path.relative(dir, runDir).startsWith('..'), `${runDir} is outside the repo`);
+  assert.equal(path.dirname(runDir), scratch);
+  assert.ok(Buffer.byteLength(path.join(runDir, 's4')) <= Buffer.byteLength(scratch) + 31, 'a socket in the run dir costs the scratch root plus 31 bytes at most');
+  assert.ok(!fs.existsSync(runDir), 'the run dir is removed after the run');
+  assert.deepEqual(rounds(), []);
+});
+
 test('eng gate: an interrupted step still dies by the signal, and the run folders are gone', async () => {
   setCfg(c => { c.project.commands.test = `echo $$ > ${marks}/started; sleep 20`; });
   const p = spawn(process.execPath, [ENG, 'gate'], { cwd: dir, env, detached: true, stdio: 'ignore' });
