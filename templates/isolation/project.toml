@@ -25,7 +25,7 @@ port_env = "PORT"                 # optional: env var that also carries the port
 health = "/version"               # optional: checked on 127.0.0.1:<port> after start and before and after eng connect
 ready_timeout_s = 30
 env = { LOG_LEVEL = "info" }
-connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }
+connect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }   # a Convex service must pin this (rule convex-url); the admin key goes in .eng/secrets/backend.connect.env
 # eng connect runs only these, matched as the FULL argv (no extra arguments); variable parts only as {placeholders}.
 # docker/compose entries need an approved subcommand and -p <project id>; stopping and removing go through eng stop.
 connect = [["npx", "convex", "codegen"], ["./scripts/backend-cli.sh", "status"], ["./scripts/backend-cli.sh", "restore", "{dump}"]]

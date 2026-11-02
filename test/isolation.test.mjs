@@ -207,7 +207,7 @@ test('run-service refuses a service whose argv carries a secret value starting w
 });
 
 test('repo check: eng connect commands must be listed; direct docker, kill and inline code are warned', () => {
-  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["docker", "compose", "-p", "p", "ps"], ["docker", "compose", "-p", "p", "up"], ["npx", "convex", "codegen"]]\n';
+  const id = 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }\nconnect = [["docker", "compose", "-p", "p", "ps"], ["docker", "compose", "-p", "p", "up"], ["npx", "convex", "codegen"]]\n';
   const scripts = {
     v: 'eng connect x -- docker compose -p p up --remove-orphans --force-recreate', w: 'eng connect x -- deno eval Deno.kill(1)', y: 'eng connect x -- docker compose -p p up',
     a: 'eng connect x -- docker compose -p p ps', b: 'eng connect x -- docker compose -p p ps --env-file -pp', c: 'eng connect x -- docker compose -p p ps -vpbeta-project',
@@ -281,7 +281,7 @@ test('repo check: "default" as a name and secret flags split across compose comm
   const hits = isolationFindings([
     { path: 'compose.yml', text: 'name: p_local\nservices:\n  db:\n    command:\n      - backend\n      - --instance-secret\n      - abc\n' },
     { path: 'package.json', text: JSON.stringify({ scripts: { up: 'eng run-service x', a: 'tool --project-name default', b: 'echo use the default port', c: 'eng connect x -- true && npx convex dev', d: 'eng connect x -- npx convex codegen', e: 'env API_TOKEN=v client' } }, null, 2) },
-  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect = [["npx", "convex", "codegen"]]\n');
+  ], 'schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "x"\ncommand = ["x"]\nconnect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }\nconnect = [["npx", "convex", "codegen"]]\n');
   assert.deepEqual(hits.map(h => `${h.file}:${h.rule}${h.message.match(/\(script "(\w)"\)/)?.[1] ?? ''}`).sort(), ['compose.yml:secret-argv', 'package.json:bare-service-commandc', 'package.json:default-namea', 'package.json:not-allowlistedc', 'package.json:secret-argve']);
 });
 
@@ -440,6 +440,17 @@ test('two synthetic projects: own records, scrubbed env, secrets off argv, cross
   assert.equal(r.stdout.trim(), 'out [redacted] [redacted]');
   assert.match(r.stderr, /^err \[redacted\]$/m);
   assert.doesNotMatch(out(r), /t0ken/, 'connect never forwards a loaded secret');
+  const toml = path.join(alpha, '.eng/project.toml'), was = fs.readFileSync(toml, 'utf8');
+  fs.writeFileSync(toml, was.replace('env = { LOG_LEVEL = "debug" }\n', 'env = { LOG_LEVEL = "debug" }\nconnect_env = { CONVEX_SELF_HOSTED_URL = "http://127.0.0.1:{port}" }\n'));
+  fs.writeFileSync(path.join(alpha, '.eng/secrets/api.connect.env'), 'CONVEX_SELF_HOSTED_URL=http://127.0.0.1:59999\n', { mode: 0o600 });
+  const warn = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
+  fs.writeFileSync(path.join(alpha, 'eng.config.yml'), 'isolation:\n  mode: fail\n');
+  r = eng(alpha, 'agent-a', 'connect', 'api', '--', 'node', 'client.mjs', 'version');
+  fs.rmSync(path.join(alpha, 'eng.config.yml'));
+  fs.rmSync(path.join(alpha, '.eng/secrets/api.connect.env')); fs.writeFileSync(toml, was);
+  assert.equal(warn.status, 0, `warn mode is unchanged: ${out(warn)}`);
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /connect: secrets may not set CONVEX_SELF_HOSTED_URL/, 'with isolation enforced, a secrets file cannot move the pinned Convex URL');
 
   // A record for alpha's process placed where beta looks: beta's helper must refuse to signal or connect to it.
   fs.mkdirSync(path.dirname(recordPath(beta, 'beta', 'api')), { recursive: true, mode: 0o700 });
@@ -733,4 +744,26 @@ test('incident replay: a reviewer cannot stop a test run it did not start, and a
   r = byThread('thread-a', 'stop', unit);
   assert.equal(r.status, 0, out(r));
   assert.ok(!alive(rec.pid), 'the starter can stop it');
+});
+
+test('eng isolation check: an unnamed compose file and a Convex service whose clients are not pinned to eng\'s URL warn by default and fail when isolation.mode is fail', () => {
+  const tpl = fs.readFileSync(path.join(PKG, 'templates/isolation/project.toml'), 'utf8');
+  const unpinned = tpl.replace(/^connect_env = .*$/m, 'connect_env = { BACKEND_URL = "http://127.0.0.1:{port}" }');
+  const enforce = d => fs.writeFileSync(path.join(d, 'eng.config.yml'), fs.readFileSync(path.join(d, 'eng.config.yml'), 'utf8').replace(/^(isolation:.*\n  mode: )warn/m, '$1fail'));
+  for (const [files, rule] of [[{ '.eng/project.toml': tpl, 'compose.yml': 'services:\n  db:\n    image: x\n' }, 'compose-unnamed'], [{ '.eng/project.toml': unpinned }, 'convex-url']]) {
+    const dir = repo(files);
+    let r = eng(dir, null, 'isolation', 'check');
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stdout, new RegExp(`\\[${rule}\\]`)); assert.match(r.stdout, /eng isolation check: WARN \(1 finding/);
+    enforce(dir);
+    r = eng(dir, null, 'isolation', 'check');
+    assert.equal(r.status, 1, out(r));
+    assert.match(r.stderr, new RegExp(`eng: FAIL isolation check:\\n  [^\\n]*\\[${rule}\\]`));
+  }
+  const dir = repo({ '.eng/project.toml': tpl }); enforce(dir);
+  const r = eng(dir, null, 'isolation', 'check');
+  assert.equal(r.status, 0, out(r));
+  const svc = (command, connect) => `schema = 1\n[project]\nid = "p"\nowner = "o"\nstate = ".eng/state"\nports = [41000, 41010]\n[[services]]\nname = "b"\ncommand = ${command}\nconnect = ${connect}\n`;
+  assert.deepEqual(isolationFindings([], svc('["./node_modules/.bin/convex-local-backend", "--port", "{port}"]', '[["node", "client.mjs"]]')).map(h => h.rule), ['convex-url'], 'the backend program counts too');
+  assert.deepEqual(isolationFindings([], svc('["./server.sh"]', '[["node", "client.mjs"]]')).map(h => h.rule), [], 'a service that runs no convex program needs no Convex URL');
 });

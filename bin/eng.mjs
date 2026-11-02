@@ -21,7 +21,7 @@ import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
@@ -958,7 +958,7 @@ function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
-  const eph = runRules(cfg).ephemeral_runs.mode === 'off' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
+  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && cfg.isolation?.mode !== 'fail' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} ephemeral run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
@@ -1108,17 +1108,33 @@ function cleanCmd() {
   if (reported.length) console.log(`  REPORT to the repo lead (never deleted):\n    ${reported.join('\n    ')}`);
   console.log(`eng clean --worktrees: ${removed} worktree(s) ${apply ? 'removed' : 'removable (dry run; --apply to remove)'}, ${rows.length - removed} kept`);
 }
-// Containers this repo labelled (hygiene.containers.label=<repo>) are removed with their volumes; nothing else is touched.
+// Containers this repo labelled (hygiene.containers.label=<repo>) are removed with their volumes, except permanent ones
+// (permanent() in lib/ephemeral.mjs: the persist label or a restart policy) and the volumes they use. Nothing else is touched.
 function cleanContainers(cfg, apply) {
   const cli = ['docker', 'podman'].find(c => spawnSync(c, ['--version']).status === 0) || die('clean --containers: no docker or podman');
-  const label = `${cfg.hygiene?.containers?.label ?? 'eng.repo'}=${slug(cfg.project.name)}`;
+  const label = `${cfg.hygiene?.containers?.label ?? 'eng.repo'}=${slug(cfg.project.name)}`, persist = { label: runRules(cfg).ephemeral_runs.persist_label };
   const q = args => { const r = spawnSync(cli, args, { encoding: 'utf8' }); if (r.status !== 0) die(`clean --containers: ${cli} ${args.join(' ')}: ${r.stderr.trim()}`); return r.stdout.split('\n').filter(Boolean); };
-  const cs = q(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.ID}} {{.Names}} {{.Status}}']), vs = q(['volume', 'ls', '--filter', `label=${label}`, '--format', '{{.Name}}']);
-  for (const c of cs) console.log(`  ${apply ? 'removed' : 'would remove'} container ${c} (with its anonymous volumes)`);
-  for (const v of vs) console.log(`  ${apply ? 'removed' : 'would remove'} volume ${v}`);
-  if (apply && cs.length) q(['rm', '-f', '-v', ...cs.map(c => c.split(' ')[0])]);
-  if (apply && vs.length) q(['volume', 'rm', ...vs]);
-  console.log(`eng clean --containers: ${cs.length} container(s), ${vs.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}`);
+  // Labels and restart policy come from inspect's JSON: ls prints labels as "k=v,k=v", which a comma in a value makes ambiguous.
+  const inspect = (kind, ids) => ids.length ? JSON.parse(q([kind, 'inspect', ...ids]).join('\n')) : [];
+  const cs = inspect('container', q(['ps', '-aq', '--no-trunc', '--filter', `label=${label}`])).map(c => {
+    const restart = c.HostConfig?.RestartPolicy?.Name, keep = permanent({ labels: c.Config?.Labels, restart }, persist);
+    return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (markedBy(c.Config?.Labels, persist) ?? `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
+  });
+  const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols)), going = new Set(cs.filter(c => !c.why).map(c => c.id));
+  // Any container not removed here that uses a volume keeps it: a permanent one, or one without this repo's label.
+  const users = name => q(['ps', '-aq', '--no-trunc', '--filter', `volume=${name}`]).filter(id => !going.has(id));
+  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: markedBy(v.Labels, persist) ?? (used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null) }));
+  const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
+  // rm -v takes a container's anonymous volumes too, which carry no repo label: a marked one keeps its container's -v off.
+  const markedVol = new Map(inspect('volume', [...new Set(rmC.flatMap(c => c.vols))]).map(v => [v.Name, markedBy(v.Labels, persist)]).filter(([, l]) => l)), marked = new Set(markedVol.keys());
+  const [plain, holding] = [rmC.filter(c => !c.vols.some(v => marked.has(v))), rmC.filter(c => c.vols.some(v => marked.has(v)))];
+  for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : holding.includes(c) ? ' (without its volumes: one is marked permanent)' : ' (with its anonymous volumes)'}`);
+  for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
+  for (const v of marked) if (!vs.some(x => x.name === v)) console.log(`  keep         volume ${v} (permanent: ${markedVol.get(v)})`);
+  if (apply && plain.length) q(['rm', '-f', '-v', ...plain.map(c => c.id)]);
+  if (apply && holding.length) q(['rm', '-f', ...holding.map(c => c.id)]);
+  if (apply && rmV.length) q(['volume', 'rm', ...rmV.map(v => v.name)]);
+  console.log(`eng clean --containers: ${rmC.length} container(s), ${rmV.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}; ${cs.length - rmC.length + vs.length - rmV.length} permanent kept`);
 }
 function cleanEvidence(cfg, apply) {
   const d = path.join(ROOT, cfg.e2e?.evidence_dir ?? '.eng/evidence'); const names = fs.existsSync(d) ? fs.readdirSync(d) : [];
