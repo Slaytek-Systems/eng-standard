@@ -73,8 +73,24 @@ agents:
 
 models:                           # Which model does which job. The standard names none: AGENTS.md points agents to the routing note.
   routing: core:nd77rx5dhdt899w2np5kjknqdd8g8y2d   # Core note 'Model routing: who uses which model'. Matt edits routing there. Default: this note.
-  # pstack:                       # Optional per-role picks for pstack skills; eng sync renders .eng/pstack-models.md. Roles: setup-pstack step 5.
-  #   swarm workers: inherit-parent   # A role not set keeps the pstack skill default. A panel role (arena runners ...) takes a list.
+  pstack:                         # Per-role picks for pstack skills; eng sync renders .eng/pstack-models.md. Roles: setup-pstack step 5.
+    feature, refactoring: inherit-parent   # inherit-parent: the role runs on the launching agent's model. Every role is set,
+    bug-fix: inherit-parent                # so no pstack skill falls back to its own default model.
+    perf-issue: inherit-parent
+    hillclimb: inherit-parent
+    judgment and prose: inherit-parent
+    hardest tasks: inherit-parent
+    how explorer: inherit-parent
+    how explainer: inherit-parent
+    why investigators: inherit-parent
+    why synthesizer: inherit-parent
+    reflect tooling: inherit-parent
+    reflect judgment, divergent, synthesizer: inherit-parent
+    arena runners: [inherit-parent, inherit-parent]          # A panel role takes a list; its length sets the panel size.
+    arena cross-judge pool: inherit-parent
+    swarm workers: inherit-parent
+    architect runners: [inherit-parent, inherit-parent]
+    interrogate reviewers: [inherit-parent, inherit-parent]
 
 fallow:                           # JS/TS repos. Config lives in .fallowrc.json (entry, ignoreDependencies, rules, boundaries).
   version: 3.33.1                 # exact; must equal node_modules fallow --version and the vendored skill
@@ -142,7 +158,7 @@ audits:
     target: verify-app            # the repo's verify-<app> skill
     schedule: daily
     cron: "0 19 * * *"            # 06:00 AEDT
-    agent_command: "cursor-agent -p --force 'Follow {skill} exactly. Target: {target}. Report the outcome (clean / changed / blocked).'"
+    agent_command: "claude -p --permission-mode bypassPermissions 'Follow {skill} exactly. Target: {target}. Report the outcome (clean / changed / blocked).'"
 
 laws:
   enabled: true
