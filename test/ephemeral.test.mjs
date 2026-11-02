@@ -946,3 +946,37 @@ test('isolation enforced: docker run --pid=host --cap-add SYS_PTRACE is refused 
   const ok = spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'docker run --rm alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   assert.equal(ok.status, 0, `an ordinary foreground run (attach) still works: ${out(ok)}`);
 });
+
+test('isolation enforced: an exec start upgrade reaches the daemon with its body, so the daemon can answer', async t => {
+  const base = process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : root;
+  const upSock = path.join(base, `${tag}-eu.sock`), sock = path.join(base, `${tag}-ep.sock`), script = path.join(root, 'proxy-exec.cjs');
+  if (Buffer.byteLength(sock) > 107) return t.skip('no socket path of 107 bytes or less');
+  // Like dockerd: the exec's owner lookups answer at once; exec start answers 101 only once its whole body has arrived.
+  const up = net.createServer(c => {
+    let buf = Buffer.alloc(0);
+    c.on('data', d => {
+      buf = Buffer.concat([buf, d]); const end = buf.indexOf('\r\n\r\n'); if (end < 0) return;
+      const head = buf.subarray(0, end).toString(), [method, url] = head.split(' '), len = Number(head.match(/content-length: (\d+)/i)?.[1] ?? 0);
+      if (buf.length < end + 4 + len) return;
+      const rest = buf.subarray(end + 4 + len); buf = rest;
+      const reply = j => c.write(`HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(j)}\r\n\r\n${j}`);
+      if (method === 'GET' && /\/exec\/e1\/json/.test(url)) return reply(JSON.stringify({ ContainerID: 'mine' }));
+      if (method === 'GET') return reply(JSON.stringify({ Config: { Labels: { 'eng.ephemeral.run.t7': 'true' } } }));
+      c.write('HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\nexec output');
+    });
+  });
+  await new Promise(r => up.listen(upSock, r));
+  fs.writeFileSync(script, PROXY);
+  const proxy = spawn(process.execPath, [script, sock, upSock, 'eng.ephemeral.run.t7', JSON.stringify({ deny: [path.join(root, 'exec-protected')], allow: [] })], { stdio: 'ignore' });
+  t.after(() => { proxy.kill(); up.close(); fs.rmSync(sock, { force: true }); fs.rmSync(upSock, { force: true }); });
+  for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 60));
+  const body = JSON.stringify({ Detach: false, Tty: false });
+  const got = await new Promise(resolve => {
+    const c = net.connect(sock); let out = '';
+    c.on('data', d => { out += d; if (/exec output/.test(out)) { c.destroy(); resolve(out); } });
+    c.on('close', () => resolve(out)); setTimeout(() => { c.destroy(); resolve(out); }, 3000);
+    c.write(`POST /v1.52/exec/e1/start HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+  });
+  assert.match(got, /^HTTP\/1\.1 101/, `the daemon got the body and switched protocols: ${JSON.stringify(got)}`);
+  assert.match(got, /exec output/);
+});
