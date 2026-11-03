@@ -7,7 +7,7 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
+import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd, shipLogStep } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
@@ -58,6 +58,7 @@ function configErrors(c) {
   if (pre !== undefined && !(Array.isArray(pre) && pre.every(x => typeof x === 'string' && x.trim()))) errs.push('hooks.pre_commit must be a list of non-empty commands');
   const post = c.agents?.post_edit_command;
   if (post !== undefined && !(typeof post === 'string' && post.trim())) errs.push('agents.post_edit_command must be a non-empty command');
+  if (c.ship?.log_step !== undefined && typeof c.ship.log_step !== 'string') errs.push('ship.log_step must be a string');
   errs.push(...validatePolicy(c.e2e));
   errs.push(...validateFlake(c.e2e));
   errs.push(...validateRenovation(c.renovation));
@@ -222,7 +223,7 @@ function shipNext() {
   3. gh pr checks ${p.number} --watch                          # gate on the new head; then: gh pr checkout ${p.number} && git pull && eng verdict check
   4. gh pr merge ${p.number} --squash --delete-branch --match-head-commit $(gh pr view ${p.number} --json headRefOid -q .headRefOid)
   5. gh api repos/{owner}/{repo}/commits/${cfg.project.default_branch}/check-runs -q '.check_runs[]|.name+" "+(.conclusion//"pending")'   # main green? else revert now and return #${p.number} to its author
-  6. log #${p.number} in the repo's Core status note`);
+  6. ${shipLogStep(cfg)}`);
   }
   console.log('eng ship next: nothing shippable right now.');
 }
