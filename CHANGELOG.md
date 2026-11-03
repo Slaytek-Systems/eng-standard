@@ -2,6 +2,12 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.12.3 (3 Nov 2026)
+
+- Shipping loop step 6 now logs the PR number, merge SHA and main's post-merge result on the PR's Core task. Decisions get their own decision notes. Never write to the repo's Core status note. This follows Motus Lead's decision `nd7922184grhk1zvgsn2cgx9fx8hh52w`.
+- Optional `ship.log_step` overrides the text after `6. ` in SHIPPING.md and `eng ship next` verbatim. Non-string values are rejected. The eng-route skill carries the default rule.
+- Consuming repos will see a SHIPPING.md and eng-route diff on their next `eng sync`.
+
 ## 0.12.2 (2 Nov 2026)
 
 **Isolation fixes before enforcement** (Matt, 1 Nov 2026: devbox project isolation will be enforced; Core decision nd74kgtnr9qpq1ztyrasyt84518ha76q). A TLA+ model of devbox run isolation (eng-sandbox PR #19) found the holes. The first two items below (what counts as permanent, and `eng clean --containers`) apply in every mode. Everything else is enforcement, which changes nothing in warn mode, the default. Enforcement is `isolation.mode: fail`, which each repo's lead turns on. Threat model: enforcement stops an honest agent from accidentally using or damaging another project's containers, temp files, caches or Convex deployment; it is not a sandbox against deliberate escape, and the hard boundary (rootless Docker or a per-project Unix user or user namespace per run) is a devbox-ops follow-up.
