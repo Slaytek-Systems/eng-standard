@@ -45,7 +45,7 @@ stack:
     - "Validate a function handle with v.function({ fnType, args, returns }) (Convex 1.49+), not v.string() plus an `as FunctionHandle<...>` cast. Its type is FunctionHandle_future. eng lint rule convex-function-handle-validator enforces it once the repo is on convex 1.49."
 
 agents:
-  harnesses: [claude-code, codex, cursor]   # AGENTS.md is read by Codex and Cursor; CLAUDE.md imports it.
+  harnesses: [claude-code, codex]   # AGENTS.md is read by Codex; CLAUDE.md imports it for Claude Code.
   skills_dir: .agents/skills
   # post_edit_command: "npm run lint:changed -- --hook"   # optional; rendered as a Claude Code PostToolUse hook (Edit|MultiEdit|Write) in .claude/settings.json. Exit 2 feeds stderr back to the agent.
   rules:                          # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng verify maintain fails on a rule with nothing enforcing it.
@@ -181,7 +181,7 @@ e2e:
   version: 0.19.0                 # Pre-1.0: pinned exactly; eng e2e fails on a caret range.
   web_version: 0.14.0             # @e2e-dev/web (pins playwright-core 1.63.0).
   model: none                     # none = exact locators only, no key. Else an AI SDK model in e2e.config.ts agents, e.g. ollama('qwen3:4b') via ollama-ai-provider-v2 (local).
-  node_bin: /workspace/eng-standard/.tools/node24/bin   # e2e CLI needs Node >=24.8 (or ^22.22.3); box default is Node 20.
+  # node_bin: /path/to/node24/bin  # optional: prepended to PATH for the e2e CLI, which needs Node >=24.8 (or ^22.22.3). Unset = the PATH node (devbox: Node 24).
   evidence_dir: .eng/evidence     # Video, screenshots, trace.md, junit.xml land in <evidence_dir>/<sha>/e2e/.
   flake_runs: 3                   # A new or changed e2e test must pass this many consecutive runs (eng e2e --flake-check) before it may block. Mixed = quarantine + issue.
   policy:                         # When e2e runs (approved by Matt, 13 Oct 2026). `eng e2e-required` prints the decision for a diff.

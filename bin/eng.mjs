@@ -7,7 +7,7 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
+import { renderAll, BEGIN, END, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
@@ -24,6 +24,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { declaredPin, lifecycleProblems, pinStatus, upgradeReport, RAW_MAIN, LIFECYCLE_DOC, PKG_NAME } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -74,6 +75,7 @@ function configErrors(c) {
 
 const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
+const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 
 function render(cfg) {
   const files = renderAll(cfg, readOr('AGENTS.md'));
@@ -115,7 +117,7 @@ function sync() {
   const ours = fs.existsSync(cl) ? fs.readdirSync(cl).map(n => `.claude/skills/${n}`).filter(l => { try { return fs.readlinkSync(path.join(ROOT, l)).startsWith(`../../${cfg.agents.skills_dir}/`) && !fs.existsSync(path.join(ROOT, l)); } catch { return false; } }) : [];
   for (const l of new Set([...old.links, ...ours])) if (!links.has(l)) { fs.rmSync(path.join(ROOT, l), { force: true }); console.log(`  unlinked ${l}`); changed++; }
   for (const d of [cfg.agents.skills_dir]) { const walk = x => { if (!fs.existsSync(x)) return; for (const e of fs.readdirSync(x, { withFileTypes: true })) if (e.isDirectory()) { walk(path.join(x, e.name)); if (!fs.readdirSync(path.join(x, e.name)).length) fs.rmdirSync(path.join(x, e.name)); } }; walk(path.join(ROOT, d)); }
-  const lock = lockText(JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'))).version, Object.keys(files), links);
+  const lock = lockText(pkgVersion(), Object.keys(files), links);
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
@@ -151,6 +153,7 @@ function driftCheck() {
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(claudeLinks(cfg).map(([l]) => l)))) bad.push('.eng/lock.json: config changed since last sync');
+  bad.push(...lifecycleProblems({ lockVersion: lock.package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) }));
   if (bad.length) die(`drift-check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
   console.log(`eng drift-check: PASS (${Object.keys(files).length} generated files match config)`);
 }
@@ -1157,12 +1160,71 @@ function ciVerdict(ids) { // Buildkite: read each step outcome; anything but "pa
 }
 
 const [cmd, ...a] = process.argv.slice(2);
+// ---------- upgrade-check: installed vs rendered vs latest standard (lib/standard.mjs, docs/lifecycle.md) ----------
+// Reads the latest package.json and CHANGELOG.md from eng-standard main, or from --source <checkout|url>. Unknown is not current.
+async function upgradeCheck() {
+  const src = arg('--source') || process.env.ENG_STANDARD_SOURCE || RAW_MAIN, web = /^https?:\/\//.test(src);
+  const read = async f => {
+    if (!web) return fs.readFileSync(path.join(src, f), 'utf8');
+    const r = await fetch(new URL(f, src.endsWith('/') ? src : `${src}/`), { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+    return r.text();
+  };
+  let latest, changelog;
+  try { latest = JSON.parse(await read('package.json')).version; changelog = await read('CHANGELOG.md'); }
+  catch (e) { console.error(`eng: FAIL upgrade-check: could not read the latest standard from ${src} (${e.message}). Retry, or pass --source <eng-standard checkout>`); process.exit(2); }
+  const pin = declaredPin(readOr('package.json'));
+  const r = upgradeReport({ installed: pkgVersion(), lockVersion: parseLock(readOr('.eng/lock.json')).package, latest, pin, changelog });
+  if (a.includes('--json')) console.log(JSON.stringify(r, null, 2));
+  else {
+    console.log(`  installed ${r.installed} (${PKG})`);
+    console.log(`  rendered  ${r.rendered ?? 'none'} (.eng/lock.json package)${r.stale ? ': STALE, run eng sync and commit' : ''}`);
+    console.log(`  latest    ${r.latest} (${src})`);
+    console.log(`  pin       ${pin ? `${pin.field}.${PKG_NAME} = ${pin.spec}: ${r.pin.ok ? r.pin.kind : `FLOATING (${r.pin.why})`}` : `not declared in package.json (eng runs from ${PKG})`}${r.pin?.moved ? `\n            note: ${r.pin.moved}` : ''}`);
+    if (r.behind) console.log(`  CHANGELOG entries since ${r.installed}:\n${r.since.map(t => `    - ${t}`).join('\n')}\n  Next: move the pin to the new commit SHA or vX.Y.Z tag, install, run eng sync, commit everything in one PR (${LIFECYCLE_DOC}, Upgrade).`);
+    console.log(`eng upgrade-check: ${r.ok ? 'CURRENT' : [r.behind && 'BEHIND', r.stale && 'STALE', r.pin && !r.pin.ok && 'FLOATING PIN'].filter(Boolean).join(', ')}${r.ok || !a.includes('--warn') ? '' : ' (--warn: exit 0)'}`);
+  }
+  process.exit(r.ok || a.includes('--warn') ? 0 : 1);
+}
+
+// ---------- uninstall: remove what eng sync manages. Dry run by default; --apply acts. Never removes a hand-edited file. ----------
+function uninstall() {
+  const apply = a.includes('--apply'), verb = apply ? 'removed' : 'would remove';
+  const cfg = loadConfig(), files = render(cfg), lock = parseLock(readOr('.eng/lock.json'));
+  const kept = [], gone = [];
+  const drop = (p, why = '') => { if (apply) fs.rmSync(path.join(ROOT, p), { force: true }); gone.push(p); console.log(`  ${verb.padEnd(12)} ${p}${why}`); };
+  let agentsKept = false;
+  const agents = readOr('AGENTS.md');
+  if (agents !== null && agents.includes(BEGIN) && agents.includes(END)) {
+    const rest = (agents.slice(0, agents.indexOf(BEGIN)) + agents.slice(agents.indexOf(END) + END.length)).replace(/\n{3,}/g, '\n\n').trim();
+    if (!rest || rest === '# AGENTS.md') drop('AGENTS.md', ' (only the eng block was in it)');
+    else { agentsKept = true; if (apply) fs.writeFileSync(path.join(ROOT, 'AGENTS.md'), `${rest}\n`); console.log(`  ${(apply ? 'stripped' : 'would strip').padEnd(12)} the eng block from AGENTS.md (your text stays)`); }
+  }
+  for (const p of [...new Set([...lock.files, ...Object.keys(files)])].sort()) {
+    if (p === 'AGENTS.md') continue;
+    let st; try { st = fs.lstatSync(path.join(ROOT, p)); } catch { continue; }
+    if (!st.isFile()) continue;
+    if (p === 'CLAUDE.md' && agentsKept) { kept.push('CLAUDE.md: AGENTS.md keeps your text, so its @AGENTS.md import stays'); continue; }
+    if (readOr(p) !== files[p]) { kept.push(`${p}: ${p in files ? 'edited by hand since eng sync wrote it' : 'no longer rendered by this config'}`); continue; }
+    drop(p);
+  }
+  for (const l of [...new Set([...lock.links, ...claudeLinks(cfg).map(([l]) => l)])].sort()) { try { fs.readlinkSync(path.join(ROOT, l)); drop(l, ' (symlink)'); } catch {} }
+  if (fs.existsSync(path.join(ROOT, '.eng/lock.json'))) drop('.eng/lock.json');
+  if (apply) for (const p of gone) for (let d = path.dirname(p); d !== '.'; d = path.dirname(d)) { try { fs.rmdirSync(path.join(ROOT, d)); } catch { break; } }
+  let hooks = ''; try { hooks = sh('git config --get core.hooksPath'); } catch {}
+  if (hooks === '.githooks') { if (apply) sh('git config --unset core.hooksPath'); console.log(`  ${(apply ? 'unset' : 'would unset').padEnd(12)} git config core.hooksPath .githooks`); }
+  for (const k of kept) console.log(`  keep         ${k}`);
+  console.log(`  by hand: remove ${PKG_NAME} from package.json, eng steps from CI, and eng's required checks from the branch ruleset. eng.config.yml, .eng/checks, .eng/evidence and baselines are yours to keep or delete.`);
+  console.log(`eng uninstall: ${gone.length} path(s) ${apply ? 'removed' : 'to remove (dry run; --apply to act)'}, ${kept.length} kept`);
+}
+
 const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'verdict') : a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr'))), init, sync, 'drift-check': driftCheck, 'stack-check': stackCheck, 'stack-audit': stackAudit, lint, gate, e2e, conform, 'find-laws': findLaws, laws: () => a[0] === '--write' ? lawsWrite() : a[0] === 'approve' ? lawsApprove(a[1], a.slice(2).join(' ')) : laws(),
   rules: () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove'),
   verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
-  mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
+  mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd, 'upgrade-check': () => upgradeCheck().catch(e => die(`upgrade-check: ${e.message}`)), uninstall,
   renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral(engCtx(), a), merge: () => merge(engCtx(), a),
   'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
+cmds.commands = () => console.log(Object.keys(cmds).sort().join('\n'));
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | ephemeral check | ephemeral run <name> | ephemeral -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+(cmds[cmd] || (() => { console.log('eng commands | init | sync | upgrade-check [--source <checkout|url>] [--json] [--warn] | uninstall [--apply] | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | ephemeral check | ephemeral run <name> | ephemeral -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();

@@ -1,6 +1,24 @@
 # Changelog
 
-Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
+The version in `package.json` is the source of truth, and the newest versioned entry here must match it (`test/docs.test.mjs` fails otherwise). PR titles usually start `vX.Y.Z:`, but not always (0.12.2 shipped as `fix(isolation): ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. How a repo pins and upgrades: `docs/lifecycle.md`. History before 0.7.1 is in `git log`.
+
+## 0.14.0 (3 Nov 2026)
+
+**The standard tells every repo how it stays current, and checks its own docs.** A sweep of every entry point (map: `docs/standard-map.md`) found no install or pin instructions (the package is not on npm, and the renovation pack's `npx eng-standard@0.9.0` could not run), no upgrade path, no uninstall, no single list of exceptions, no place to report a problem, seven commands missing from the README, and docs still naming the old repo owner.
+
+- **Rendered AGENTS.md gains "This standard (eng-standard)"** (`lib/standard.mjs`): source repo, where the rendered version is recorded, how to upgrade, how to change a rule, the recorded exception kinds, starter and renovation packs, uninstall, and where to report a problem. Every repo's drift-check fails until `eng sync` renders it.
+- **`eng drift-check` checks the standard itself.** It fails when `.eng/lock.json` was rendered by another eng version than the one installed, and when package.json pins `@slayteksystems/eng-standard` to a floating ref (a branch, short SHA, range or bare git URL). A repo that bumps the pin without `eng sync` now fails, even when nothing rendered changed. `test/lock.test.mjs`'s old-format fixture now writes the installed version, so it still tests format compatibility only.
+- **New `eng upgrade-check`**: installed vs rendered vs latest (eng-standard `main`, or `--source <checkout|url>`), the CHANGELOG entries in between, and the pin. Exit 1 behind, stale or floating; 2 when the latest cannot be read; `--warn` exits 0; `--json`.
+- **New `eng uninstall`** (dry run; `--apply`): removes every managed file and symlink and the lock, strips the AGENTS.md block, unsets `core.hooksPath`, keeps hand-edited files.
+- **New `eng commands`**: prints every command, so docs can be checked against the CLI.
+- **New `docs/lifecycle.md`**: pin, versions, upgrade, drift detection, day to day, starter pack, new agent, renovation pack, exceptions and waivers, uninstall, reporting a problem. The package now ships `docs/` and `CHANGELOG.md`, so a client repo has them under `node_modules/@slayteksystems/eng-standard/`.
+- **New `test/docs.test.mjs`** (runs in `npm test`, the `test` check): fails when package.json, package-lock.json and the newest CHANGELOG version disagree; when the README misses a command; when a doc, skill or rendered file names an `eng` command that does not exist; when a relative doc link is broken; when a doc AGENTS.md points at is not shipped; when a doc names the old repo owner. `test/standard.test.mjs` covers the new commands and checks.
+- README: real title (was "v0 (sandbox only)"), a "Start here" section, rows for `ci-verdict`, `conform`, `fallow`, `find-laws`, `launch-check`, `retro`, `ship next` and the new commands. The T3 queue-health text that sat under "Starter pack" (README) and at the top of `renovation/README.md` moved to its own section at the end of each.
+- `renovation/README.md`: the install line uses the pinned dependency; the title no longer says 0.9.0.
+- `docs/self-merge.md` and `scripts/pr-gate.mjs` name `Slaytek-Systems/eng-standard`; self-merge.md no longer says a merge queue is unavailable (true only while the repo was user-owned).
+- Starter config: `e2e.node_bin` no longer points at `/workspace/eng-standard/.tools/node24/bin`, which does not exist on the devbox; `agents.harnesses` drops `cursor`, which rendered nothing.
+- **DRAFT proposal, not wired in:** `docs/proposals/otel.md` (OpenTelemetry conventions, evidence bound to the commit, a minimal starter default, a renovation path, the risk class of each piece). Pending Matt's decision.
+- risk:high: `bin/`, `scripts/` and package.json `files` change.
 
 ## 0.12.2 (2 Nov 2026)
 

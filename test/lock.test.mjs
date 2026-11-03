@@ -69,7 +69,7 @@ const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 function writeOldLock(r, extra = []) {
   const now = JSON.parse(r.read('.eng/lock.json')), paths = Array.isArray(now.files) ? now.files : Object.keys(now.files);
   const files = Object.fromEntries([...paths, ...extra].sort().map(p => [p, sha256(p)]));
-  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ links: now.links, config_hash: sha256(r.read('eng.config.yml')), package: '0.11.0', files }, null, 2) + '\n');
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ links: now.links, config_hash: sha256(r.read('eng.config.yml')), package: now.package, files }, null, 2) + '\n');
   return paths;
 }
 
