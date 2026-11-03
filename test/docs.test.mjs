@@ -52,7 +52,7 @@ test('docs the rendered AGENTS.md points at ship in the package', () => {
 });
 
 test('no doc or code names the old repo owner (moved to Slaytek-Systems, 24 Oct 2026)', () => {
-  const allowed = f => f === 'CHANGELOG.md' || /^(docs\/evidence|vendor|test)\//.test(f) || f === 'lib/standard.mjs';
+  const allowed = f => ['CHANGELOG.md', 'lib/standard.mjs', 'docs/lifecycle.md', 'docs/standard-map.md'].includes(f) || /^(docs\/evidence|vendor|test)\//.test(f); // these name it to explain the move
   const hits = files.filter(f => !allowed(f) && /\.(md|mjs|yml|json|sh)$/.test(f) && /Mattslayga\/eng-standard/.test(read(f)));
   assert.deepEqual(hits, [], `use ${REPO}`);
 });
