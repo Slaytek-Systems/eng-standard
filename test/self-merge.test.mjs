@@ -7,6 +7,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { methodOf } from '../lib/verification.mjs';
 import { selfMergeConfig, decide, eventTarget, verdictBody, parseVerdicts, authorsFrom, isAutoRevert, trusted, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -51,7 +52,8 @@ test('risk: a rename out of a high-risk path is high', () => {
 const SHA = 'a'.repeat(40);
 const pr = (o = {}) => ({ number: 1, base: 'main', draft: false, sameRepo: true, headSha: SHA, labels: ['risk:low'], ...o });
 const authors = authorsFrom(['feat\n\nAgent: builder-1'], ['t@t', 'builder-login']);
-const V = (o = {}) => ({ sha: SHA, patch_id: 'p1', result: 'PASS', by: 'checker-a', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', ...o });
+// A verification verdict: runs on its own commit (lib/verification.mjs). Tests that need a review verdict say method: 'review'.
+const V = (o = {}) => { const v = { sha: SHA, patch_id: 'p1', result: 'PASS', by: 'checker-a', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', method: 'verification', ...o }; return { runs: [{ cmd: 'npm test', exit: 0, output: 'ok', sha: v.sha }], ...v }; };
 const OUT = { login: 'unrelated-outsider', association: 'NONE' };
 const V2 = V({ by: 'checker-b' });
 const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, status: { state: 'success', created_at: '2026-10-19T04:30:00Z' }, verdicts: [V()], authors, ...o });
@@ -132,7 +134,7 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 test('eng verdict --pr: an author identity is rejected and posts failure; an independent identity posts success on HEAD', () => {
   const H = git('rev-parse HEAD').trim();
   for (const by of ['builder-1', 't@t']) {
-    const r = eng('verdict', 'PASS', '--by', by, '--pr', '7');
+    const r = eng('verdict', 'PASS', '--by', by, '--review', '--pr', '7');
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, new RegExp(`rejected: PASS by ${by} .*verifier identity is an author`), by);
     assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=failure -f context=verdict`), by);
@@ -141,13 +143,16 @@ test('eng verdict --pr: an author identity is rejected and posts failure; an ind
     const r = eng('verdict', 'PASS', '--by', 'checker-1', k, 'x');
     assert.equal(r.status, 1); assert.match(r.stderr, new RegExp(`${k} was removed; verifier independence is judged by identity`), k);
   }
-  let r = eng('verdict', 'PASS', '--by', 'checker-1', '--pr', '7');
+  let r = eng('verdict', 'round', '--by', 'checker-1', '--', 'sh', '-c', 'echo docs render');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  r = eng('verdict', 'PASS', '--by', 'checker-1', '--pr', '7');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /posted success \(context verdict\)/);
   const log = fs.readFileSync(calls, 'utf8'), body = log.slice(log.lastIndexOf('issues/7/comments -f body=') + 26), [v] = parseVerdicts([{ body }]);
-  assert.deepEqual([v.sha, v.result, v.by], [H, 'PASS', 'checker-1'], 'the PR comment carries the exact head and the verifier identity');
+  assert.deepEqual([v.sha, v.result, v.by, v.method], [H, 'PASS', 'checker-1', 'verification'], 'the PR comment carries the exact head, the verifier identity and the method');
+  assert.deepEqual(v.runs.map(x => [x.cmd, x.exit, x.output.trim(), x.sha]), [['sh -c echo docs render', 0, 'docs render', H]], 'and the run it made on that head');
   assert.doesNotMatch(body, /family|provider|model/, 'the record carries no model or provider');
-  assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=success -f context=verdict -f description=verdict: PASS \\(PASS by checker-1 on`));
+  assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=success -f context=verdict -f description=verdict: PASS \\(PASS verification by checker-1 on`));
   r = eng('verdict', 'status');
   assert.equal(r.status, 1); assert.match(r.stderr, /usage: eng verdict status --pr <n>/);
 });
@@ -219,7 +224,9 @@ test('legacy verdict comments with family, provider and model fields still parse
   const [v] = parseVerdicts([{ body, user: { login: 'Mattslayga' }, author_association: 'OWNER', created_at: '2026-10-19T04:00:00Z' }]);
   assert.deepEqual([v.sha, v.result, v.by], [SHA, 'PASS', 'old-checker']);
   for (const k of ['family', 'provider', 'model']) assert.equal(k in v, false, k);
-  assert.equal(decide(pr(), st({ verdicts: [v] }), C).merge, true, 'a legacy PASS counts by its identity');
+  assert.equal(methodOf(v), 'review', 'a verdict from before verification-first is a review');
+  assert.equal(decide(pr(), st({ verdicts: [v], files: ['README.md'] }), C).merge, true, 'a legacy PASS counts by its identity on review-only text');
+  assert.match(decide(pr(), st({ verdicts: [v], files: ['lib/x.mjs'] }), C).reason, /old-checker does not count: review-only PASS on testable code \(lib\/x\.mjs\)/);
   const [noFamily] = parseVerdicts([{ body: verdictBody({ sha: SHA, result: 'PASS', by: 'new' }) }]);
   assert.equal(noFamily.by, 'new', 'a verdict without a family parses');
 });

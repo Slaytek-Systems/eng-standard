@@ -24,7 +24,9 @@ Self-merge merges a PR only when **all** hold:
 - The verdict comments pass the tier's rule. First the trust policy (below) drops every untrusted comment. Then only
   comments whose `sha` is the head SHA count. A comment whose identity (`by`, or the login under `verifier_logins`)
   equals an author's identity (`Agent:` id, commit author or committer email, or GitHub login) never counts. Each
-  verifier's latest comment counts, and any FAIL among them refuses the merge.
+  verifier's latest comment counts, and any FAIL among them refuses the merge. A PASS counts only as verification:
+  passing runs on its own commit (`lib/verification.mjs`). A review PASS (`--review`) counts only when every changed file
+  matches `verification.review_only_paths` (docs and policy text). An incomplete file list counts as testable.
   - **risk:low** needs one PASS (or PASS+NOTES).
   - **risk:high** needs PASSes from `ship.high_risk.verifiers` (default 2) independent verifiers with distinct
     identities. A PR is risk:high if its label says so or the files recomputed against
@@ -98,17 +100,22 @@ Run by a fresh T3 thread that Eng Manager launches. It must not have written any
 ```sh
 # inputs: <n> PR number, <id> the checker's own identity (e.g. its T3 thread id),
 #         <evidence> Core note id (or path) with what it checked
-git fetch origin main && gh pr checkout <n> && git pull --ff-only
-npm ci && npm test                      # plus the review its brief asks for
-node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL
+git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
+node bin/eng.mjs verdict round --by <id> -- npm test          # one round per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
+# docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
+
+Verification first (Matt, 3 Nov 2026; Core nd7dhs8666vb7cd79t6m2e5bnx8hhhae): running the change replaces most model
+review rounds and spends fewer tokens. A model review (`interrogate` or one reviewer) stays available. It is required
+only for text no check can run, and optional on a high-risk change at the author's or lead's discretion.
 
 A risk:high PR needs this from `ship.high_risk.verifiers` (default 2) verifiers with distinct identities. `--pr` records the verdict (git note bound to the patch-id), posts it as an `eng-verdict/v1` PR comment, and
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when
 local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when the only verdicts are by an author
 identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a clean rebase),
-`node bin/eng.mjs verdict status --pr <n>` re-posts without a new review; a changed patch needs a new verdict.
+`node bin/eng.mjs verdict status --pr <n>` re-posts without a new run; a changed patch needs a new verdict.
 Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is risk:high.
 
 ## Post-merge check and auto-revert

@@ -11,6 +11,7 @@ To use a skill, read `.agents/skills/<name>/SKILL.md` and follow it. Do not rely
 
 This is the primary path. A lead that spawns or steers a coding thread (for example in T3) starts the message with one line naming the mode and the playbook, then the job:
 - `/poteto-mode -> Shipping playbook: verify commit <sha> with verify-<app>, record eng verdict`
+  (the verifier runs each check with `eng verdict round --by <id> -- <cmd>`, then records the verdict, which carries the runs)
 - `/poteto-mode -> Babysit playbook (drive): get PR #<n> to merge-ready`
 - When steering mid-task: `/poteto-mode -> Switch to the Shipping playbook` or `Run blast-radius on this diff`.
 
@@ -35,7 +36,7 @@ The router below (also in AGENTS.md) is the fallback when no skill was named.
 
 - **plan:** `poteto-mode` (it picks the playbook: bug-fix, feature, refactoring ...), then `how` / `why` / `architect`; `figure-it-out` for large work; `grilling` / `grill-with-docs` for product calls; `find-the-laws` for rules that must always hold.
 - **build:** the playbook steps; `tdd` for bug fixes; `typescript-best-practices` on every .ts/.tsx edit; `show-me-your-work` for long or unattended runs.
-- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; the skill `formal.stateful` in eng.config.yml names for a flow that moves between states (default `statechart`), and the one `formal.other` names for non-stateful high-cost code (default `create-formal-verification-skill`); `interrogate` for contested design, `blast-radius` for small risky diffs.
+- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; the skill `formal.stateful` in eng.config.yml names for a flow that moves between states (default `statechart`), and the one `formal.other` names for non-stateful high-cost code (default `create-formal-verification-skill`); the verifier runs each check on the exact commit with `eng verdict round --by <id> -- <cmd>`; `interrogate` (optional) for contested design and for text no check can run, `blast-radius` for small risky diffs.
 - **ship:** author: the Opening a PR playbook (`no-comments`, then `technical-writing` + `unslop`) up to merge-ready, never merge. Shipping manager: the loop below.
 
 ## Shipping (serial, one PR at a time)

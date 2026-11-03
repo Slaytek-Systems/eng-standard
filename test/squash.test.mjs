@@ -37,6 +37,8 @@ test('squash merge: verify maintain and verdict check resolve PR-head records on
     fs.appendFileSync(path.join(dev, 'feature.txt'), 'two\n'); g('commit -qam done');
     const create = eng(dev, 'verify', 'create', 'feature');
     assert.equal(create.status, 0, create.stdout + create.stderr);
+    const round = eng(dev, 'verdict', 'round', '--by', 'verifier-x', '--', 'sh', '.eng/checks/feature.sh');
+    assert.equal(round.status, 0, round.stdout + round.stderr);
     const rec = eng(dev, 'verdict', 'PASS', '--by', 'verifier-x');
     assert.equal(rec.status, 0, rec.stdout + rec.stderr);
     const prHead = g('rev-parse HEAD');

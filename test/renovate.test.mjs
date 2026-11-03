@@ -224,6 +224,7 @@ test('eng verdict records the verifier identity; eng renovate receipt drafts a c
   r = eng('renovate', 'apply', 'verifier', '--adapter', 'core-edge.ship-receipt/v1'); assert.equal(r.status, 0, out(r));
   assert.equal(eng('renovate', 'render', '--check').status, 0, 'apply re-renders what its config edit changed');
   git('add -A'); git('commit -qm "step4-5" -m "Agent: builder-1"');
+  r = eng('verdict', 'round', '--by', 'verifier-1', '--', 'true'); assert.equal(r.status, 0, out(r));
   r = eng('verdict', 'PASS', '--by', 'verifier-1', '--session', 'verifier-1');
   assert.equal(r.status, 0, out(r));
   assert.match(eng('verdict', 'check').stdout, /code written by .*builder-1/);

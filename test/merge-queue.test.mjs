@@ -20,7 +20,8 @@ const q = autoConfig(YAML.parse(fs.readFileSync(ROOTCFG, 'utf8')));
 const qq = { ...q, mode: 'queue' };
 const authors = authorsFrom(['feat\n\nAgent: builder-1'], ['t@t']);
 const H = 'a'.repeat(40);
-const V = (o = {}) => ({ patch_id: 'p1', sha: H, result: 'PASS', by: 'verifier-1', at: '2026-10-24T01:00:00Z', ...o });
+// A verification verdict: runs on its own commit (lib/verification.mjs). Tests that need a review verdict say method: 'review'.
+const V = (o = {}) => { const v = { patch_id: 'p1', sha: H, result: 'PASS', by: 'verifier-1', at: '2026-10-24T01:00:00Z', method: 'verification', ...o }; return { runs: [{ cmd: 'npm test', exit: 0, output: 'ok', sha: v.sha }], ...v }; };
 const head = (o = {}) => ({ kind: 'head', sha: H, upToDate: true, ...o });
 const patch = { kind: 'patch', patchId: 'p1' };
 
@@ -455,7 +456,7 @@ test('eng merge post --dry-run and eng verdict --pr', () => {
   fs.writeFileSync(p, cfg);
   git('checkout -q -B feat3 origin/main'); fs.writeFileSync(path.join(dir, 'v.md'), 'v\n'); git('add -A'); git('commit -qm v -m "Agent: builder-1"');
   fs.writeFileSync(calls, '');
-  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--pr', '7']);
+  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const log = fs.readFileSync(calls, 'utf8');
   assert.match(log, /api repos\/o\/r\/issues\/7\/comments -f body=<!-- eng-verdict\/v1 -->/);

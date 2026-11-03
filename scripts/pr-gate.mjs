@@ -38,10 +38,10 @@ const full = pr => Number.isInteger(pr.changed_files) && Number.isInteger(pr.com
 
 function riskFor(pr) {
   const files = pages(`repos/${R}/pulls/${pr.number}/files?per_page=100`), want = full(pr).changed_files;
-  if (files.length !== want) return { risk: 'high', hits: [{ file: `(${files.length} of ${want ?? '?'} changed files listed)`, pattern: 'incomplete file list' }] };
+  if (files.length !== want) return { risk: 'high', hits: [{ file: `(${files.length} of ${want ?? '?'} changed files listed)`, pattern: 'incomplete file list' }], files: null };
   const bump = new Set((HR.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified'))
     .filter(f => versionOnly(f, raw(f, pr.base.sha), raw(f, pr.head.sha))));
-  return classifyRisk(files, HR, bump);
+  return { ...classifyRisk(files, HR, bump), files: files.length ? files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)) : null };
 }
 
 function label(n) {
@@ -64,8 +64,9 @@ function prState(pr, tip) {
   const st = get(`repos/${R}/commits/${sha}/status`).statuses.find(s => s.context === C.status) || null;
   const commits = pages(`repos/${R}/pulls/${pr.number}/commits?per_page=100`), want = full(pr).commits;
   if (commits.length !== want) throw new Error(`GitHub listed ${commits.length} of ${want ?? '?'} commits, so the authors are unknown`);
+  const { risk, files } = riskFor(pr);
   return {
-    risk: riskFor(pr).risk, check: testRun(sha), status: st,
+    risk, files, check: testRun(sha), status: st,
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
     authors: authorsFrom(commits.map(c => c.commit.message), commits.flatMap(c => [c.commit.author?.email, c.commit.committer?.email, c.author?.login, c.committer?.login])),

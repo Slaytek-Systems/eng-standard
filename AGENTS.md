@@ -28,8 +28,12 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
   that may merge, and it still needs every condition above.
 - **Nobody bypasses anything**, Matt included: no `--admin`, no `--no-verify`, no merging around a red or missing check.
   Authors never merge their own PR and never post its verdict.
-- **Verdict:** each verifier runs `eng verdict PASS|FAIL --by <id> --pr <n>` on the exact head, with its own identity.
-  That posts an `eng-verdict/v1` PR comment (head SHA, identity) and the `verdict` status. Authors put an `Agent:`
+- **Verdict, verification first** (Matt, 3 Nov 2026). Each verifier runs the change on the exact head with
+  `eng verdict round --by <id> -- <cmd>` (`npm test`, the CLI against a scratch repo, property tests), then records
+  `eng verdict PASS|FAIL --by <id> --pr <n>` with its own identity. The verdict carries the runs: command, exit code,
+  output and SHA. A PASS counts only with passing runs on its commit. A model review (`--review`) is the required check
+  only when every changed file is docs or policy text (`verification.review_only_paths`), and optional otherwise.
+  That posts an `eng-verdict/v1` PR comment (head SHA, identity, method, runs) and the `verdict` status. Authors put an `Agent:`
   trailer on every commit so the gate can tell who wrote the patch.
 - **Stop one PR:** add the `hold` label. **Stop all:** `gh workflow disable self-merge.yml`.
 - **Undo:** `gh pr revert <n>` (one step: opens the revert PR, which goes through the same gates).
