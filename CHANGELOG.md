@@ -7,7 +7,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 **The run dir is named for the run** (Eng Manager; Core task p5711dqnz7m50h56b2jg4kaffh8hcmtv, decision nd7b3zym). Re-lands closed PR #41 on main. The launch contract now says basename(`ENG_RUN_DIR`) == `ENG_RUN_ID` for every run `eng ephemeral` and `eng launch-check` start.
 
 - `eng ephemeral` gave each run `ENG_RUN_DIR=<round>/run`, which `eng launch-check`'s `<tmp>/eng-launch/<id>` contradicts. A launch script that checks the name refused it (Motus PR470 and PR464).
-- The run dir is now `<scratch root>/<run id>`, beside the round folder rather than in it, so a socket in it stays short. Motus binds `$ENG_RUN_DIR/s4`: 68 bytes on the devbox, where `<round>/<run id>/s4` would be 123, past the 107-byte cap. It is writable under enforcement, counts as a run folder for the stray-process check, and is removed with the round.
+- The run dir is now `<scratch root>/<run id>`, beside the round folder rather than in it, so a socket in it stays short. Motus binds `$ENG_RUN_DIR/s4`: 67 bytes on the devbox for a `motus-app` run, where `<round>/<run id>/s4` would be 121, past the 107-byte cap. It is writable under enforcement, counts as a run folder for the stray-process check, and is removed with the round.
 - `eng clean` also removes an `eng-eph-*` run dir a killed run left, once its process is gone.
 - The launch contract comment, the starter config, the eng-verify skill and the README state the rule. Consuming repos see an eng-verify skill diff on their next `eng sync`.
 
