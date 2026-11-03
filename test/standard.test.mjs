@@ -54,7 +54,7 @@ test('lifecycleProblems: a lock from another version and a floating pin are both
   const p = lifecycleProblems({ lockVersion: '0.9.0', installed: '1.0.0', pin: { field: 'devDependencies', spec: '^1.0.0' } });
   assert.equal(p.length, 2);
   assert.match(p[0], /rendered by eng-standard 0\.9\.0, installed is 1\.0\.0\. Run eng sync/);
-  assert.match(p[1], /Pin a commit SHA or a vX\.Y\.Z tag/);
+  assert.match(p[1], /Pin a release tag \(#vX\.Y\.Z\)/);
 });
 
 test('sectionsSince lists every entry above the installed one, Unreleased included', () => {

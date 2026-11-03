@@ -14,7 +14,7 @@ The Slaytek Systems engineering standard. One file, `eng.config.yml`, drives eve
 
 | Command | Does |
 |---|---|
-| `eng init` | seed eng.config.yml if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
+| `eng init` | seed eng.config.yml from the minimal starter (`templates/starter/eng.config.yml`, stage 1 gates; later stages in `docs/lifecycle.md`) if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
 | `eng sync` | re-render; second run prints `no changes` |
 | `eng commands` | print every command name, one per line (the docs test checks this README against it) |
 | `eng upgrade-check [--source <checkout\|url>] [--json] [--warn]` | installed vs rendered (`.eng/lock.json`) vs latest eng-standard on `main`, the CHANGELOG entries in between, and whether the package.json pin is immutable. Exit 1 behind, stale or floating; 2 when the latest cannot be read. See `docs/lifecycle.md` |

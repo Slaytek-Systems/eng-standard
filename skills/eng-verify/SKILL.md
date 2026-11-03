@@ -18,8 +18,8 @@ pstack `create-verification-skill` assumes a Launch exists; `maintain-verificati
 1. Write `.eng/checks/<id>.sh` that drives the real behaviour (via `verify-<app>`) and exits 0 only when it is right. First line: `# covers: <paths>`.
 2. Commit the fix and the check, then `eng verify create <id>`. Done: it FAILS on the merge-base, PASSES on HEAD, and writes a git note on HEAD.
 
-## Re-check (after a rebase onto main or a merge-in)
+## Re-check (after main is merged in: `gh pr update-branch <n>`, never a rebase of pushed commits)
 1. `eng verify maintain`. Done: every check re-run on the new SHA, flaky and stale checks named, patch-id compared with the last proof (pstack Shipping step 3).
 2. Flaky → fix the check or the race. Stale → re-prove or delete in a reviewed PR.
-3. Merge also needs `eng verdict check`: a verdict from an identity that did not write the code (`eng verdict PASS --by <id>`), matched by patch-id, so a rebase that keeps the patch keeps it.
+3. Merge also needs `eng verdict check`: a verdict from an identity that did not write the code (`eng verdict PASS --by <id>`), matched by patch-id, so a merge from main that keeps the patch keeps it.
 4. A mistake seen twice → `eng mistake <key> "<what>"`, then the pstack `correct` skill picks the fix level; `custom-lint` is its lint rung.

@@ -107,7 +107,7 @@ A risk:high PR needs this from `ship.high_risk.verifiers` (default 2) verifiers 
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when
 local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when the only verdicts are by an author
-identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a clean rebase),
+identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a merge from main),
 `node bin/eng.mjs verdict status --pr <n>` re-posts without a new review; a changed patch needs a new verdict.
 Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is risk:high.
 

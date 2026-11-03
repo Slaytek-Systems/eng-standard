@@ -124,8 +124,8 @@ function sync() {
 
 function init() {
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml'));
-    console.log('  seeded eng.config.yml (edit it, then run eng sync)');
+    fs.copyFileSync(path.join(PKG, 'templates/starter/eng.config.yml'), path.join(ROOT, 'eng.config.yml'));
+    console.log(`  seeded eng.config.yml from the minimal starter (stage 1 gates). Edit it, then run eng sync. Later gates: ${LIFECYCLE_DOC}, "Turning on gates in stages"`);
   }
   const cfg = loadConfig();
   fs.mkdirSync(path.join(ROOT, cfg.verification.checks_dir), { recursive: true });
@@ -1181,7 +1181,7 @@ async function upgradeCheck() {
     console.log(`  rendered  ${r.rendered ?? 'none'} (.eng/lock.json package)${r.stale ? ': STALE, run eng sync and commit' : ''}`);
     console.log(`  latest    ${r.latest} (${src})`);
     console.log(`  pin       ${pin ? `${pin.field}.${PKG_NAME} = ${pin.spec}: ${r.pin.ok ? r.pin.kind : `FLOATING (${r.pin.why})`}` : `not declared in package.json (eng runs from ${PKG})`}${r.pin?.moved ? `\n            note: ${r.pin.moved}` : ''}`);
-    if (r.behind) console.log(`  CHANGELOG entries since ${r.installed}:\n${r.since.map(t => `    - ${t}`).join('\n')}\n  Next: move the pin to the new commit SHA or vX.Y.Z tag, install, run eng sync, commit everything in one PR (${LIFECYCLE_DOC}, Upgrade).`);
+    if (r.behind) console.log(`  CHANGELOG entries since ${r.installed}:\n${r.since.map(t => `    - ${t}`).join('\n')}\n  Next: move the pin to #v${r.latest}, install, run eng sync, commit everything in one PR (${LIFECYCLE_DOC}, Upgrade).`);
     console.log(`eng upgrade-check: ${r.ok ? 'CURRENT' : [r.behind && 'BEHIND', r.stale && 'STALE', r.pin && !r.pin.ok && 'FLOATING PIN'].filter(Boolean).join(', ')}${r.ok || !a.includes('--warn') ? '' : ' (--warn: exit 0)'}`);
   }
   process.exit(r.ok || a.includes('--warn') ? 0 : 1);

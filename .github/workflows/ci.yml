@@ -23,6 +23,25 @@ jobs:
       - run: node bin/eng.mjs evidence check              # no_cache_in_evidence, evidence_budget
       - run: node bin/eng.mjs downloads check             # pinned_downloads
       - run: node bin/eng.mjs --help
+  release-tag:
+    # Tags the release: the main commit that changed package.json's version gets vX.Y.Z once its test passes (push from a
+    # manual merge, or the post-merge run self-merge dispatches). Never moves or deletes a tag. Rule: lib/release.mjs.
+    needs: test
+    if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/release-tag.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
   start-self-merge:
     # The post-merge check on main, or an auto-revert branch's test, just finished: self-merge reads the result now (a red
     # main opens the auto-revert; a green one lets the next PR merge). Pass or fail, never on pull_request.

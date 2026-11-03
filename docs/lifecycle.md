@@ -18,19 +18,23 @@ what each one covers is [standard-map.md](standard-map.md).
 
 ## Pin
 
-A repo installs the standard as a dev dependency pinned to one immutable ref. The package is not on npm; it installs
+A repo installs the standard as a dev dependency pinned to a release tag. The package is not on npm; it installs
 from GitHub:
 
 ```json
 "devDependencies": {
-  "@slayteksystems/eng-standard": "github:Slaytek-Systems/eng-standard#<40-character commit SHA>"
+  "@slayteksystems/eng-standard": "github:Slaytek-Systems/eng-standard#vX.Y.Z"
 }
 ```
 
-- A commit SHA or a `vX.Y.Z` tag is immutable. A branch (`#main`), a short SHA, a range or no `#` at all is floating:
-  the standard would change under the repo with no commit in it. `eng drift-check` fails a floating pin.
-- Tags stop at `v0.9.0`, so pin commit SHAs. The SHA for the latest version is
-  `gh api repos/Slaytek-Systems/eng-standard/commits/main -q .sha`.
+- Pin a `vX.Y.Z` tag. CI tags every release: `.github/workflows/release-tag.yml` creates `vX.Y.Z` on the main commit
+  that changed `package.json` to X.Y.Z, once that commit's `ci` run on main is green. A tag is never moved or deleted
+  (the workflow refuses, and the rendered pre-push hook blocks it). The latest tag is
+  `gh api repos/Slaytek-Systems/eng-standard/tags -q '.[0].name'`.
+- Releases from 0.9.1 to 0.13.x have no tag (tagging started with 0.14.0, and earlier releases were not tagged by
+  hand). A repo on one of those pins its full commit SHA until it upgrades.
+- A full commit SHA is also immutable. A branch (`#main`), a short SHA, a range or no `#` at all is floating: the
+  standard would change under the repo with no commit in it. `eng drift-check` fails a floating pin.
 - Pins that still say `Mattslayga/eng-standard` work through GitHub's redirect. Move them to `Slaytek-Systems` on the
   next upgrade; `eng upgrade-check` notes it.
 - Run the CLI as `npx --no-install eng`, `bunx eng` or `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`.
@@ -51,7 +55,7 @@ from GitHub:
    could not read the latest (unknown is not current); `--warn` reports and exits 0; `--source <checkout>` reads a local
    eng-standard checkout instead of GitHub.
 2. Read every entry it lists. Entries marked risk:high or "needs Matt" change merge gates, CI or permissions.
-3. Branch, move the pin to the new SHA, install with the repo's package manager.
+3. Branch, move the pin to the new `vX.Y.Z` tag, install with the repo's package manager.
 4. `eng sync`, then review the diff. Only generated files and `.eng/lock.json` should change.
 5. `eng drift-check` and `eng gate`. A renovated repo also runs `eng renovate audit`: it reports `renovation.version`
    behind the pack, and `eng renovate plan` shows any new step.
@@ -72,21 +76,40 @@ from GitHub:
 
 The rendered `AGENTS.md` block is the day-to-day guide. In short: start non-trivial work with `poteto-mode`, run
 `eng gate` before you ask for review, never merge your own PR, and get a verdict from a verifier whose identity differs
-from every author's (`eng verdict round -- <cmd>`, then `eng verdict PASS --by <id> --pr <n>`). `SHIPPING.md` is the
-shipping SOP and wins over any other doc in the repo.
+from every author's (`eng verdict round -- <cmd>`, then `eng verdict PASS --by <id> --pr <n>`). Never rewrite pushed
+history: after a push every fix is a new commit and main comes in by merge (`gh pr update-branch <n>`); the rendered
+pre-push hook refuses a non-fast-forward push on any branch (SHIPPING.md rule 1). `SHIPPING.md` is the shipping SOP and
+wins over any other doc in the repo.
 
 ## New repo: the starter pack
 
 1. Add the pinned dependency (above) and install.
-2. `eng init`. It copies the starter `templates/eng.config.yml` when the repo has none, renders every generated file
-   (AGENTS.md block, SHIPPING.md, STACK.md, CLAUDE.md, skills, hooks, CI pipeline, PR template), sets
+2. `eng init`. It copies the minimal starter `templates/starter/eng.config.yml` when the repo has none, renders every
+   generated file (AGENTS.md block, SHIPPING.md, STACK.md, CLAUDE.md, skills, hooks, CI pipeline, PR template), sets
    `core.hooksPath .githooks`, and prints the branch ruleset to apply by hand. eng never edits rulesets.
-3. Edit `eng.config.yml`: `project` (name, branch, commands), `merge` (who merges and how), `ship.high_risk.paths`,
-   `launch`, `isolation`. The starter is the full standard. Every gate in `gates.required` must pass, and a skipped
-   gate counts as failed, so a gate the repo cannot run yet comes out of the list in the onboarding PR with the reason
-   written in that PR. Matt approves `eng.config.yml` changes.
-4. `eng sync`, `eng drift-check`, commit, open the PR. Then `create-verification-skill` makes the repo's
-   `verify-<app>` skill (after `eng launch-check` passes).
+3. Edit `project.name` and `merge` (who merges and how), then `eng sync`, commit, open the PR. `eng gate` passes on
+   day one with the stage 1 gates (`test/starter.test.mjs` proves it on an empty repo).
+4. Turn on the later gates one stage per PR (next section). Matt approves `eng.config.yml` changes.
+
+## Turning on gates in stages
+
+The starter requires only what a brand-new repo can pass. Each later stage is one PR: copy the named sections from the
+full reference `templates/eng.config.yml` (every key commented), run the stage's own command until it passes, then add
+its gate ids to `gates.required`. A gate in the list must pass, and a skipped gate counts as failed, so never add a gate
+before its command passes.
+
+| Stage | Gates added | Copy from the full reference | Prove it first | Turn it on when |
+|---|---|---|---|---|
+| 1, day one | `drift`, `stack`, `lint`, `rules`, `verdict` | nothing (the starter) | `eng gate` | always |
+| 2, tests | `test`, `typecheck` | `project.commands` (`vp test run`, `vp check`); `constraints` for repo lint rules | `eng gate` with them listed | the repo has code and a test |
+| 3, disk | `doctor`, `evidence`, `downloads` | `hygiene` (scratch root, caches, disk rules, run rules) | `eng doctor`, `eng evidence check`, `eng downloads check` | before the first long test, e2e or container run |
+| 4, run it | `launch`, `isolation`, `verify` | `launch`, `isolation`, `audits`; `.eng/checks/<id>.sh` with `eng verify create <id>` | `eng launch-check`, `eng isolation check`, `eng verify maintain` | the app starts locally; then `create-verification-skill` writes `verify-<app>` |
+| 5, e2e | `e2e`, `fallow` | `e2e` (pins, policy), `fallow`; `templates/e2e/` | `eng e2e --flake-check`, `eng fallow` | there is a user journey; the repo is JS/TS |
+| 6, formal | `laws`, `conform` | `laws`, `flags`, `db`; `formal` is already set | `eng laws`, `eng conform` | pure logic worth proving (money, permissions, state machines) |
+
+`verdict` passes on `main` and on a branch with no change. On a PR it needs an independent verdict: that is the merge
+gate working, not a setup gap. `test/starter.test.mjs` fails when a gate the full reference can require has no stage
+in this table or in the starter's header.
 
 ## New agent in a repo
 
@@ -141,6 +164,12 @@ fails). An incident or revert in eng-standard itself leaves a guard, logged in [
 - a relative link in this repo's docs points at a missing file;
 - a doc the rendered AGENTS.md points at is not shipped in the package;
 - a doc or script still names the old repo owner.
+
+`test/no-force-push.test.mjs` fails when any doc, template or rendered file (vendored skills included) tells an agent to
+force-push, and proves the rendered pre-push hook and deny list refuse it. Vendored pstack sentences that said so are
+replaced at install time through `vendor/pstack/REWRITES.tsv`. `test/starter.test.mjs` runs `eng init` and `eng gate`
+on an empty repo, and fails when a gate has no stage in the guide. `test/release.test.mjs` covers the release-tag rule
+and the `release-tag` job in `ci.yml`.
 
 `test/standard.test.mjs` proves the rendered "This standard" section, the drift-check pin and lock-version checks,
 `eng upgrade-check` and `eng uninstall` in a scratch repo.
