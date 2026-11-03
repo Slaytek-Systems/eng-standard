@@ -1,0 +1,139 @@
+# eng.config.yml, minimal starter (eng init seeds this). Owner: Matt. Agents draft changes; Matt approves.
+# Run `eng sync` after editing. `eng drift-check` fails if generated files differ from what this renders.
+#
+# Day one: `eng gate` passes on a brand-new repo with only stage 1 below. Turn on each later stage in its own PR: copy
+# the named section from templates/eng.config.yml (the full reference, every key commented), prove its gate passes on
+# its own (the command in brackets), then add the gate id to gates.required. A gate in the list must pass; skipped =
+# failed. Steps per stage: docs/lifecycle.md, "Turning on gates in stages".
+#
+#   stage 1 (day one)   drift, stack, lint, rules, verdict          this file as it is
+#   stage 2 (tests)     test, typecheck                              project.commands          [eng gate]
+#   stage 3 (disk)      doctor, evidence, downloads                  hygiene                   [eng doctor]
+#   stage 4 (run it)    launch, isolation, verify                    launch, isolation         [eng launch-check]
+#   stage 5 (e2e)       e2e, fallow                                  e2e, fallow               [eng e2e, eng fallow]
+#   stage 6 (formal)    laws, conform                                laws, formal              [eng laws, eng conform]
+version: 1
+
+project:
+  name: my-repo                   # change me
+  default_branch: main
+  protected_branches: [main]      # Never rebased, force-pushed or deleted. No branch has pushed history rewritten (SHIPPING.md rule 1).
+  commands:                       # The repo's own commands. eng gate runs `test` as an ephemeral run (it must leave nothing behind).
+    test: node --test               # stage 1: Node's runner, which passes with zero tests, so `test` is not a gate yet.
+    # Stage 2: once the repo has code and tests, use the Modern Stack commands and add test, typecheck to gates.required:
+    # install: vp install
+    # typecheck: vp check
+    # test: vp test run
+    # dev: vp dev
+
+stack:
+  status: DRAFT                   # DRAFT until Matt marks each decision APPROVED.
+  defaults:
+    language:        { use: TypeScript (strict), why: "One language across UI, backend and Convex; agents are strongest in it.", decision: DRAFT }
+    runtime:         { use: "Node 24 via vp (vp env); Bun for scripts and the Convex CLI", why: "vp test/check/build are Node-hosted and Confect needs Node >= 24; Bun runs one-off scripts and `bun x convex` fast (Convex Bun quickstart).", decision: DRAFT }
+    package_manager: { use: "bun via vp install/add/remove, packageManager pinned in package.json (e.g. bun@1.4.4)", why: "Vite+ supports bun as a package manager and installs with whatever packageManager pins; proven in proof-log/14.", decision: DRAFT }
+    test_runner:     { use: "vp test (Vitest) as the single runner, incl. convex-test (edge-runtime project) and parity/property tests", why: "One runner; convex-test needs Vite (import.meta.glob) and fails under bun test; Vitest 5 + convex-test 0.0.61 proven in proof-log/14.", decision: DRAFT }
+    lint_format:     { use: "vp check (Oxfmt + type-aware Oxlint) with ignorePatterns for .agents/.claude/.cursor/.eng/.intent/generated/_generated/fallow-baselines/*.md, + eng lint for custom rules", why: "Oxc is what Vite+ bundles; without ignores vp check formats vendored skill files (106 files in proof-log/14).", decision: DRAFT }
+    build_dev:       { use: "vp dev/build for web apps, vp pack for libraries; vp run for tasks, cache only on side-effect-free tasks (cache: false for scripts with effects)", why: "Vite+ unifies Vite/Rolldown/tsdown; vp run cache hits replay output without running the command.", decision: DRAFT }
+    backend:         { use: Convex, why: "Reactive DB + functions with generated types; already used in thinksmart/motus/infotech.", decision: DRAFT }
+    effects:         { use: "Effect (with Confect for Convex)", why: "Typed errors/services/schemas; Confect is the maintained Effect<->Convex framework (community, not Convex-official).", decision: DRAFT }
+    codebase_analysis: { use: "Fallow (npm fallow, exact pin) for the module graph: unused files/exports/deps, cycles, boundaries, duplication, complexity", why: "Linters see one file; fallow sees the project graph (fallow.tools/docs/explanations/fallow-vs-linters). Rust-native, MIT, zero-config for Vite/Vitest/Convex. Replaces knip and jscpd; complements vp check and eng lint.", decision: DRAFT }
+    agent_activity_ui: { use: "shadcn Trace (`pnpm dlx shadcn@latest add trace`; Trace, TraceLine, TraceIcon, TraceTitle, TraceDescription, TraceCollapsible*), with AI Elements and Code Block where relevant", why: "When an app shows agent or AI activity to users (reasoning, tool calls, subagents, queues, plans, sources), use Trace instead of custom UI: one abstraction, AI SDK parts, a11y built in. Published by shadcn 14 Oct 2026. Docs: https://ui.shadcn.com/docs/components/trace", decision: DRAFT }
+    proofs:          { use: "Bend2 for laws on core pure logic", why: "Machine-checked invariants as backpressure; only binds Bend code, so scope it to small pure modules.", decision: DRAFT }
+  languages:
+    allowed: [typescript, javascript, bend]
+    justified_when:               # DRAFT. A new language needs a stack.exceptions entry with one of these reasons.
+      rust: "Hot path where measured CPU/memory cost of TS is the bottleneck, a native/systems boundary (e.g. core-edge), or a library only available in Rust. Not for preference."
+      python: "Data/ML work that depends on a Python-only library, kept behind a service boundary."
+      other: "Only with a measured reason TS cannot meet, an owner, and a rollback plan."
+  frameworks:
+    allowed: [convex, effect, "@confect/server", vite, vite-plus, vitest, oxlint, fallow]
+  exceptions: []                  # e.g. {kind: language|framework|package_manager, name: rust, reason: "...", approved_by: Mattslayga}
+  notes:
+    - "Bun vs Vite+: vp test/check/build run on Node (vp manages Node); bun is the package manager under vp (viteplus.dev/guide, llms-full.txt). Bun runtime is for scripts and the Convex CLI, run via `vp run` or `bun`."
+    - "Confect needs Node >= 24 for its CLI, TS strict:true, and only a subset of Effect Schema (confect.dev quickstart)."
+    - "Convex functions run in Convex's runtime regardless of local runtime choice; the toolchain only affects CLI, codegen, tests and the app shell."
+    - "Convex 1.49 needs Node 22 or newer. eng stack-check fails a Convex repo whose engines.node, .nvmrc/.node-version, CI node-version or convex.json node.nodeVersion is lower."
+    - "Validate a function handle with v.function({ fnType, args, returns }) (Convex 1.49+), not v.string() plus an `as FunctionHandle<...>` cast. Its type is FunctionHandle_future. eng lint rule convex-function-handle-validator enforces it once the repo is on convex 1.49."
+
+agents:
+  harnesses: [claude-code, codex]   # AGENTS.md is read by Codex; CLAUDE.md imports it for Claude Code.
+  skills_dir: .agents/skills
+  # post_edit_command: "npm run lint:changed -- --hook"   # optional; rendered as a Claude Code PostToolUse hook (Edit|MultiEdit|Write) in .claude/settings.json. Exit 2 feeds stderr back to the agent.
+  rules: []                      # Rule -> enforcer table (pstack correct). Add a rule only with its enforcer: a lint rule id, check id, gate, hook path, or `review` + why.
+  skills:                         # <source>/<name>. Vendored copies at pins in pkg/vendor/PINS.txt; eng/* are ours.
+    - pstack/*                     # the full pstack set (61 skills + 2 subagents), pinned in pkg/vendor/PINS.txt
+    - pocock/grilling
+    - pocock/grill-with-docs
+    - pocock/domain-modeling
+    - eng/eng-verify
+    - eng/find-the-laws
+    - eng/write-law-and-proof
+    - eng/law-conformance
+    - pi-intent/intent-conformance
+    - eng/property-test
+    - eng/add-gate
+    - eng/custom-lint
+    - eng/eng-retro                # learning loop: eng retro (copies pocock/retro + pstack correct)
+    - pocock/retro
+    - eng/e2e-flow
+    - eng/eng-stack
+    - eng/eng-route                # stage router + how to name a skill when spawning/steering a thread
+    - fallow/fallow                 # official, version-matched to the pinned CLI (pkg/vendor/PINS.txt)
+    - fallow/fallow-setup
+
+models:                           # Which model does which job. The standard names none: AGENTS.md points agents to the routing note.
+  routing: core:nd77rx5dhdt899w2np5kjknqdd8g8y2d   # Core note 'Model routing: who uses which model'. Matt edits routing there. Default: this note.
+  pstack:                         # Per-role picks for pstack skills; eng sync renders .eng/pstack-models.md. Roles: setup-pstack step 5.
+    feature, refactoring: inherit-parent   # inherit-parent: the role runs on the launching agent's model. Every role is set,
+    bug-fix: inherit-parent                # so no pstack skill falls back to its own default model.
+    perf-issue: inherit-parent
+    hillclimb: inherit-parent
+    judgment and prose: inherit-parent
+    hardest tasks: inherit-parent
+    how explorer: inherit-parent
+    how explainer: inherit-parent
+    why investigators: inherit-parent
+    why synthesizer: inherit-parent
+    reflect tooling: inherit-parent
+    reflect judgment, divergent, synthesizer: inherit-parent
+    arena runners: [inherit-parent, inherit-parent]          # A panel role takes a list; its length sets the panel size.
+    arena cross-judge pool: inherit-parent
+    swarm workers: inherit-parent
+    architect runners: [inherit-parent, inherit-parent]
+    interrogate reviewers: [inherit-parent, inherit-parent]
+
+merge:                            # Per repo. There is no global merge rule. Only ship.manager runs this.
+  owner: shipping manager (ship.manager)
+  command: gh pr merge <n> --squash --delete-branch --match-head-commit <sha>   # step 4 of the serial loop (SHIPPING.md)
+  method: squash
+
+ship:                             # Shipping model (approved by Matt, 13 Oct 2026).
+  manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
+  manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
+  author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
+  verifier: fresh-context agent   # Verdict bound to the head SHA / patch-id (eng verdict).
+  # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
+  # in SHIPPING.md instead. Set merge_queue: { provider, max_group_size, ci_trigger } only to opt in (eng then warns if CI lacks merge_group).
+  # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, high_risk_paths, high_risk_verifiers, post_merge.check, stuck_minutes,
+  # verdict_wait_minutes } plus eng merge gate|watch|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
+  high_risk:                      # Matt approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
+    label: risk:high
+    reasons: [auth, payments, schema/migrations, public APIs, CI, production data]
+    paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**"]
+  split_bot_when: "concurrent PR load or release work outgrows the lead agent"
+
+verification:
+  checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present.
+  flake_runs: 3                   # maintain runs each check this many times; mixed results = FLAKY = fail.
+  stale_after_commits: 50
+  repeat_threshold: 2             # A mistake seen this often must become a rule or check.
+
+formal:                           # Which skill formally checks what (lib/formal.mjs). Rendered into AGENTS.md; each skill must be in agents.skills.
+  stateful: statechart            # Default for a flow that moves between states: merge flow, rollout, booking or other state machines, protocols. TLA+ checked by TLC, drawn as a Mermaid statechart (eng-sandbox PR #17: found five merge-flow holes, then proved the fixes).
+  other: create-formal-verification-skill   # Non-stateful code where a bug costs most: parsers, data-structure invariants, unsafe code.
+  # why: "..."                    # Required when stateful or other is not the default above.
+
+gates:
+  skipped_is_failed: true         # Schema constant.
+  required: [drift, stack, lint, rules, verdict]   # stage 1. Later stages: see the header.

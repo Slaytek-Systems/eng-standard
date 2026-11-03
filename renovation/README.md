@@ -1,30 +1,6 @@
-# Renovation pack (eng-standard 0.9.0)
+# Renovation pack
 
-## T3 message delivery and queue health
-
-A `queued` result from `t3_thread_send` means T3 stored the message. It does not confirm that a run started. Check `t3_thread_read` activity or `t3_thread_wait` for a new run. For time-critical or approved sends, use `mode: "auto"` and confirm that the run started.
-
-Run the queue-age check on demand from an eng-standard checkout with `node lib/t3-queue-health.mjs snapshot.json`. The default age limit is 30 minutes. Set another limit with `--minutes N`. The command exits 1 when it finds a queued item older than the limit. It exits 2 when the snapshot is invalid. It does not run on a timer, schedule, loop, or daemon.
-
-The JSON snapshot has a `threads` array. Each thread has a `threadId`, an optional `title`, and an `items` array. Each item has a `queuedRunId` and an ISO 8601 `createdAt` timestamp.
-
-```json
-{
-  "threads": [
-    {
-      "threadId": "thread-id",
-      "title": "Coordinator",
-      "items": [
-        { "queuedRunId": "queued-run-id", "createdAt": "2026-10-27T10:00:00Z" }
-      ]
-    }
-  ]
-}
-```
-
-Build the snapshot from the coordinator's thread list, each thread's queue list, and each thread's recent runs. Match `queuedRunId` to the run's `runId` and copy its `requestedAt` value into `createdAt`. The checker rejects missing, malformed, or future timestamps. It escapes control characters in warnings so thread metadata cannot add output lines or workflow commands.
-
-The checker reports the thread, queued run, age, and configured limit.
+Introduced in eng-standard 0.9.0. The pack version is the package version, so `renovation.version` is the eng-standard version last applied. Upgrading the standard itself: [docs/lifecycle.md](../docs/lifecycle.md).
 
 The renovation pack brings an existing repo up to the standard. The repo lead applies it through normal PRs. The pack never merges, never bypasses protection, never edits rulesets and never touches prod. It writes files on a branch; the lead reviews, commits and opens the PR, and that PR goes through the repo's own gates and verifier.
 
@@ -33,7 +9,8 @@ Spec: renovation pack v1 (approved by Matt, 23 Oct 2026). Code: `lib/renovate.mj
 ## How a lead applies it
 
 ```sh
-npx eng-standard@0.9.0 renovate audit      # read-only; writes renovation/audit.json and renovation/audit.md
+# first add the pinned dev dependency (docs/lifecycle.md, Pin) and install; the package is not on npm
+npx --no-install eng renovate audit       # read-only; writes renovation/audit.json and renovation/audit.md
 npx eng renovate plan                      # the ordered PR list and the next step
 git switch -c renovate/docs-config
 npx eng renovate apply docs-config --owner @policy-owner
@@ -109,3 +86,29 @@ The record binds the head SHA, the merge-base, the base tip, the head tree (the 
 | devbox-ops #4/#5 | full-native 0700 | `eng launch` |
 | Todd #13, Website #10 | merge-policy adoption | step 1 |
 | Site #2 | fallow baseline, launch contract, TMPDIR, base branch | steps 2 and 7; `os.tmpdir()` instead of `/tmp` in `eng verify create` and `eng laws`; `--base <ref>` / `ENG_BASE` for the verdict base; the rendered pipeline lints against `origin/<default_branch>` |
+
+## T3 message delivery and queue health (coordinator tool, not part of the pack)
+
+A `queued` result from `t3_thread_send` means T3 stored the message. It does not confirm that a run started. Check `t3_thread_read` activity or `t3_thread_wait` for a new run. For time-critical or approved sends, use `mode: "auto"` and confirm that the run started.
+
+Run the queue-age check on demand from an eng-standard checkout with `node lib/t3-queue-health.mjs snapshot.json`. The default age limit is 30 minutes. Set another limit with `--minutes N`. The command exits 1 when it finds a queued item older than the limit. It exits 2 when the snapshot is invalid. It does not run on a timer, schedule, loop, or daemon.
+
+The JSON snapshot has a `threads` array. Each thread has a `threadId`, an optional `title`, and an `items` array. Each item has a `queuedRunId` and an ISO 8601 `createdAt` timestamp.
+
+```json
+{
+  "threads": [
+    {
+      "threadId": "thread-id",
+      "title": "Coordinator",
+      "items": [
+        { "queuedRunId": "queued-run-id", "createdAt": "2026-10-27T10:00:00Z" }
+      ]
+    }
+  ]
+}
+```
+
+Build the snapshot from the coordinator's thread list, each thread's queue list, and each thread's recent runs. Match `queuedRunId` to the run's `runId` and copy its `requestedAt` value into `createdAt`. The checker rejects missing, malformed, or future timestamps. It escapes control characters in warnings so thread metadata cannot add output lines or workflow commands.
+
+The checker reports the thread, queued run, age, and configured limit.

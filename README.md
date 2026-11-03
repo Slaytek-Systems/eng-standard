@@ -1,18 +1,25 @@
-# @slayteksystems/eng-standard v0 (sandbox only)
+# @slayteksystems/eng-standard
 
-One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md files in `.agents/skills` (symlinked into `.claude/skills`), AGENTS.md (Codex/Cursor) + CLAUDE.md (`@AGENTS.md`), git hooks, and a Node CLI.
+The Slaytek Systems engineering standard. One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md files in `.agents/skills` (symlinked into `.claude/skills`), AGENTS.md (Codex) + CLAUDE.md (`@AGENTS.md`), git hooks, and a Node CLI. The version is in `package.json`; every change is in [CHANGELOG.md](CHANGELOG.md).
 
-## Starter pack
+## Start here
 
-When you send a message with T3 `t3_thread_send`, a `queued` result means T3 stored the message. It does not confirm delivery or a new run. Check `t3_thread_read` activity or `t3_thread_wait` for a new run. For time-critical or approved sends, use `mode: "auto"` and confirm that a run started.
+- **New repo (starter pack):** pin the package, run `eng init`, edit `eng.config.yml`. Steps: [docs/lifecycle.md](docs/lifecycle.md), "New repo".
+- **Existing repo (renovation pack):** `eng renovate audit`, then `eng renovate plan`, one PR per step: [renovation/README.md](renovation/README.md).
+- **Pin, upgrade, drift detection, exceptions, uninstall, reporting a problem:** [docs/lifecycle.md](docs/lifecycle.md). `eng upgrade-check` tells a repo whether it is behind.
+- **Which doc covers what, and what this repo checks about its own docs:** [docs/standard-map.md](docs/standard-map.md).
+- **Proposals (DRAFT, not wired in):** [trust levels](docs/trust-levels.md), [OpenTelemetry](docs/proposals/otel.md).
 
-Run the coordinator queue-age check from an eng-standard checkout with `node lib/t3-queue-health.mjs snapshot.json`. The default age limit is 30 minutes. Set another limit with `--minutes N`. The command exits 1 when it finds an old item and 2 when the input is invalid. See `renovation/README.md` for the snapshot format.
+## Commands
 
 | Command | Does |
 |---|---|
-| `eng init` | seed eng.config.yml if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
+| `eng init` | seed eng.config.yml from the minimal starter (`templates/starter/eng.config.yml`, stage 1 gates; later stages in `docs/lifecycle.md`) if missing, render everything, set `core.hooksPath .githooks`; prints the branch ruleset advice (non-strict required checks) |
 | `eng sync` | re-render; second run prints `no changes` |
-| `eng drift-check` | fail if any generated file / symlink / lock differs from what the config renders |
+| `eng commands` | print every command name, one per line (the docs test checks this README against it) |
+| `eng upgrade-check [--source <checkout\|url>] [--json] [--warn]` | installed vs rendered (`.eng/lock.json`) vs latest eng-standard on `main`, the CHANGELOG entries in between, and whether the package.json pin is immutable. Exit 1 behind, stale or floating; 2 when the latest cannot be read. See `docs/lifecycle.md` |
+| `eng uninstall [--apply]` | dry run by default: removes every file and symlink `eng sync` manages and `.eng/lock.json`, strips the AGENTS.md block, unsets `core.hooksPath`; keeps hand-edited files and `eng.config.yml` |
+| `eng drift-check` | fail if any generated file / symlink / lock differs from what the config renders, the lock was rendered by another eng version, or the package.json pin floats (a branch or range) |
 | `eng stack-check` | fail on off-stack language, framework or lockfile without a `stack.exceptions` entry, or on a Convex repo that pins Node below 22; warns if `ship.merge_queue` is set and no CI workflow triggers on `merge_group` |
 | `eng stack-audit [<name>=<path>...]` | read-only: compare declared deps, `packageManager` and CI Bun/Node pins at `origin/main` (`--ref`) against the Modern Stack floors in `standard/modern-stack.yml`; exit 1 on drift. `--json` prints findings, `--core` prints Core follow-up inputs and never sends them. See `docs/modern-stack.md` |
 | `eng lint` / `eng rules prove` | regex constraints (incl. built-in db-additive-only, flags-default-off); each rule must bite its fixture |
@@ -25,6 +32,13 @@ Run the coordinator queue-age check from an eng-standard checkout with `node lib
 | `eng e2e-required` | prints whether e2e is required for this diff and why (`--event pr\|main\|nightly`, `--base`, `--files`, `--labels`, `--json`, `--exit-code` = 10 when not required). PRs are path-based; main after merge and nightly always run the full suite |
 | `eng clean` | disk hygiene, dry run by default (`--apply` acts). Removes this repo's stale `$ENG_TMP` dirs (`eng-<repo>-*` older than `--older-than` hours, default 6, process gone). `--worktrees`: removes git worktrees whose branch is merged or deleted upstream AND fully pushed AND clean; reports the rest, never deletes them. `eng gate` / `eng e2e` run every child with `ENG_TMP`/`TMPDIR` set to a per-run dir removed on exit, failure or signal; lint rule `test-bare-tmpdir`; vitest globalSetup `.eng/test-tmp.mjs` |
 | `eng gate` | every `gates.required`; skipped/blocked = failed |
+| `eng ship next` | read-only: live main state and recently merged PRs from GitHub, then the next ready PR for the serial shipping-manager loop and its exact commands |
+| `eng retro` | read-only learning loop: groups `.eng/mistakes.jsonl` into repeated classes and proposes one fix per class at the highest level (skill `eng-retro`) |
+| `eng find-laws` | ranks files by law hotspots (money, permissions, state, deletion ...) into `.eng/laws-candidates.md` (skill `find-the-laws`) |
+| `eng conform [--require-coverage]` | vendored pi-intent intent-conform: shipped code makes the same decisions as the Bend model (skill `law-conformance`) |
+| `eng fallow [--save-baseline]` | fallow graph analysis at the pinned version; greenfield = whole repo clean, brownfield = new findings only vs baselines |
+| `eng launch-check [--check-only]` | proves the repo's `launch:` contract: two concurrent runs with their own port and storage, and `down` leaves no process |
+| `eng ci-verdict <step>...` | Buildkite: every listed step's outcome must be `passed` (skipped or missing = failed) |
 | `hooks.pre_commit`, `agents.post_edit_command` | optional config. `.githooks/pre-commit` runs each `hooks.pre_commit` command in its own `sh -c` after drift-check, stack-check and lint, and stops at the first failure. `agents.post_edit_command` becomes a Claude Code `PostToolUse` hook in `.claude/settings.json` for `Edit\|MultiEdit\|Write`; exit code 2 returns its stderr to the agent. Unset keys render the same files as before |
 | `models.routing`, `models.pstack` | optional config. The standard names no models. AGENTS.md points agents to the Core note `models.routing` names (default: 'Model routing: who uses which model'), which wins over any skill default. `models.pstack` sets pstack roles (labels from setup-pstack step 5; a list for panel roles); `eng sync` renders `.eng/pstack-models.md`, and a role not set keeps the pstack default. `test/models.test.mjs` fails on a model id anywhere but `eng.config.yml` files, `vendor/` and history |
 | `stack.defaults.agent_activity_ui` | STACK.md default: agent or AI activity shown to users (reasoning, tool calls, subagents, queues) uses shadcn Trace (`pnpm dlx shadcn@latest add trace`), plus AI Elements / Code Block where relevant, not custom UI. Docs: https://ui.shadcn.com/docs/components/trace |
@@ -42,3 +56,9 @@ Run the coordinator queue-age check from an eng-standard checkout with `node lib
 | `npm test` | this package's own tests (`node --test`) |
 
 Vendored upstream skills (verbatim, path-rewritten `.cursor/skills/` → `.agents/skills/`): see `vendor/PINS.txt`. Licenses: MIT (vendor/*/LICENSE).
+
+## T3 message delivery and queue health
+
+When you send a message with T3 `t3_thread_send`, a `queued` result means T3 stored the message. It does not confirm delivery or a new run. Check `t3_thread_read` activity or `t3_thread_wait` for a new run. For time-critical or approved sends, use `mode: "auto"` and confirm that a run started.
+
+Run the coordinator queue-age check from an eng-standard checkout with `node lib/t3-queue-health.mjs snapshot.json`. The default age limit is 30 minutes. Set another limit with `--minutes N`. The command exits 1 when it finds an old item and 2 when the input is invalid. See `renovation/README.md` for the snapshot format.

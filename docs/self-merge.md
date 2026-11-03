@@ -107,7 +107,7 @@ A risk:high PR needs this from `ship.high_risk.verifiers` (default 2) verifiers 
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when
 local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when the only verdicts are by an author
-identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a clean rebase),
+identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a merge from main),
 `node bin/eng.mjs verdict status --pr <n>` re-posts without a new review; a changed patch needs a new verdict.
 Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is risk:high.
 
@@ -130,12 +130,13 @@ and needs `test` plus a `verdict` like any PR. Self-merge merges it once both ar
 
 ## GitHub settings (apply only after this PR merges)
 
-Matt (admin) runs these once. A user-owned public repo supports repository rulesets on the free plan; `bypass_actors`
-can be empty (OrganizationAdmin does not apply to personal repos), so the rules bind Matt too. Matt can still edit or
-delete the ruleset as the repo admin; that is the only way around it. Merge queue is not available (user-owned repo).
+Matt (admin) runs these once. This section was written while the repo was user-owned (`Mattslayga`). It moved to the
+`Slaytek-Systems` org on 24 Oct 2026. Rulesets work the same there with `bypass_actors` empty, so the rules bind Matt
+too. Matt can still edit or delete the ruleset as the repo admin; that is the only way around it. An org-owned public
+repo can use a merge queue, but eng-standard has not adopted one ([merge-queue.md](merge-queue.md)).
 
 ```sh
-R=Mattslayga/eng-standard
+R=Slaytek-Systems/eng-standard
 
 # 1. Labels the workflows use (risk:high already exists)
 gh label create risk:low --repo $R --color 0E8A16 --description "Self-merges after test + verdict"
