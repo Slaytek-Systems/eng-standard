@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import http from 'node:http';
 import net from 'node:net';
 import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
+import { openSockDir, sockName, staleSockDirs, SOCK_OWNER, SOCK_MAX } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
@@ -327,6 +328,7 @@ test('config: unknown rules or options, bad values and undeclared runs are rejec
     [c => { c.hygiene.run_rules.ephemeral_runs.runs = ['nope']; }, /runs lists nope, which is not in project\.commands/],
     [c => { c.hygiene.run_rules.ephemeral_runs.runs = ['launch']; }, /runs lists launch, but launch\.up and launch\.down are not both declared/],
     [c => { c.hygiene.run_rules.leave_some = { mode: 'fail' }; }, /hygiene\.run_rules\.leave_some is not a rule/],
+    [c => { c.isolation = { mode: 'warn', network: 'none' }; }, /isolation\.network must be host or private \(got "none"\)/],
   ];
   const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8');
   try {
@@ -996,4 +998,224 @@ test('isolation enforced: an exec start upgrade reaches the daemon with its body
   });
   assert.match(got, /^HTTP\/1\.1 101/, `the daemon got the body and switched protocols: ${JSON.stringify(got)}`);
   assert.match(got, /exec output/);
+});
+
+// ---------- ENG_SOCK_DIR and isolation.network (0.12.5) ----------
+// A run's unix sockets must fit in 107 bytes, at a path the docker daemon resolves on the host (a container's bind source).
+const home = process.env.HOME || os.homedir(), sockParent = process.env.ENG_SOCK_DIR || path.join(home, '.cache', 'eng', 's');
+const NEEDS_RT = 'needs a HOME this user owns, outside /tmp, short enough for ENG_SOCK_DIR';
+const hasRt = () => !home.startsWith('/tmp/') && Buffer.byteLength(path.join(sockParent, 'xxxxxxxx')) < SOCK_MAX && (() => { try { return fs.statSync(home).uid === process.getuid(); } catch { return false; } })();
+const sandboxedNet = () => { const probe = fs.mkdtempSync(path.join(root, 'probe-')); return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, '/tmp', '--unshare-net', '--', 'true']).status === 0 && !xdg.startsWith('/tmp/'); };
+const killRun = id => { for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { if (fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(id) || fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0').includes(`ENG_EPHEMERAL_RUN=${id}`)) process.kill(Number(d), 'SIGKILL'); } catch {} } };
+// A short private home of the test's own, so another eng run's start-of-run sweep (which clears dead runs' folders in its own
+// root) never races the test's assertions.
+const shortHome = t => { const b = path.join(os.homedir(), '.cache', 'eng'); fs.mkdirSync(b, { recursive: true }); const h = fs.mkdtempSync(path.join(b, 'th-')); t.after(() => fs.rmSync(h, { recursive: true, force: true })); return h; };
+// Every descendant of pid (eng's docker socket and its docker events watcher outlive a SIGKILLed eng).
+const tree = pid => { const kids = new Map(); for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { const pp = Number(fs.readFileSync(`/proc/${d}/stat`, 'utf8').split(') ').at(-1).split(' ')[1]); kids.set(pp, [...(kids.get(pp) ?? []), Number(d)]); } catch {} } const out = []; for (let q = [pid]; q.length;) { const n = q.pop(); for (const c of kids.get(n) ?? []) { out.push(c); q.push(c); } } return out; };
+const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (f()) return true; return false; };
+
+test('ENG_SOCK_DIR: the run\'s own 0700 folder in $HOME/.cache/eng/s, short enough for any socket, removed after', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const r = eng('ephemeral', '--', `printf '%s\\n' "$ENG_SOCK_DIR" "$ENG_RUN_ID" "$(stat -c '%a %u' "$ENG_SOCK_DIR")" > ${marks}/sock && node -e "const s = require('net').createServer().listen(process.env.ENG_SOCK_DIR + '/.s.PGSQL.5432', () => s.close())"`);
+  assert.equal(r.status, 0, out(r));
+  const [d, id, st] = mark('sock').split('\n');
+  assert.equal(path.dirname(d), sockParent);
+  assert.equal(path.basename(d), sockName(id));
+  assert.ok(Buffer.byteLength(d) < 60, `${d} is under 60 bytes`);
+  assert.equal(st, `700 ${process.getuid()}`, 'owner-only');
+  assert.ok(!fs.existsSync(d), 'removed after the run');
+});
+
+test('ENG_SOCK_DIR: under 60 bytes whatever the run id, or not set at all; never shared, a second open of one refuses', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const longest = `eng-eph-${(2 ** 53 - 1).toString(36)}-4194304-99`;
+  for (const h of ['/home/dev', '/home/runner', '/root']) assert.ok(Buffer.byteLength(path.join(h, '.cache/eng/s', sockName(longest), sockName(longest))) < 60, `${h}: a nested run's folder too`);
+  assert.equal(SOCK_MAX, 60);
+  assert.equal(openSockDir({ HOME: `/home/${'u'.repeat(40)}` }, longest), null, 'a home too long for a short folder gets none, and nothing is made');
+  assert.equal(openSockDir({ HOME: '/tmp' }, longest), null, 'never under /tmp');
+  const id = `eng-eph-test-${process.pid}-${Date.now().toString(36)}`, e = { ...process.env, ENG_SOCK_DIR: '' };
+  const d = openSockDir(e, id); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  assert.equal(fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8'), `${id}\n`);
+  assert.throws(() => openSockDir(e, id), /EEXIST/);
+  assert.notEqual(sockName(id), sockName(`${id}x`));
+});
+
+test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker daemon sees the run\'s own at the same path', async t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const a = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo run > "$ENG_SOCK_DIR/f" && echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
+  const done = new Promise(r => a.on('exit', r));
+  t.after(() => a.kill('SIGKILL'));
+  assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'a'))), 'run A started');
+  const other = mark('a');
+  assert.equal(fs.readFileSync(path.join(other, 'f'), 'utf8'), 'run\n', 'what the run writes there is on the host at the same path');
+  const write = docker ? `docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/f' && cat "$ENG_SOCK_DIR/f" >> ${marks}/b; ` : '';
+  const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; chmod 600 "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
+  assert.equal(r.status, 0, out(r));
+  assert.equal(await done, 0, 'run A passed');
+  const [own, ...rest] = mark('b').split('\n');
+  assert.notEqual(own, other, 'each run has its own folder');
+  assert.ok(fs.existsSync(other) === false && fs.existsSync(own) === false, 'both removed');
+  assert.deepEqual(rest.slice(0, 1), [path.basename(own)], 'the run sees only its own folder; no SEEN, no OWNER-WRITTEN');
+  if (docker) assert.deepEqual(rest.slice(1), ['daemon'], 'a container wrote into the run\'s folder through the same path');
+  else assert.deepEqual(rest.slice(1), []);
+});
+
+test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the next run; a SIGTERM run removes its own', async t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const e = { ...env, HOME: shortHome(t), ENG_SOCK_DIR: '' }, engIn = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: e });
+  const start = n => { const p = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env: e, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
+  const [term, termDone] = start('term');
+  assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'term'))));
+  process.kill(-term.pid, 'SIGTERM');  // the whole group, as Ctrl-C or a CI cancel does: eng acts once its run's step returns
+  assert.ok(['SIGTERM', 143].includes(await termDone));
+  assert.ok(!fs.existsSync(mark('term')), 'removed on SIGTERM');
+  for (const round of ['clean', 'next run']) {
+    const [p, gone] = start('crash');
+    assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'crash'))));
+    const d = mark('crash'), id = fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8').trim(); fs.rmSync(path.join(marks, 'crash'));
+    t.after(() => { killRun(id); fs.rmSync(d, { recursive: true, force: true }); });
+    const kids = tree(p.pid); p.kill('SIGKILL'); await gone; for (const k of kids) { try { process.kill(k, 'SIGKILL'); } catch {} } killRun(id);
+    assert.ok(fs.existsSync(d), 'SIGKILL leaves the folder');
+    assert.equal(path.dirname(d), path.join(e.HOME, '.cache', 'eng', 's'));
+    if (round === 'clean') {
+      const dry = engIn('clean');
+      assert.match(dry.stdout, new RegExp(`would remove\\s+${d}`)); assert.ok(fs.existsSync(d), 'dry run keeps it');
+      engIn('clean', '--apply');
+    } else assert.equal(engIn('ephemeral', '--', 'true').status, 0);
+    assert.ok(!fs.existsSync(d), `${round} removes it`);
+  }
+});
+
+test('staleSockDirs: a folder is stale once its run\'s eng is gone; a live one, or one with a forged owner, is kept until old', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0';
+  const dirs = [live, dead].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
+  const forged = path.join(path.dirname(dirs[0]), sockName(`${dead}-forged`)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), dead); dirs.push(forged);
+  const of = (h, now = Date.now()) => Object.fromEntries(staleSockDirs(h, { env: e, now }).filter(x => dirs.includes(x.path)).map(x => [x.path, x.stale]));
+  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [forged]: false });
+  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [forged]: true });
+});
+
+test('isolation.network private: the run has loopback only and ENG_NETWORK_ISOLATED=1; the host network is out of reach, docker still works', async t => {
+  if (!sandboxedNet()) return t.skip('needs a usable bwrap with --unshare-net and a run folder outside /tmp (nested bwrap is refused)');
+  const host = net.createServer(s => s.end('host')).listen(0, '127.0.0.1'); await new Promise(r => host.on('listening', r)); t.after(() => host.close());
+  const probe = path.join(marks, 'net-probe.cjs');
+  fs.writeFileSync(probe, `const net = require('net'), fs = require('fs'), cp = require('child_process');
+const reach = o => new Promise(r => { const s = net.connect(o); const done = v => { s.destroy(); r(v); }; s.on('connect', () => done('connected')); s.on('error', e => done(e.code)); setTimeout(() => done('timeout'), 3000); });
+(async () => {
+  const srv = net.createServer(s => s.end()).listen(0, '127.0.0.1'); await new Promise(r => srv.on('listening', r));
+  const out = { marker: process.env.ENG_NETWORK_ISOLATED ?? null, host: await reach({ host: '127.0.0.1', port: ${host.address().port} }), outbound: await reach({ host: '192.0.2.1', port: 80 }), loopback: await reach({ host: '127.0.0.1', port: srv.address().port }) };
+  srv.close();
+  if (process.env.DOCKER_HOST) out.docker = cp.spawnSync('docker', ['version', '--format', '{{.Server.Version}}']).status;
+  fs.writeFileSync(process.argv[2], JSON.stringify(out));
+})();`);
+  const run = (n, e = env) => spawnSync(process.execPath, [ENG, 'ephemeral', '--', `node ${probe} ${marks}/${n}`], { cwd: dir, encoding: 'utf8', env: e });
+  let r = run('net-host', { ...env, ENG_NETWORK_ISOLATED: '1' });
+  assert.equal(r.status, 0, out(r));
+  const before = JSON.parse(mark('net-host'));
+  assert.equal(before.marker, null, 'an inherited marker is never passed on');
+  assert.equal(before.host, 'connected', 'without the switch the host network is reachable');
+  setCfg(c => { c.isolation = { mode: 'warn', network: 'private' }; }); t.after(() => setCfg(c => { c.isolation = { mode: 'warn' }; }));
+  r = run('net-private');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /network private \(loopback only\)/);
+  const got = JSON.parse(mark('net-private'));
+  assert.deepEqual({ marker: got.marker, host: got.host, outbound: got.outbound, loopback: got.loopback }, { marker: '1', host: 'ECONNREFUSED', outbound: 'ENETUNREACH', loopback: 'connected' });
+  if (docker) assert.equal(got.docker, 0, 'the run\'s docker socket is a filesystem socket, so it still works');
+});
+
+test('isolation.network private: a run that would get no network namespace is refused, in warn mode and with ephemeral_runs off too', t => {
+  const base = path.join('/tmp', `${tag}-netbase`); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
+  setCfg(c => { c.isolation = { mode: 'warn', network: 'private' }; c.project.commands.test = `echo ran >> ${marks}/nonet`; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
+  for (const args of [['--', `echo ran >> ${marks}/nonet`], ['check']]) {
+    const r = spawnSync(process.execPath, [ENG, 'ephemeral', ...args], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+    assert.equal(r.status, 1, out(r));
+    assert.match(r.stderr, /not started, because it could not be watched: network: isolation\.network is private, and the run gets no network namespace/);
+  }
+  const g = spawnSync(process.execPath, [ENG, 'gate'], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+  assert.notEqual(g.status, 0, out(g)); assert.match(out(g), /no network namespace/, 'eng gate wraps the step even with ephemeral_runs off');
+  assert.ok(!fs.existsSync(path.join(marks, 'nonet')), 'nothing ran');
+});
+
+test('isolation enforced: ENG_SOCK_DIR stays writable though the cache home is read-only, and a container may bind it', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const got = path.join(dir, `.enf-${tag}`); t.after(() => fs.rmSync(got, { force: true }));  // the checkout stays writable; marks/ is in the read-only cache home
+  const write = docker ? `; docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/c' && cat "$ENG_SOCK_DIR/c" >> ${got}` : '';
+  const r = eng('ephemeral', '--', `{ echo own > "$ENG_SOCK_DIR/f" && cat "$ENG_SOCK_DIR/f"; touch "$(dirname "$(dirname "$ENG_SOCK_DIR")")/eng-s-probe" 2>/dev/null && echo CACHE-WRITTEN; true; } > ${got}${write}`);
+  assert.equal(r.status, 0, out(r));
+  assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['own', ...(docker ? ['daemon'] : [])], 'the folder is writable, the cache home around it is not');
+});
+
+test('ENG_SOCK_DIR: a symlink anywhere on the socket root is refused; clean and the sweep never delete through it', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const dead = 'eng-eph-zz-999999999-0', outside = fs.mkdtempSync(path.join(root, 'outside-'));
+  const victim = path.join(outside, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`); fs.writeFileSync(path.join(victim, 'keep'), 'x');
+  for (const link of [['.cache', 'eng', 's'], ['.cache', 'eng'], ['.cache']]) {
+    const h = shortHome(t), at = path.join(h, ...link);
+    fs.mkdirSync(path.dirname(at), { recursive: true });
+    fs.mkdirSync(path.join(outside, 'deep', 'eng'), { recursive: true });
+    const target = link.length === 3 ? outside : link.length === 2 ? path.join(outside, 'deep') : path.join(outside, 'cache');
+    if (link.length === 2) { fs.rmSync(path.join(outside, 'deep', 's'), { recursive: true, force: true }); fs.symlinkSync(outside, path.join(outside, 'deep', 's')); }
+    if (link.length === 1) { fs.mkdirSync(path.join(target, 'eng'), { recursive: true }); fs.rmSync(path.join(target, 'eng', 's'), { force: true }); fs.symlinkSync(outside, path.join(target, 'eng', 's')); }
+    fs.symlinkSync(target, at);
+    const e = { ...env, HOME: h, ENG_SOCK_DIR: '' };
+    assert.equal(openSockDir(e, `eng-eph-zz-${process.pid}-1`), null, `${link.join('/')} is a symlink: no folder`);
+    assert.deepEqual(staleSockDirs(0, { env: e }), [], 'nothing listed through it');
+    const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `test -z "$ENG_SOCK_DIR"`], { cwd: dir, encoding: 'utf8', env: e });
+    assert.equal(r.status, 0, out(r));
+    spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: e });
+    assert.equal(fs.readFileSync(path.join(victim, 'keep'), 'utf8'), 'x', `${link.join('/')}: nothing outside the root was deleted`);
+  }
+});
+
+test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folder outside /tmp', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const h = shortHome(t), id = `eng-eph-zz-${process.pid}-2`, base = { ...env, HOME: h, ENG_SOCK_DIR: '' };
+  const tmp = fs.mkdtempSync('/tmp/eng-sock-'); t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const fake = path.join(tmp, sockName(id)); fs.mkdirSync(fake); fs.writeFileSync(path.join(fake, SOCK_OWNER), `${id}\n`);
+  const plain = fs.mkdtempSync(path.join(h, 'plain-'));
+  const forged = path.join(h, sockName(id)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), `${id}\n`);  // a real-looking folder outside the socket root
+  const homeRoot = path.join(fs.realpathSync(h), '.cache', 'eng', 's');
+  for (const inherited of [tmp, fake, plain, forged]) {
+    const d = openSockDir({ ...base, ENG_SOCK_DIR: inherited }, `${id}-${path.basename(inherited)}`);
+    assert.equal(path.dirname(d), homeRoot, `${inherited} is ignored`); fs.rmSync(d, { recursive: true });
+  }
+  // The real home: a nested folder under the test's longer private home would pass the length cap and get none.
+  const real = { ...env, ENG_SOCK_DIR: '' }, parent = openSockDir(real, id); t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const child = openSockDir({ ...real, ENG_SOCK_DIR: parent }, `${id}-child`);
+  assert.equal(path.dirname(child), parent, 'a parent run\'s folder holds the nested one');
+  assert.ok(Buffer.byteLength(child) < 60);
+  // Cleanup through a forged parent stays out of it: a dead run's folder inside it is never listed or removed.
+  const dead = 'eng-eph-zz-999999999-0', victim = path.join(forged, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`);
+  const viaForged = { ...base, ENG_SOCK_DIR: forged };
+  assert.ok(staleSockDirs(0, { env: viaForged }).every(x => !x.path.startsWith(forged + path.sep)));
+  spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: viaForged });
+  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: viaForged }).status, 0);
+  assert.ok(fs.existsSync(victim), 'eng clean and the start sweep never reach outside the socket root');
+});
+
+test('unwatched runs (ephemeral_runs off, host network) never pass on an inherited ENG_NETWORK_ISOLATED or ENG_SOCK_DIR, in eng ephemeral and eng gate', t => {
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
+  const got = path.join(marks, 'unwatched');
+  setCfg(c => { c.isolation = { mode: 'warn' }; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = `printf '%s|%s\\n' "\${ENG_NETWORK_ISOLATED-unset}" "\${ENG_SOCK_DIR-unset}" >> ${got}`; });
+  const claim = { ...env, ENG_NETWORK_ISOLATED: '1', ENG_SOCK_DIR: fs.mkdtempSync(path.join(root, 'claimed-')) };
+  for (const args of [['ephemeral', 'check'], ['gate']]) spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: claim });
+  assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['unset|unset', 'unset|unset'], 'both ran, neither saw the claims');
+});
+
+test('ENG_SOCK_DIR: inside a run, eng clean and the next nested run remove a killed nested run\'s folder from the parent\'s, and keep the parent', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const parent = openSockDir({ ...env, ENG_SOCK_DIR: '' }, `eng-eph-zz-${process.pid}-5`); t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const inParent = { ...env, ENG_SOCK_DIR: parent };
+  const deadChild = n => { const id = `eng-eph-zz-99999999${n}-0`, d = path.join(parent, sockName(id)); fs.mkdirSync(d); fs.writeFileSync(path.join(d, SOCK_OWNER), `${id}\n`); return d; };
+  const a = deadChild(1);
+  spawnSync(process.execPath, [ENG, 'clean', '--apply'], { cwd: dir, encoding: 'utf8', env: inParent });
+  assert.ok(!fs.existsSync(a), 'eng clean inside the run removes it');
+  const b = deadChild(2);
+  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: inParent }).status, 0);
+  assert.ok(!fs.existsSync(b), 'the next nested run removes it');
+  assert.ok(fs.existsSync(path.join(parent, SOCK_OWNER)), 'the live parent stays');
 });
