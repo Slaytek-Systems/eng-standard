@@ -1036,11 +1036,12 @@ test('ENG_SOCK_DIR: under 60 bytes for the longest run id and runtime dir; never
 test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker daemon sees the run\'s own at the same path', async t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  const a = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
+  const a = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo run > "$ENG_SOCK_DIR/f" && echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
   const done = new Promise(r => a.on('exit', r));
   t.after(() => a.kill('SIGKILL'));
   assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'a'))), 'run A started');
   const other = mark('a');
+  assert.equal(fs.readFileSync(path.join(other, 'f'), 'utf8'), 'run\n', 'what the run writes there is on the host at the same path');
   const write = docker ? `docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/f' && cat "$ENG_SOCK_DIR/f" >> ${marks}/b; ` : '';
   const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
   assert.equal(r.status, 0, out(r));
