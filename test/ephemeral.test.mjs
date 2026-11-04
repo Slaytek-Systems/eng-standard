@@ -1050,7 +1050,7 @@ test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker dae
   const other = mark('a');
   assert.equal(fs.readFileSync(path.join(other, 'f'), 'utf8'), 'run\n', 'what the run writes there is on the host at the same path');
   const write = docker ? `docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/f' && cat "$ENG_SOCK_DIR/f" >> ${marks}/b; ` : '';
-  const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
+  const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; chmod 600 "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
   assert.equal(r.status, 0, out(r));
   assert.equal(await done, 0, 'run A passed');
   const [own, ...rest] = mark('b').split('\n');
@@ -1133,6 +1133,8 @@ test('isolation.network private: a run that would get no network namespace is re
     assert.equal(r.status, 1, out(r));
     assert.match(r.stderr, /not started, because it could not be watched: network: isolation\.network is private, and the run gets no network namespace/);
   }
+  const g = spawnSync(process.execPath, [ENG, 'gate'], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+  assert.notEqual(g.status, 0, out(g)); assert.match(out(g), /no network namespace/, 'eng gate wraps the step even with ephemeral_runs off');
   assert.ok(!fs.existsSync(path.join(marks, 'nonet')), 'nothing ran');
 });
 
