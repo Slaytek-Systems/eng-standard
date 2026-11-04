@@ -1177,8 +1177,9 @@ test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folde
   const tmp = fs.mkdtempSync('/tmp/eng-sock-'); t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const fake = path.join(tmp, sockName(id)); fs.mkdirSync(fake); fs.writeFileSync(path.join(fake, SOCK_OWNER), `${id}\n`);
   const plain = fs.mkdtempSync(path.join(h, 'plain-'));
+  const forged = path.join(h, sockName(id)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), `${id}\n`);  // a real-looking folder outside the socket root
   const homeRoot = path.join(fs.realpathSync(h), '.cache', 'eng', 's');
-  for (const inherited of [tmp, fake, plain]) {
+  for (const inherited of [tmp, fake, plain, forged]) {
     const d = openSockDir({ ...base, ENG_SOCK_DIR: inherited }, `${id}-${path.basename(inherited)}`);
     assert.equal(path.dirname(d), homeRoot, `${inherited} is ignored`); fs.rmSync(d, { recursive: true });
   }
@@ -1187,4 +1188,11 @@ test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folde
   const child = openSockDir({ ...real, ENG_SOCK_DIR: parent }, `${id}-child`);
   assert.equal(path.dirname(child), parent, 'a parent run\'s folder holds the nested one');
   assert.ok(Buffer.byteLength(child) < 60);
+  // Cleanup through a forged parent stays out of it: a dead run's folder inside it is never listed or removed.
+  const dead = 'eng-eph-zz-999999999-0', victim = path.join(forged, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`);
+  const viaForged = { ...base, ENG_SOCK_DIR: forged };
+  assert.ok(staleSockDirs(0, { env: viaForged }).every(x => !x.path.startsWith(forged + path.sep)));
+  spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: viaForged });
+  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: viaForged }).status, 0);
+  assert.ok(fs.existsSync(victim), 'eng clean and the start sweep never reach outside the socket root');
 });
