@@ -1007,6 +1007,9 @@ const NEEDS_RT = 'needs a HOME this user owns, outside /tmp, short enough for EN
 const hasRt = () => !home.startsWith('/tmp/') && Buffer.byteLength(path.join(sockParent, 'xxxxxxxx')) < SOCK_MAX && (() => { try { return fs.statSync(home).uid === process.getuid(); } catch { return false; } })();
 const sandboxedNet = () => { const probe = fs.mkdtempSync(path.join(root, 'probe-')); return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, '/tmp', '--unshare-net', '--', 'true']).status === 0 && !xdg.startsWith('/tmp/'); };
 const killRun = id => { for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { if (fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(id) || fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0').includes(`ENG_EPHEMERAL_RUN=${id}`)) process.kill(Number(d), 'SIGKILL'); } catch {} } };
+// A short private home of the test's own, so another eng run's start-of-run sweep (which clears dead runs' folders in its own
+// root) never races the test's assertions.
+const shortHome = t => { const b = path.join(os.homedir(), '.cache', 'eng'); fs.mkdirSync(b, { recursive: true }); const h = fs.mkdtempSync(path.join(b, 'th-')); t.after(() => fs.rmSync(h, { recursive: true, force: true })); return h; };
 const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (f()) return true; return false; };
 
 test('ENG_SOCK_DIR: the run\'s own 0700 folder in $HOME/.cache/eng/s, short enough for any socket, removed after', t => {
@@ -1058,7 +1061,8 @@ test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker dae
 
 test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the next run; a SIGTERM run removes its own', async t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
-  const start = n => { const p = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
+  const e = { ...env, HOME: shortHome(t), ENG_SOCK_DIR: '' }, engIn = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: e });
+  const start = n => { const p = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env: e, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
   const [term, termDone] = start('term');
   assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'term'))));
   process.kill(-term.pid, 'SIGTERM');  // the whole group, as Ctrl-C or a CI cancel does: eng acts once its run's step returns
@@ -1071,11 +1075,12 @@ test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the n
     t.after(() => { killRun(id); fs.rmSync(d, { recursive: true, force: true }); });
     p.kill('SIGKILL'); await gone; killRun(id);
     assert.ok(fs.existsSync(d), 'SIGKILL leaves the folder');
+    assert.equal(path.dirname(d), path.join(e.HOME, '.cache', 'eng', 's'));
     if (round === 'clean') {
-      const dry = eng('clean');
+      const dry = engIn('clean');
       assert.match(dry.stdout, new RegExp(`would remove\\s+${d}`)); assert.ok(fs.existsSync(d), 'dry run keeps it');
-      eng('clean', '--apply');
-    } else assert.equal(eng('ephemeral', '--', 'true').status, 0);
+      engIn('clean', '--apply');
+    } else assert.equal(engIn('ephemeral', '--', 'true').status, 0);
     assert.ok(!fs.existsSync(d), `${round} removes it`);
   }
 });
@@ -1138,4 +1143,44 @@ test('isolation enforced: ENG_SOCK_DIR stays writable though the cache home is r
   const r = eng('ephemeral', '--', `{ echo own > "$ENG_SOCK_DIR/f" && cat "$ENG_SOCK_DIR/f"; touch "$(dirname "$(dirname "$ENG_SOCK_DIR")")/eng-s-probe" 2>/dev/null && echo CACHE-WRITTEN; true; } > ${got}${write}`);
   assert.equal(r.status, 0, out(r));
   assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['own', ...(docker ? ['daemon'] : [])], 'the folder is writable, the cache home around it is not');
+});
+
+test('ENG_SOCK_DIR: a symlink anywhere on the socket root is refused; clean and the sweep never delete through it', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const dead = 'eng-eph-zz-999999999-0', outside = fs.mkdtempSync(path.join(root, 'outside-'));
+  const victim = path.join(outside, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`); fs.writeFileSync(path.join(victim, 'keep'), 'x');
+  for (const link of [['.cache', 'eng', 's'], ['.cache', 'eng'], ['.cache']]) {
+    const h = shortHome(t), at = path.join(h, ...link);
+    fs.mkdirSync(path.dirname(at), { recursive: true });
+    fs.mkdirSync(path.join(outside, 'deep', 'eng'), { recursive: true });
+    const target = link.length === 3 ? outside : link.length === 2 ? path.join(outside, 'deep') : path.join(outside, 'cache');
+    if (link.length === 2) { fs.rmSync(path.join(outside, 'deep', 's'), { recursive: true, force: true }); fs.symlinkSync(outside, path.join(outside, 'deep', 's')); }
+    if (link.length === 1) { fs.mkdirSync(path.join(target, 'eng'), { recursive: true }); fs.rmSync(path.join(target, 'eng', 's'), { force: true }); fs.symlinkSync(outside, path.join(target, 'eng', 's')); }
+    fs.symlinkSync(target, at);
+    const e = { ...env, HOME: h, ENG_SOCK_DIR: '' };
+    assert.equal(openSockDir(e, `eng-eph-zz-${process.pid}-1`), null, `${link.join('/')} is a symlink: no folder`);
+    assert.deepEqual(staleSockDirs(0, { env: e }), [], 'nothing listed through it');
+    const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `test -z "$ENG_SOCK_DIR"`], { cwd: dir, encoding: 'utf8', env: e });
+    assert.equal(r.status, 0, out(r));
+    spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: e });
+    assert.equal(fs.readFileSync(path.join(victim, 'keep'), 'utf8'), 'x', `${link.join('/')}: nothing outside the root was deleted`);
+  }
+});
+
+test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folder outside /tmp', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const h = shortHome(t), id = `eng-eph-zz-${process.pid}-2`, base = { ...env, HOME: h, ENG_SOCK_DIR: '' };
+  const tmp = fs.mkdtempSync('/tmp/eng-sock-'); t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const fake = path.join(tmp, sockName(id)); fs.mkdirSync(fake); fs.writeFileSync(path.join(fake, SOCK_OWNER), `${id}\n`);
+  const plain = fs.mkdtempSync(path.join(h, 'plain-'));
+  const homeRoot = path.join(fs.realpathSync(h), '.cache', 'eng', 's');
+  for (const inherited of [tmp, fake, plain]) {
+    const d = openSockDir({ ...base, ENG_SOCK_DIR: inherited }, `${id}-${path.basename(inherited)}`);
+    assert.equal(path.dirname(d), homeRoot, `${inherited} is ignored`); fs.rmSync(d, { recursive: true });
+  }
+  // The real home: a nested folder under the test's longer private home would pass the length cap and get none.
+  const real = { ...env, ENG_SOCK_DIR: '' }, parent = openSockDir(real, id); t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const child = openSockDir({ ...real, ENG_SOCK_DIR: parent }, `${id}-child`);
+  assert.equal(path.dirname(child), parent, 'a parent run\'s folder holds the nested one');
+  assert.ok(Buffer.byteLength(child) < 60);
 });
