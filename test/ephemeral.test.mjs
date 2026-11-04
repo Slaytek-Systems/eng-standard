@@ -1205,3 +1205,17 @@ test('unwatched runs (ephemeral_runs off, host network) never pass on an inherit
   for (const args of [['ephemeral', 'check'], ['gate']]) spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: claim });
   assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['unset|unset', 'unset|unset'], 'both ran, neither saw the claims');
 });
+
+test('ENG_SOCK_DIR: inside a run, eng clean and the next nested run remove a killed nested run\'s folder from the parent\'s, and keep the parent', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const parent = openSockDir({ ...env, ENG_SOCK_DIR: '' }, `eng-eph-zz-${process.pid}-5`); t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const inParent = { ...env, ENG_SOCK_DIR: parent };
+  const deadChild = n => { const id = `eng-eph-zz-99999999${n}-0`, d = path.join(parent, sockName(id)); fs.mkdirSync(d); fs.writeFileSync(path.join(d, SOCK_OWNER), `${id}\n`); return d; };
+  const a = deadChild(1);
+  spawnSync(process.execPath, [ENG, 'clean', '--apply'], { cwd: dir, encoding: 'utf8', env: inParent });
+  assert.ok(!fs.existsSync(a), 'eng clean inside the run removes it');
+  const b = deadChild(2);
+  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: inParent }).status, 0);
+  assert.ok(!fs.existsSync(b), 'the next nested run removes it');
+  assert.ok(fs.existsSync(path.join(parent, SOCK_OWNER)), 'the live parent stays');
+});
