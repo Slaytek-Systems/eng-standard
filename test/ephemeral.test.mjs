@@ -1196,3 +1196,12 @@ test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folde
   assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: viaForged }).status, 0);
   assert.ok(fs.existsSync(victim), 'eng clean and the start sweep never reach outside the socket root');
 });
+
+test('unwatched runs (ephemeral_runs off, host network) never pass on an inherited ENG_NETWORK_ISOLATED or ENG_SOCK_DIR, in eng ephemeral and eng gate', t => {
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
+  const got = path.join(marks, 'unwatched');
+  setCfg(c => { c.isolation = { mode: 'warn' }; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = `printf '%s|%s\\n' "\${ENG_NETWORK_ISOLATED-unset}" "\${ENG_SOCK_DIR-unset}" >> ${got}`; });
+  const claim = { ...env, ENG_NETWORK_ISOLATED: '1', ENG_SOCK_DIR: fs.mkdtempSync(path.join(root, 'claimed-')) };
+  for (const args of [['ephemeral', 'check'], ['gate']]) spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: claim });
+  assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['unset|unset', 'unset|unset'], 'both ran, neither saw the claims');
+});

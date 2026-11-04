@@ -27,6 +27,10 @@ import { parseLock, lockText } from '../lib/lock.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
+// eng sets ENG_SOCK_DIR and ENG_NETWORK_ISOLATED for its own ephemeral runs only. Nothing eng starts (an unwatched run, a
+// gate step, a nested eng) inherits them, since none of it can back the claim; a parent run's folder is kept only to nest in.
+const PARENT_SOCK_DIR = process.env.ENG_SOCK_DIR;
+delete process.env.ENG_SOCK_DIR; delete process.env.ENG_NETWORK_ISOLATED;
 const NOTES = 'eng-verify';
 const sh = (c, o = {}) => execSync(c, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...o }).trim();
 let RUN_ENV; // set by withTmp: every child of eng gate / eng e2e gets ENG_TMP and TMPDIR pointing at the per-run dir
@@ -1174,7 +1178,7 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   rules: () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove'),
   verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
   mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
-  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral(engCtx(), a), merge: () => merge(engCtx(), a),
+  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a), merge: () => merge(engCtx(), a),
   'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
