@@ -1098,7 +1098,7 @@ function cleanCmd() {
     }
     console.log(`eng clean: ${dirs.filter(d => d.stale).length} stale eng temp dir(s) for ${cfg.project.name} in ${tmpBase(cfg)} older than ${hours}h${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
     // ENG_SOCK_DIR folders a killed eng ephemeral run left (any repo's: they are per user), once that run's eng is gone.
-    const socks = staleSockDirs(hours);
+    const socks = staleSockDirs(hours, { env: { ...process.env, ...(PARENT_SOCK_DIR ? { ENG_SOCK_DIR: PARENT_SOCK_DIR } : {}) } });
     for (const d of socks) {
       if (!d.stale) { console.log(`  keep   ${d.path} (${d.why})`); continue; }
       if (apply) fs.rmSync(d.path, { recursive: true, force: true });
