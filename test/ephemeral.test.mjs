@@ -8,7 +8,7 @@ import YAML from 'yaml';
 import http from 'node:http';
 import net from 'node:net';
 import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
-import { openSockDir, sockName, staleSockDirs, SOCK_OWNER } from '../lib/hygiene.mjs';
+import { openSockDir, sockName, staleSockDirs, SOCK_OWNER, SOCK_MAX } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
@@ -1002,14 +1002,14 @@ test('isolation enforced: an exec start upgrade reaches the daemon with its body
 
 // ---------- ENG_SOCK_DIR and isolation.network (0.12.5) ----------
 // A run's unix sockets must fit in 107 bytes, at a path the docker daemon resolves on the host (a container's bind source).
-const rt = process.env.XDG_RUNTIME_DIR, sockParent = process.env.ENG_SOCK_DIR || (rt && path.join(rt, 'eng'));
-const NEEDS_RT = 'needs an XDG_RUNTIME_DIR this user owns';
-const hasRt = () => !!rt && (() => { try { return fs.statSync(rt).uid === process.getuid(); } catch { return false; } })();
+const home = process.env.HOME || os.homedir(), sockParent = process.env.ENG_SOCK_DIR || path.join(home, '.cache', 'eng', 's');
+const NEEDS_RT = 'needs a HOME this user owns, outside /tmp, short enough for ENG_SOCK_DIR';
+const hasRt = () => !home.startsWith('/tmp/') && Buffer.byteLength(path.join(sockParent, 'xxxxxxxx')) < SOCK_MAX && (() => { try { return fs.statSync(home).uid === process.getuid(); } catch { return false; } })();
 const sandboxedNet = () => { const probe = fs.mkdtempSync(path.join(root, 'probe-')); return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, '/tmp', '--unshare-net', '--', 'true']).status === 0 && !xdg.startsWith('/tmp/'); };
 const killRun = id => { for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { if (fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(id) || fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0').includes(`ENG_EPHEMERAL_RUN=${id}`)) process.kill(Number(d), 'SIGKILL'); } catch {} } };
 const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (f()) return true; return false; };
 
-test('ENG_SOCK_DIR: the run\'s own 0700 folder in XDG_RUNTIME_DIR, short enough for any socket, removed after', t => {
+test('ENG_SOCK_DIR: the run\'s own 0700 folder in $HOME/.cache/eng/s, short enough for any socket, removed after', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   const r = eng('ephemeral', '--', `printf '%s\\n' "$ENG_SOCK_DIR" "$ENG_RUN_ID" "$(stat -c '%a %u' "$ENG_SOCK_DIR")" > ${marks}/sock && node -e "const s = require('net').createServer().listen(process.env.ENG_SOCK_DIR + '/.s.PGSQL.5432', () => s.close())"`);
   assert.equal(r.status, 0, out(r));
@@ -1021,11 +1021,13 @@ test('ENG_SOCK_DIR: the run\'s own 0700 folder in XDG_RUNTIME_DIR, short enough 
   assert.ok(!fs.existsSync(d), 'removed after the run');
 });
 
-test('ENG_SOCK_DIR: under 60 bytes for the longest run id and runtime dir; never shared, a second open of one refuses', t => {
+test('ENG_SOCK_DIR: under 60 bytes whatever the run id, or not set at all; never shared, a second open of one refuses', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
-  const longest = `eng-eph-${(2 ** 53 - 1).toString(36)}-4194304-99`, worst = '/run/user/4294967294';
-  assert.ok(Buffer.byteLength(path.join(worst, 'eng', sockName(longest))) < 60);
-  assert.ok(Buffer.byteLength(path.join(worst, 'eng', sockName(longest), sockName(longest))) < 60, 'a nested run\'s folder too');
+  const longest = `eng-eph-${(2 ** 53 - 1).toString(36)}-4194304-99`;
+  for (const h of ['/home/dev', '/home/runner', '/root']) assert.ok(Buffer.byteLength(path.join(h, '.cache/eng/s', sockName(longest), sockName(longest))) < 60, `${h}: a nested run's folder too`);
+  assert.equal(SOCK_MAX, 60);
+  assert.equal(openSockDir({ HOME: `/home/${'u'.repeat(40)}` }, longest), null, 'a home too long for a short folder gets none, and nothing is made');
+  assert.equal(openSockDir({ HOME: '/tmp' }, longest), null, 'never under /tmp');
   const id = `eng-eph-test-${process.pid}-${Date.now().toString(36)}`, e = { ...process.env, ENG_SOCK_DIR: '' };
   const d = openSockDir(e, id); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   assert.equal(fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8'), `${id}\n`);
@@ -1125,4 +1127,15 @@ test('isolation.network private: a run that would get no network namespace is re
     assert.match(r.stderr, /not started, because it could not be watched: network: isolation\.network is private, and the run gets no network namespace/);
   }
   assert.ok(!fs.existsSync(path.join(marks, 'nonet')), 'nothing ran');
+});
+
+test('isolation enforced: ENG_SOCK_DIR stays writable though the cache home is read-only, and a container may bind it', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  enforce(t);
+  const got = path.join(dir, `.enf-${tag}`); t.after(() => fs.rmSync(got, { force: true }));  // the checkout stays writable; marks/ is in the read-only cache home
+  const write = docker ? `; docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/c' && cat "$ENG_SOCK_DIR/c" >> ${got}` : '';
+  const r = eng('ephemeral', '--', `{ echo own > "$ENG_SOCK_DIR/f" && cat "$ENG_SOCK_DIR/f"; touch "$(dirname "$(dirname "$ENG_SOCK_DIR")")/eng-s-probe" 2>/dev/null && echo CACHE-WRITTEN; true; } > ${got}${write}`);
+  assert.equal(r.status, 0, out(r));
+  assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['own', ...(docker ? ['daemon'] : [])], 'the folder is writable, the cache home around it is not');
 });

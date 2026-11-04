@@ -544,7 +544,7 @@ function retro() {
 // Contract (eng.config.yml launch:). eng gives each run ENG_RUN_ID, ENG_PORT (a free port eng picked), ENG_RUN_DIR (outside the repo).
 // basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng ephemeral and eng launch-check start: <tmp>/eng-launch/<id> here,
 // <scratch root>/<id> in eng ephemeral. Keep a socket in it short: the run dir is its root plus the id, 107 bytes is the cap.
-// eng ephemeral also sets ENG_SOCK_DIR (<runtime>/eng/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
+// eng ephemeral also sets ENG_SOCK_DIR ($HOME/.cache/eng/s/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
 // under isolation.network: private.
 // up: start, return once ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}. doctor: read-only, exit 0 = worth driving.
 // down: stop only the PIDs this run started. Storage and evidence live under the run dir, never shared and never in the repo.
