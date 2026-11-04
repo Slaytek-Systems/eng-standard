@@ -10,7 +10,7 @@ import YAML from 'yaml';
 import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd, shipLogStep } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, staleSockDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
 import { audit, corePayloads, sydneyMonth, SKIP_DIRS, lowestDeps, nodePins, convexNodeFindings, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
@@ -21,7 +21,7 @@ import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy, alwaysWatched } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
@@ -544,6 +544,8 @@ function retro() {
 // Contract (eng.config.yml launch:). eng gives each run ENG_RUN_ID, ENG_PORT (a free port eng picked), ENG_RUN_DIR (outside the repo).
 // basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng ephemeral and eng launch-check start: <tmp>/eng-launch/<id> here,
 // <scratch root>/<id> in eng ephemeral. Keep a socket in it short: the run dir is its root plus the id, 107 bytes is the cap.
+// eng ephemeral also sets ENG_SOCK_DIR (<runtime>/eng/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
+// under isolation.network: private.
 // up: start, return once ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}. doctor: read-only, exit 0 = worth driving.
 // down: stop only the PIDs this run started. Storage and evidence live under the run dir, never shared and never in the repo.
 const NO_LAUNCH = 'repo has no isolated launch; fix in codebase before writing verify skill (eng.config.yml launch: up/doctor/down)';
@@ -961,7 +963,7 @@ function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
-  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && cfg.isolation?.mode !== 'fail' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
+  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} ephemeral run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
@@ -1091,6 +1093,14 @@ function cleanCmd() {
       console.log(`  ${verb.padEnd(12)} ${d.path} (${d.ageH.toFixed(1)}h old)`);
     }
     console.log(`eng clean: ${dirs.filter(d => d.stale).length} stale eng temp dir(s) for ${cfg.project.name} in ${tmpBase(cfg)} older than ${hours}h${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
+    // ENG_SOCK_DIR folders a killed eng ephemeral run left (any repo's: they are per user), once that run's eng is gone.
+    const socks = staleSockDirs(hours);
+    for (const d of socks) {
+      if (!d.stale) { console.log(`  keep   ${d.path} (${d.why})`); continue; }
+      if (apply) fs.rmSync(d.path, { recursive: true, force: true });
+      console.log(`  ${verb.padEnd(12)} ${d.path} (socket folder of a run that is gone)`);
+    }
+    if (socks.length) console.log(`eng clean: ${socks.filter(d => d.stale).length} stale eng socket folder(s)${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
   }
   if (!a.includes('--worktrees')) return;
   const git = args => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });

@@ -133,6 +133,7 @@ formal:                           # Which skill formally checks what (lib/formal
 launch:                           # The repo owns its isolated local launch (pstack Launch/Doctor/Cleanup). The verify skill only CALLS these.
   # eng sets ENG_RUN_ID, ENG_PORT (free port picked per run) and ENG_RUN_DIR (outside the repo) for each command.
   # basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts (eng ephemeral: <scratch root>/<id>; eng launch-check: <tmp>/eng-launch/<id>).
+  # eng ephemeral also sets ENG_SOCK_DIR: bind unix sockets there (short, the run's own, the path the docker daemon sees).
   up: sh scripts/launch.sh up         # start, return when ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}
   doctor: sh scripts/launch.sh doctor # read-only: exit 0 = this instance is worth driving
   down: sh scripts/launch.sh down     # stop only the PIDs in state.json; keep $ENG_RUN_DIR/evidence
@@ -149,6 +150,7 @@ launch:                           # The repo owns its isolated local launch (pst
 
 isolation:                        # Devbox project isolation (docs/project-isolation.md): .eng/project.toml + eng run-service/connect/stop/status.
   mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean. fail also enforces isolation in eng ephemeral runs.
+  network: host                   # host | private. private: each eng ephemeral run gets its own network namespace (loopback only; docker and ENG_SOCK_DIR still work) and ENG_NETWORK_ISOLATED=1.
 
 # renovation:                     # Existing repos only: written by `eng renovate apply` (renovation/README.md in the package). New repos skip it.
 #   version: 0.9.0

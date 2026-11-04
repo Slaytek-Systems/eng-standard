@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import http from 'node:http';
 import net from 'node:net';
 import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
+import { openSockDir, sockName, staleSockDirs, SOCK_OWNER } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
@@ -327,6 +328,7 @@ test('config: unknown rules or options, bad values and undeclared runs are rejec
     [c => { c.hygiene.run_rules.ephemeral_runs.runs = ['nope']; }, /runs lists nope, which is not in project\.commands/],
     [c => { c.hygiene.run_rules.ephemeral_runs.runs = ['launch']; }, /runs lists launch, but launch\.up and launch\.down are not both declared/],
     [c => { c.hygiene.run_rules.leave_some = { mode: 'fail' }; }, /hygiene\.run_rules\.leave_some is not a rule/],
+    [c => { c.isolation = { mode: 'warn', network: 'none' }; }, /isolation\.network must be host or private \(got "none"\)/],
   ];
   const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8');
   try {
@@ -996,4 +998,130 @@ test('isolation enforced: an exec start upgrade reaches the daemon with its body
   });
   assert.match(got, /^HTTP\/1\.1 101/, `the daemon got the body and switched protocols: ${JSON.stringify(got)}`);
   assert.match(got, /exec output/);
+});
+
+// ---------- ENG_SOCK_DIR and isolation.network (0.12.5) ----------
+// A run's unix sockets must fit in 107 bytes, at a path the docker daemon resolves on the host (a container's bind source).
+const rt = process.env.XDG_RUNTIME_DIR, sockParent = process.env.ENG_SOCK_DIR || (rt && path.join(rt, 'eng'));
+const NEEDS_RT = 'needs an XDG_RUNTIME_DIR this user owns';
+const hasRt = () => !!rt && (() => { try { return fs.statSync(rt).uid === process.getuid(); } catch { return false; } })();
+const sandboxedNet = () => { const probe = fs.mkdtempSync(path.join(root, 'probe-')); return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, '/tmp', '--unshare-net', '--', 'true']).status === 0 && !xdg.startsWith('/tmp/'); };
+const killRun = id => { for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { if (fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(id) || fs.readFileSync(`/proc/${d}/environ`, 'utf8').split('\0').includes(`ENG_EPHEMERAL_RUN=${id}`)) process.kill(Number(d), 'SIGKILL'); } catch {} } };
+const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (f()) return true; return false; };
+
+test('ENG_SOCK_DIR: the run\'s own 0700 folder in XDG_RUNTIME_DIR, short enough for any socket, removed after', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const r = eng('ephemeral', '--', `printf '%s\\n' "$ENG_SOCK_DIR" "$ENG_RUN_ID" "$(stat -c '%a %u' "$ENG_SOCK_DIR")" > ${marks}/sock && node -e "const s = require('net').createServer().listen(process.env.ENG_SOCK_DIR + '/.s.PGSQL.5432', () => s.close())"`);
+  assert.equal(r.status, 0, out(r));
+  const [d, id, st] = mark('sock').split('\n');
+  assert.equal(path.dirname(d), sockParent);
+  assert.equal(path.basename(d), sockName(id));
+  assert.ok(Buffer.byteLength(d) < 60, `${d} is under 60 bytes`);
+  assert.equal(st, `700 ${process.getuid()}`, 'owner-only');
+  assert.ok(!fs.existsSync(d), 'removed after the run');
+});
+
+test('ENG_SOCK_DIR: under 60 bytes for the longest run id and runtime dir; never shared, a second open of one refuses', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const longest = `eng-eph-${(2 ** 53 - 1).toString(36)}-4194304-99`, worst = '/run/user/4294967294';
+  assert.ok(Buffer.byteLength(path.join(worst, 'eng', sockName(longest))) < 60);
+  assert.ok(Buffer.byteLength(path.join(worst, 'eng', sockName(longest), sockName(longest))) < 60, 'a nested run\'s folder too');
+  const id = `eng-eph-test-${process.pid}-${Date.now().toString(36)}`, e = { ...process.env, ENG_SOCK_DIR: '' };
+  const d = openSockDir(e, id); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  assert.equal(fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8'), `${id}\n`);
+  assert.throws(() => openSockDir(e, id), /EEXIST/);
+  assert.notEqual(sockName(id), sockName(`${id}x`));
+});
+
+test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker daemon sees the run\'s own at the same path', async t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
+  const a = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
+  const done = new Promise(r => a.on('exit', r));
+  t.after(() => a.kill('SIGKILL'));
+  assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'a'))), 'run A started');
+  const other = mark('a');
+  const write = docker ? `docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/f' && cat "$ENG_SOCK_DIR/f" >> ${marks}/b; ` : '';
+  const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
+  assert.equal(r.status, 0, out(r));
+  assert.equal(await done, 0, 'run A passed');
+  const [own, ...rest] = mark('b').split('\n');
+  assert.notEqual(own, other, 'each run has its own folder');
+  assert.ok(fs.existsSync(other) === false && fs.existsSync(own) === false, 'both removed');
+  assert.deepEqual(rest.slice(0, 1), [path.basename(own)], 'the run sees only its own folder; no SEEN, no OWNER-WRITTEN');
+  if (docker) assert.deepEqual(rest.slice(1), ['daemon'], 'a container wrote into the run\'s folder through the same path');
+  else assert.deepEqual(rest.slice(1), []);
+});
+
+test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the next run; a SIGTERM run removes its own', async t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const start = n => { const p = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
+  const [term, termDone] = start('term');
+  assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'term'))));
+  process.kill(-term.pid, 'SIGTERM');  // the whole group, as Ctrl-C or a CI cancel does: eng acts once its run's step returns
+  assert.ok(['SIGTERM', 143].includes(await termDone));
+  assert.ok(!fs.existsSync(mark('term')), 'removed on SIGTERM');
+  for (const round of ['clean', 'next run']) {
+    const [p, gone] = start('crash');
+    assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'crash'))));
+    const d = mark('crash'), id = fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8').trim(); fs.rmSync(path.join(marks, 'crash'));
+    t.after(() => { killRun(id); fs.rmSync(d, { recursive: true, force: true }); });
+    p.kill('SIGKILL'); await gone; killRun(id);
+    assert.ok(fs.existsSync(d), 'SIGKILL leaves the folder');
+    if (round === 'clean') {
+      const dry = eng('clean');
+      assert.match(dry.stdout, new RegExp(`would remove\\s+${d}`)); assert.ok(fs.existsSync(d), 'dry run keeps it');
+      eng('clean', '--apply');
+    } else assert.equal(eng('ephemeral', '--', 'true').status, 0);
+    assert.ok(!fs.existsSync(d), `${round} removes it`);
+  }
+});
+
+test('staleSockDirs: a folder is stale once its run\'s eng is gone; a live one, or one with a forged owner, is kept until old', t => {
+  if (!hasRt()) return t.skip(NEEDS_RT);
+  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0';
+  const dirs = [live, dead].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
+  const forged = path.join(path.dirname(dirs[0]), sockName(`${dead}-forged`)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), dead); dirs.push(forged);
+  const of = (h, now = Date.now()) => Object.fromEntries(staleSockDirs(h, { env: e, now }).filter(x => dirs.includes(x.path)).map(x => [x.path, x.stale]));
+  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [forged]: false });
+  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [forged]: true });
+});
+
+test('isolation.network private: the run has loopback only and ENG_NETWORK_ISOLATED=1; the host network is out of reach, docker still works', async t => {
+  if (!sandboxedNet()) return t.skip('needs a usable bwrap with --unshare-net and a run folder outside /tmp (nested bwrap is refused)');
+  const host = net.createServer(s => s.end('host')).listen(0, '127.0.0.1'); await new Promise(r => host.on('listening', r)); t.after(() => host.close());
+  const probe = path.join(marks, 'net-probe.cjs');
+  fs.writeFileSync(probe, `const net = require('net'), fs = require('fs'), cp = require('child_process');
+const reach = o => new Promise(r => { const s = net.connect(o); const done = v => { s.destroy(); r(v); }; s.on('connect', () => done('connected')); s.on('error', e => done(e.code)); setTimeout(() => done('timeout'), 3000); });
+(async () => {
+  const srv = net.createServer(s => s.end()).listen(0, '127.0.0.1'); await new Promise(r => srv.on('listening', r));
+  const out = { marker: process.env.ENG_NETWORK_ISOLATED ?? null, host: await reach({ host: '127.0.0.1', port: ${host.address().port} }), outbound: await reach({ host: '192.0.2.1', port: 80 }), loopback: await reach({ host: '127.0.0.1', port: srv.address().port }) };
+  srv.close();
+  if (process.env.DOCKER_HOST) out.docker = cp.spawnSync('docker', ['version', '--format', '{{.Server.Version}}']).status;
+  fs.writeFileSync(process.argv[2], JSON.stringify(out));
+})();`);
+  const run = (n, e = env) => spawnSync(process.execPath, [ENG, 'ephemeral', '--', `node ${probe} ${marks}/${n}`], { cwd: dir, encoding: 'utf8', env: e });
+  let r = run('net-host', { ...env, ENG_NETWORK_ISOLATED: '1' });
+  assert.equal(r.status, 0, out(r));
+  const before = JSON.parse(mark('net-host'));
+  assert.equal(before.marker, null, 'an inherited marker is never passed on');
+  assert.equal(before.host, 'connected', 'without the switch the host network is reachable');
+  setCfg(c => { c.isolation = { mode: 'warn', network: 'private' }; }); t.after(() => setCfg(c => { c.isolation = { mode: 'warn' }; }));
+  r = run('net-private');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /network private \(loopback only\)/);
+  const got = JSON.parse(mark('net-private'));
+  assert.deepEqual({ marker: got.marker, host: got.host, outbound: got.outbound, loopback: got.loopback }, { marker: '1', host: 'ECONNREFUSED', outbound: 'ENETUNREACH', loopback: 'connected' });
+  if (docker) assert.equal(got.docker, 0, 'the run\'s docker socket is a filesystem socket, so it still works');
+});
+
+test('isolation.network private: a run that would get no network namespace is refused, in warn mode and with ephemeral_runs off too', t => {
+  const base = path.join('/tmp', `${tag}-netbase`); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
+  setCfg(c => { c.isolation = { mode: 'warn', network: 'private' }; c.project.commands.test = `echo ran >> ${marks}/nonet`; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
+  for (const args of [['--', `echo ran >> ${marks}/nonet`], ['check']]) {
+    const r = spawnSync(process.execPath, [ENG, 'ephemeral', ...args], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+    assert.equal(r.status, 1, out(r));
+    assert.match(r.stderr, /not started, because it could not be watched: network: isolation\.network is private, and the run gets no network namespace/);
+  }
+  assert.ok(!fs.existsSync(path.join(marks, 'nonet')), 'nothing ran');
 });

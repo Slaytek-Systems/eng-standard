@@ -186,6 +186,10 @@ The last two can also catch another session working in the same checkout at the 
 
 ## Adopting it
 
+**`isolation.network: private`** (0.12.5, default `host`) gives every `eng ephemeral` run its own network namespace with loopback only, in any `isolation.mode`. The host's 127.0.0.1 servers, every other address and the host's abstract-namespace sockets are out of reach. Filesystem sockets still work: the run's docker socket (`DOCKER_HOST`), whose containers keep docker's network, and `ENG_SOCK_DIR`. The run gets `ENG_NETWORK_ISOLATED=1`. A tool that starts its own network sandbox should check it and not nest one: on a host with `kernel.apparmor_restrict_unprivileged_userns=1`, a bwrap inside the run's bwrap is refused. A run that would get no namespace is refused before it starts. With `isolation.mode: warn` the run can still reach this user's other filesystem sockets, and through a server behind one, the network; `fail` covers them.
+
+Every `eng ephemeral` run also gets `ENG_SOCK_DIR` (`$XDG_RUNTIME_DIR/eng/<8 hex>`, 0700, at most 33 bytes) for its unix sockets. It is the run's own: inside the run other runs' folders are hidden, and it is removed after the run (`eng clean --apply` removes one a killed run left).
+
 1. Copy `templates/isolation/project.toml` to `.eng/project.toml` (or run `eng renovate apply launch`, which seeds it and `isolation.mode: warn`). Set the owner, a unique port range and the services. Add `.eng/state/` and `.eng/secrets/` to `.gitignore`.
 2. Move service secrets into `.eng/secrets/<svc>.env` (0600).
 3. Route scripts and hooks through the helper: `eng run-service backend`, `eng connect backend -- npx convex codegen`, `eng stop backend`.

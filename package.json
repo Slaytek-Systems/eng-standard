@@ -1,6 +1,6 @@
 {
   "name": "@slayteksystems/eng-standard",
-  "version": "0.12.4",
+  "version": "0.12.5",
   "description": "",
   "scripts": {
     "test": "node --test test/*.test.mjs"
