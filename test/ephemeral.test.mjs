@@ -1010,6 +1010,8 @@ const killRun = id => { for (const d of fs.readdirSync('/proc').filter(x => /^\d
 // A short private home of the test's own, so another eng run's start-of-run sweep (which clears dead runs' folders in its own
 // root) never races the test's assertions.
 const shortHome = t => { const b = path.join(os.homedir(), '.cache', 'eng'); fs.mkdirSync(b, { recursive: true }); const h = fs.mkdtempSync(path.join(b, 'th-')); t.after(() => fs.rmSync(h, { recursive: true, force: true })); return h; };
+// Every descendant of pid (eng's docker socket and its docker events watcher outlive a SIGKILLed eng).
+const tree = pid => { const kids = new Map(); for (const d of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) { try { const pp = Number(fs.readFileSync(`/proc/${d}/stat`, 'utf8').split(') ').at(-1).split(' ')[1]); kids.set(pp, [...(kids.get(pp) ?? []), Number(d)]); } catch {} } const out = []; for (let q = [pid]; q.length;) { const n = q.pop(); for (const c of kids.get(n) ?? []) { out.push(c); q.push(c); } } return out; };
 const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (f()) return true; return false; };
 
 test('ENG_SOCK_DIR: the run\'s own 0700 folder in $HOME/.cache/eng/s, short enough for any socket, removed after', t => {
@@ -1073,7 +1075,7 @@ test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the n
     assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'crash'))));
     const d = mark('crash'), id = fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8').trim(); fs.rmSync(path.join(marks, 'crash'));
     t.after(() => { killRun(id); fs.rmSync(d, { recursive: true, force: true }); });
-    p.kill('SIGKILL'); await gone; killRun(id);
+    const kids = tree(p.pid); p.kill('SIGKILL'); await gone; for (const k of kids) { try { process.kill(k, 'SIGKILL'); } catch {} } killRun(id);
     assert.ok(fs.existsSync(d), 'SIGKILL leaves the folder');
     assert.equal(path.dirname(d), path.join(e.HOME, '.cache', 'eng', 's'));
     if (round === 'clean') {
