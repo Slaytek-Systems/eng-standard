@@ -7,10 +7,10 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd } from '../lib/render.mjs';
+import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd, shipLogStep } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
+import { engTmp, staleTmpDirs, staleSockDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
 import { audit, corePayloads, sydneyMonth, SKIP_DIRS, lowestDeps, nodePins, convexNodeFindings, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
 import { renovate, launch } from '../lib/renovate-cli.mjs';
@@ -22,12 +22,16 @@ import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy, alwaysWatched } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
+// eng sets ENG_SOCK_DIR and ENG_NETWORK_ISOLATED for its own ephemeral runs only. Nothing eng starts (an unwatched run, a
+// gate step, a nested eng) inherits them, since none of it can back the claim; a parent run's folder is kept only to nest in.
+const PARENT_SOCK_DIR = process.env.ENG_SOCK_DIR;
+delete process.env.ENG_SOCK_DIR; delete process.env.ENG_NETWORK_ISOLATED;
 const NOTES = 'eng-verify';
 const sh = (c, o = {}) => execSync(c, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...o }).trim();
 let RUN_ENV; // set by withTmp: every child of eng gate / eng e2e gets ENG_TMP and TMPDIR pointing at the per-run dir
@@ -59,6 +63,7 @@ function configErrors(c) {
   if (pre !== undefined && !(Array.isArray(pre) && pre.every(x => typeof x === 'string' && x.trim()))) errs.push('hooks.pre_commit must be a list of non-empty commands');
   const post = c.agents?.post_edit_command;
   if (post !== undefined && !(typeof post === 'string' && post.trim())) errs.push('agents.post_edit_command must be a non-empty command');
+  if (c.ship?.log_step !== undefined && typeof c.ship.log_step !== 'string') errs.push('ship.log_step must be a string');
   errs.push(...validatePolicy(c.e2e));
   errs.push(...validateFlake(c.e2e));
   errs.push(...validateRenovation(c.renovation));
@@ -224,7 +229,7 @@ function shipNext() {
   3. gh pr checks ${p.number} --watch                          # gate on the new head; then: gh pr checkout ${p.number} && git pull && eng verdict check
   4. gh pr merge ${p.number} --squash --delete-branch --match-head-commit $(gh pr view ${p.number} --json headRefOid -q .headRefOid)
   5. gh api repos/{owner}/{repo}/commits/${cfg.project.default_branch}/check-runs -q '.check_runs[]|.name+" "+(.conclusion//"pending")'   # main green? else revert now and return #${p.number} to its author
-  6. log #${p.number} in the repo's Core status note`);
+  6. ${shipLogStep(cfg)}`);
   }
   console.log('eng ship next: nothing shippable right now.');
 }
@@ -543,6 +548,10 @@ function retro() {
 
 // ---------- launch: the repo owns an isolated local launch (pstack create-verification-skill Launch / Doctor / Cleanup) ----------
 // Contract (eng.config.yml launch:). eng gives each run ENG_RUN_ID, ENG_PORT (a free port eng picked), ENG_RUN_DIR (outside the repo).
+// basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng ephemeral and eng launch-check start: <tmp>/eng-launch/<id> here,
+// <scratch root>/<id> in eng ephemeral. Keep a socket in it short: the run dir is its root plus the id, 107 bytes is the cap.
+// eng ephemeral also sets ENG_SOCK_DIR ($HOME/.cache/eng/s/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
+// under isolation.network: private.
 // up: start, return once ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}. doctor: read-only, exit 0 = worth driving.
 // down: stop only the PIDs this run started. Storage and evidence live under the run dir, never shared and never in the repo.
 const NO_LAUNCH = 'repo has no isolated launch; fix in codebase before writing verify skill (eng.config.yml launch: up/doctor/down)';
@@ -975,7 +984,7 @@ function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
-  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && cfg.isolation?.mode !== 'fail' ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
+  const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} ephemeral run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
@@ -1105,6 +1114,14 @@ function cleanCmd() {
       console.log(`  ${verb.padEnd(12)} ${d.path} (${d.ageH.toFixed(1)}h old)`);
     }
     console.log(`eng clean: ${dirs.filter(d => d.stale).length} stale eng temp dir(s) for ${cfg.project.name} in ${tmpBase(cfg)} older than ${hours}h${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
+    // ENG_SOCK_DIR folders a killed eng ephemeral run left (any repo's: they are per user), once that run's eng is gone.
+    const socks = staleSockDirs(hours, { env: { ...process.env, ...(PARENT_SOCK_DIR ? { ENG_SOCK_DIR: PARENT_SOCK_DIR } : {}) } });
+    for (const d of socks) {
+      if (!d.stale) { console.log(`  keep   ${d.path} (${d.why})`); continue; }
+      if (apply) fs.rmSync(d.path, { recursive: true, force: true });
+      console.log(`  ${verb.padEnd(12)} ${d.path} (socket folder of a run that is gone)`);
+    }
+    if (socks.length) console.log(`eng clean: ${socks.filter(d => d.stale).length} stale eng socket folder(s)${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
   }
   if (!a.includes('--worktrees')) return;
   const git = args => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
@@ -1178,7 +1195,7 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   rules: () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove'),
   verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
   mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
-  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral(engCtx(), a), merge: () => merge(engCtx(), a),
+  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a), merge: () => merge(engCtx(), a),
   'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }

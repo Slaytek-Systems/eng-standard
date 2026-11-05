@@ -49,7 +49,7 @@ Loop, whenever a PR becomes ready (`eng ship next` prints the next PR and the co
 3. Wait for the gate on the new head. Same patch-id: verdict stands. Otherwise back to the verifier.
 4. `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 5. Main green after merge, else revert now and return the PR to its author.
-6. Log it in the repo's Core status note.
+6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.
 
 Two gate failures: back to the author with the reason. `risk:high`: send to Matt as soon as ready, one at a time, with a one-line summary, evidence and PR link; merge once he approves. Full SOP: `SHIPPING.md`. TODO: releases and tagging.
 - **retro:** `eng-retro` (`eng retro`) after each merged PR, then `correct` for any class it finds.

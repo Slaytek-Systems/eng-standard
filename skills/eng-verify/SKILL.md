@@ -10,7 +10,7 @@ pstack owns the method: `tdd` and the Bug fix playbook (step 5) prove a check fa
 ## Before any verify skill: the repo owns its launch
 pstack `create-verification-skill` assumes a Launch exists; `maintain-verification-skill` reports harness and product gaps instead of patching them in the skill. So:
 1. Run `eng launch-check`. If it fails with "repo has no isolated launch", that is gap 1. Stop. Do not create or extend `verify-<app>`.
-2. Fix it in the codebase: `launch:` in eng.config.yml with up/doctor/down that honour ENG_RUN_ID, ENG_PORT and ENG_RUN_DIR (free port per run, own db/storage per run, kill only own PIDs, evidence outside the repo). `eng launch-check` must pass, including the second concurrent run.
+2. Fix it in the codebase: `launch:` in eng.config.yml with up/doctor/down that honour ENG_RUN_ID, ENG_PORT and ENG_RUN_DIR (basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts, so a launch script may check it; unix sockets go in ENG_SOCK_DIR under eng ephemeral, with a fallback when it is unset; free port per run, own db/storage per run, kill only own PIDs, evidence outside the repo). `eng launch-check` must pass, including the second concurrent run.
 3. The verify skill's Launch, Doctor and Cleanup sections only call those three commands. Never put locks, PID hunting, container deadlines, private databases or storage emulators inside a verify skill.
 4. Cap review rounds on a verify skill at 2. A review finding about isolation or infra is not fixed in the skill: record `eng mistake launch-infra "<finding>"` and fix launch in the codebase. `eng retro` routes `launch*` classes to level 1 (architecture).
 

@@ -107,6 +107,8 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
   verifier: fresh-context agent   # Verdict bound to the head SHA / patch-id (eng verdict). Verification first: it runs the change (eng verdict round --by <id> -- <cmd>).
+  # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
+  # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
   # in SHIPPING.md instead. Set merge_queue: { provider, max_group_size, ci_trigger } only to opt in (eng then warns if CI lacks merge_group).
   # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, high_risk_paths, high_risk_verifiers, post_merge.check, stuck_minutes,
@@ -133,6 +135,8 @@ formal:                           # Which skill formally checks what (lib/formal
 
 launch:                           # The repo owns its isolated local launch (pstack Launch/Doctor/Cleanup). The verify skill only CALLS these.
   # eng sets ENG_RUN_ID, ENG_PORT (free port picked per run) and ENG_RUN_DIR (outside the repo) for each command.
+  # basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts (eng ephemeral: <scratch root>/<id>; eng launch-check: <tmp>/eng-launch/<id>).
+  # eng ephemeral also sets ENG_SOCK_DIR: bind unix sockets there (short, the run's own, the path the docker daemon sees).
   up: sh scripts/launch.sh up         # start, return when ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}
   doctor: sh scripts/launch.sh doctor # read-only: exit 0 = this instance is worth driving
   down: sh scripts/launch.sh down     # stop only the PIDs in state.json; keep $ENG_RUN_DIR/evidence
@@ -149,6 +153,7 @@ launch:                           # The repo owns its isolated local launch (pst
 
 isolation:                        # Devbox project isolation (docs/project-isolation.md): .eng/project.toml + eng run-service/connect/stop/status.
   mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean. fail also enforces isolation in eng ephemeral runs.
+  network: host                   # host | private. private: each eng ephemeral run gets its own network namespace (loopback only; docker and ENG_SOCK_DIR still work) and ENG_NETWORK_ISOLATED=1.
 
 # renovation:                     # Existing repos only: written by `eng renovate apply` (renovation/README.md in the package). New repos skip it.
 #   version: 0.9.0

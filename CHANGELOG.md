@@ -2,7 +2,7 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.13.0 (3 Nov 2026)
+## 0.13.0 (5 Nov 2026)
 
 **Verification-first independent check** (Matt, 3 Nov 2026; Core decision nd7dhs8666vb7cd79t6m2e5bnx8hhhae). The primary required check is now a verification verdict on the exact commit: a verifier that wrote none of the change runs it and posts PASS or FAIL with the evidence. Verification reduces the need for adversarial model review and uses tokens more efficiently (PR #38 took eight model-review rounds, and its two real catches were bugs a test or property would have found). Independence is still by identity. Model review is kept as a tool and nothing is removed: it is required only for text no check can run, and optional at the author's or lead's discretion, for example on a high-risk change.
 
@@ -12,6 +12,31 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **Breaking for open PRs:** a verdict recorded before 0.13.0 has no method, so it counts as a review. On testable code the verifier re-runs the change with `eng verdict round --by <id>` and records a new verdict.
 - **Docs and packs.** SHIPPING.md rule 3 and §2 describe the verification-first check. §2 adds when to add formal verification: state machines and protocols, money, auth and permissions, and data migrations. The rendered AGENTS.md router, rule table and formal lines say the same, and so do `eng-route`, `eng-verify`, the renovation pack's `verifier` step and README, this repo's AGENTS.md, `docs/self-merge.md` and `docs/merge-queue.md`. The starter config documents `verification.review_only_paths` and keeps the `interrogate reviewers` role, marked optional.
 - `lib/verification.mjs` is risk:high in this repo's `ship.high_risk.paths`.
+
+## 0.12.5 (4 Nov 2026)
+
+**A short socket folder per run, and an opt-in private network** (Motus Lead, 4 Nov 2026; Eng Manager Core task p5711dqnz7m50h56b2jg4kaffh8hcmtv). Motus PR470 had 51 tests and its `ephemeral:launch` failing under 0.12.x, for two reasons. First, every `eng ephemeral` run's TMPDIR is about 98 bytes on the devbox, so the unix sockets its tests bind went past the 107-byte cap. Second, the run's bwrap stops a nested bwrap. On a host with `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu 24.04), whatever runs under bwrap is confined to AppArmor's `unpriv_bwrap` profile, which denies every capability. So a test that starts its own `bwrap --unshare-net` fails with "No permissions to create new namespace". Neither host AppArmor nor eng's sandbox changes.
+
+- **`ENG_SOCK_DIR`.** Every `eng ephemeral` run (and every `eng gate` step it wraps) gets `ENG_SOCK_DIR=$HOME/.cache/eng/s/<first 8 hex of sha256(ENG_RUN_ID)>`, mode 0700. On the devbox that is 31 bytes (`/home/dev/.cache/eng/s/xxxxxxxx`), whatever the run id; a nested run's folder sits inside its parent's, at 40. Bind unix sockets there. A container's bind mount resolves it at the same path, because the docker daemon sees it on the host, which the run's private `/tmp` is not. eng sets the variable only when the folder is under 60 bytes, in a home this user owns outside `/tmp`, so code that reads it needs a fallback. It is under `$HOME`, not `XDG_CACHE_HOME`, so its length is fixed per user. It is not under `$XDG_RUNTIME_DIR`, which holds the docker socket: devbox-ops' heavy-lane docker proxy (`workspace heavy run`) refuses any bind from there.
+- The folder belongs to one run. eng creates it, never reuses it (an existing one is an error), writes the run id to `ENG_SOCK_DIR/.eng-run`, and removes it with the run's round, on a pass, a failure or SIGINT/SIGTERM/SIGHUP. Inside the run's bwrap, `$HOME/.cache/eng/s` is an empty tmpfs with only this run's folder bound back, so a run does not see another run's folder at its path, and `.eng-run` is read-only. Like the rest of enforcement (0.12.2), this guards against accidental cross-run use, not a deliberate one: the same user can still reach another run's folder through `/proc/<pid>/root`. Under `isolation.mode: fail` the folder stays writable, and the run's docker socket lets a container bind it, although the rest of `~/.cache` is read-only. A run killed with SIGKILL leaves its folder; the next `eng ephemeral` run removes it once that run's eng process is gone, as does `eng clean --apply`, which also removes an ownerless one older than `--older-than`.
+- **`isolation.network: private`** (default `host`). The run's bwrap also unshares the network namespace. The run has loopback only: a server on the host's 127.0.0.1 is refused, any other address is unreachable (`ENETUNREACH`), and it cannot reach a host server on an abstract-namespace socket either, which closes that limit of enforced isolation (0.12.2). Filesystem sockets still work, so `DOCKER_HOST` (the run's labelling docker socket) and `ENG_SOCK_DIR` keep working. Containers the run starts keep docker's own network. The run gets `ENG_NETWORK_ISOLATED=1`, so a tool that would start its own network sandbox can see the outer one and not nest a second bwrap. eng never passes an inherited `ENG_SOCK_DIR` or `ENG_NETWORK_ISOLATED` on: it sets both itself.
+- A run that would get no network namespace (no usable bwrap, or a run folder under `/tmp`) is refused before it starts, in every mode. Like `isolation.mode: fail`, the switch makes the check strict and keeps runs watched when `ephemeral_runs.mode` is off, in `eng ephemeral` and `eng gate`. It adds to `isolation.mode`, and replaces nothing. In warn mode the run can still use this user's other filesystem sockets (the systemd user bus, tmux, agents), and through them the network. `isolation.mode: fail` covers those too.
+- `eng` rejects any other `isolation.network` value. The starter config, the README, `docs/project-isolation.md`, the launch contract and the eng-verify skill describe both. Consuming repos see an eng-verify skill diff on their next `eng sync`.
+
+## 0.12.4 (3 Nov 2026)
+
+**The run dir is named for the run** (Eng Manager; Core task p5711dqnz7m50h56b2jg4kaffh8hcmtv, decision nd7b3zym). Re-lands closed PR #41 on main. The launch contract now says basename(`ENG_RUN_DIR`) == `ENG_RUN_ID` for every run `eng ephemeral` and `eng launch-check` start.
+
+- `eng ephemeral` gave each run `ENG_RUN_DIR=<round>/run`, which `eng launch-check`'s `<tmp>/eng-launch/<id>` contradicts. A launch script that checks the name refused it (Motus PR470 and PR464).
+- The run dir is now `<scratch root>/<run id>`, beside the round folder rather than in it, so a socket in it stays short. Motus binds `$ENG_RUN_DIR/s4`: 67 bytes on the devbox for a `motus-app` run, where `<round>/<run id>/s4` would be 121, past the 107-byte cap. It is writable under enforcement, counts as a run folder for the stray-process check, and is removed with the round.
+- `eng clean` also removes an `eng-eph-*` run dir a killed run left, once its process is gone.
+- The launch contract comment, the starter config, the eng-verify skill and the README state the rule. Consuming repos see an eng-verify skill diff on their next `eng sync`.
+
+## 0.12.3 (3 Nov 2026)
+
+- Shipping loop step 6 now logs the PR number, merge SHA and main's post-merge result on the PR's Core task. Decisions get their own decision notes. Never write to the repo's Core status note. This follows Motus Lead's decision `nd7922184grhk1zvgsn2cgx9fx8hh52w`.
+- Optional `ship.log_step` overrides the text after `6. ` in SHIPPING.md and `eng ship next` verbatim. Non-string values are rejected. The eng-route skill carries the default rule.
+- Consuming repos will see a SHIPPING.md and eng-route diff on their next `eng sync`.
 
 ## 0.12.2 (2 Nov 2026)
 
