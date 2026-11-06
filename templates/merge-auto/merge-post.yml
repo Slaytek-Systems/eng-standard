@@ -1,20 +1,28 @@
-# Post-merge check on the shipped artifact after every merge to main (merge.auto.post_merge.check). On failure it opens
-# an auto-revert PR (the exact inverse of the merged commit) with auto-merge on; the merge gate passes an exact inverse.
+# eng merge post: the post-merge check on main's tip (merge.auto.post_merge.check), then one pass over open PRs.
+# On a red check it opens an auto-revert PR (the exact inverse of the merged commit) with auto-merge on; the merge gate passes
+# an exact inverse. The schedule checks a tip that a bot-armed merge left without a push run, and tends open PRs: the
+# `stuck` label, update-branch for a behind auto-merge PR (strict mode), re-arming auto-merge, and owner restarts on a
+# FAIL or missing verdict (POST to the ENG_RESTART_WEBHOOK secret, plus a comment). A tip with a finished run is not checked twice.
 name: merge-post
 on:
   push:
     branches: [main]
-  workflow_dispatch:                # eng merge watch dispatches it when main's tip has no run (a bot-armed merge fires no push)
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
 concurrency:
   group: merge-post
   cancel-in-progress: false
 permissions:
-  contents: write
+  contents: write                   # the revert branch; update-branch for behind PRs (a merge from main, never a force push)
   pull-requests: write
   issues: write
-  actions: write
+  checks: read
+  statuses: read
+  actions: write                    # dispatch the gate and CI for a revert PR or an updated head
 jobs:
   post-merge:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +35,4 @@ jobs:
       - run: node bin/eng.mjs merge post
         env:
           GH_TOKEN: ${{ github.token }}
+          ENG_RESTART_WEBHOOK: ${{ secrets.ENG_RESTART_WEBHOOK }}

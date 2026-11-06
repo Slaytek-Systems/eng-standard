@@ -139,7 +139,7 @@ test('eng verdict --pr: no verdict posts failure; the builder\'s own verificatio
     const r = eng('verdict', 'PASS', '--by', 'builder-1', k, 'x');
     assert.equal(r.status, 1); assert.match(r.stderr, new RegExp(`${k} was removed; a verdict counts by what ran on the commit`), k);
   }
-  let r = eng('verdict', 'round', '--by', 'builder-1', '--', 'sh', '-c', 'echo docs render');
+  let r = eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'echo docs render');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   r = eng('verdict', 'PASS', '--by', 'builder-1', '--pr', '7');
   assert.equal(r.status, 0, r.stdout + r.stderr);

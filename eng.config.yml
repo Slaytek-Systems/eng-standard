@@ -16,7 +16,7 @@ merge:                            # The merge rule (AGENTS.md "Merge rule"). Nob
   method: squash
 
 ship:
-  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng verdict round --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
+  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng run --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
   high_risk:                      # Any changed path here (or a rename's old path) = risk:high: N distinct verifiers must PASS. Else risk:low.
     label: risk:high
     low_label: risk:low
@@ -36,6 +36,7 @@ ship:
       - "lib/risk.mjs"
       - "lib/self-merge.mjs"
       - "lib/verification.mjs"    # which verdicts count: verification evidence, review-only paths
+      - "lib/run.mjs"             # eng run --by: writes the verdict evidence runs
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"
       - "docs/merge-queue.md"
@@ -58,16 +59,16 @@ ship:
     # verifier_logins: [<login>, <login>]   # with a dedicated verifier login: only these logins'
     #                               verdict comments count; guards against forged comments (docs/self-merge.md)
 
-hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs each check (.github/workflows/ci.yml).
+hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs npm test through eng run test (.github/workflows/ci.yml).
   disk_rules:
-    tests_leave_nothing:          # CI: eng leave-nothing -- eng ephemeral check (the suite leaves its private TMPDIR empty)
+    tests_leave_nothing:          # CI: eng run test (the suite leaves its private TMPDIR empty)
       mode: fail
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
-    no_cache_in_evidence:         # CI: eng evidence check (this repo keeps no run evidence; the check passes on none)
+    no_cache_in_evidence:         # eng verdict check (this repo keeps no run evidence; the check passes on none)
       mode: fail
       markers: [CACHEDIR.TAG]
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
-    pinned_downloads:             # CI: eng downloads check (this repo pins no downloads: prepare is null)
+    pinned_downloads:             # this repo pins no downloads: prepare is null
       mode: fail
       cache: "${XDG_CACHE_HOME}/eng/downloads"
       prepare: null
@@ -77,7 +78,7 @@ hygiene:                          # Four disk rules and ephemeral runs (Matt, 30
       max_mb: 100
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
   run_rules:
-    ephemeral_runs:               # CI: eng ephemeral check (npm test runs, then nothing it made may be left)
+    ephemeral_runs:               # CI: eng run test (npm test runs, then nothing it made may be left)
       mode: fail
       runs: [test]
       persist_label: slaytek.persist=true

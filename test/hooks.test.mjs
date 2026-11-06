@@ -17,7 +17,7 @@ const cfg = (extra = {}) => ({ project: { default_branch: 'main', protected_bran
 test('pre-commit runs each hooks.pre_commit command in its own shell after the eng checks', () => {
   const body = hooks(cfg({ hooks: { pre_commit: ['bun run lint:staged', "printf %s it's"] } }))['.githooks/pre-commit'].trim().split('\n').slice(-3);
   assert.deepEqual(body, [
-    '$ENG drift-check && $ENG stack-check && $ENG lint || exit $?',
+    '$ENG sync --check && $ENG lint || exit $?',
     "sh -c 'bun run lint:staged' || exit $?",
     "sh -c 'printf %s it'\\''s' || exit $?",
   ]);
@@ -53,7 +53,7 @@ test('a trailing comment in one command does not skip the next command', () => {
 });
 
 test('unset hook keys render the same pre-commit and Claude settings as before', () => {
-  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '$ENG drift-check && $ENG stack-check && $ENG lint');
+  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '$ENG sync --check && $ENG lint');
   assert.equal(hooks(cfg({ hooks: { pre_commit: [] } }))['.githooks/pre-commit'], hooks(cfg())['.githooks/pre-commit']);
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg()))), ['permissions']);
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings({ project: { default_branch: 'main' } }))), ['permissions']);
@@ -75,7 +75,7 @@ test('config validation rejects malformed hook keys', () => {
     c.hooks = { pre_commit: ['ok', ''] };
     c.agents.post_edit_command = 42;
     fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
-    const r = spawnSync(process.execPath, [ENG, 'drift-check'], { cwd: dir, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [ENG, 'sync', '--check'], { cwd: dir, encoding: 'utf8' });
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /hooks\.pre_commit must be a list of non-empty commands/);
     assert.match(r.stderr + r.stdout, /agents\.post_edit_command must be a non-empty command/);

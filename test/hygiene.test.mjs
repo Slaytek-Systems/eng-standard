@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
-import { staleTmpDirs, TMP_RULE } from '../lib/hygiene.mjs';
+import { TMP_RULE } from '../lib/hygiene.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
@@ -55,7 +55,7 @@ test('eng gate: per-run dir removed on SIGTERM', async () => {
 });
 
 test('eng gate: a nested eng reuses the parent ENG_TMP and passing gate removes it', () => {
-  setCfg(c => { c.project.commands.test = `node ${ENG} e2e-required --files docs/a.md > "$ENG_TMP/n.txt" && test -f "$ENG_TMP/n.txt" && rm "$ENG_TMP/n.txt" && ls "$ENG_TMP_BASE" | grep -c '^eng-hyg-' > "$ENG_TMP_BASE/count"`; });
+  setCfg(c => { c.project.commands.test = `node ${ENG} e2e --required --files docs/a.md > "$ENG_TMP/n.txt" && test -f "$ENG_TMP/n.txt" && rm "$ENG_TMP/n.txt" && ls "$ENG_TMP_BASE" | grep -c '^eng-hyg-' > "$ENG_TMP_BASE/count"`; });
   const r = eng('gate'); assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(fs.readFileSync(path.join(base, 'count'), 'utf8').trim(), '1');
   assert.deepEqual(engDirs(), []);
@@ -74,43 +74,6 @@ test('disk rule tests_leave_nothing: a gate step that leaves a file in its TMPDI
   assert.equal(r.status, 0, r.stdout + r.stderr); assert.doesNotMatch(r.stdout, /left 2 entries/);
   assert.deepEqual(engDirs(), [], 'the per-run dir is still removed');
   setCfg(c => { delete c.hygiene.disk_rules; });
-});
-
-test('eng clean: dry run lists stale dirs only; --apply removes them', () => {
-  const mk = (n, h) => { const p = path.join(base, n); fs.mkdirSync(p); fs.writeFileSync(path.join(p, 'f'), 'x'); const t = (Date.now() - h * 3600e3) / 1000; fs.utimesSync(p, t, t); return p; };
-  const old = mk('eng-hyg-abc-999999999-x', 10), young = mk('eng-hyg-abd-999999999-y', 1), live = mk(`eng-hyg-abe-${process.pid}-z`, 10), other = mk('eng-other-abf-999999999-q', 10);
-  const run = mk('eng-eph-abg-999999999-0', 10), liveRun = mk(`eng-eph-abh-${process.pid}-0`, 10);
-  let r = eng('clean');
-  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /would remove.*eng-hyg-abc/); assert.match(r.stdout, /would remove.*eng-eph-abg/); assert.match(r.stdout, /2 stale eng temp dir/);
-  assert.ok(fs.existsSync(old));
-  r = eng('clean', '--apply', '--older-than', '6');
-  assert.ok(!fs.existsSync(old)); assert.ok(fs.existsSync(young)); assert.ok(fs.existsSync(live)); assert.ok(fs.existsSync(other));
-  assert.ok(!fs.existsSync(run), 'a stale eng ephemeral run dir is removed'); assert.ok(fs.existsSync(liveRun), 'a live run\'s run dir is kept');
-  assert.equal(staleTmpDirs('hyg', 0, { base }).filter(d => d.stale).length, 1); // young is stale at 0h; live pid never
-  for (const p of [young, live, other, liveRun]) fs.rmSync(p, { recursive: true });
-});
-
-test('eng clean --worktrees: removes only merged/gone + pushed + clean; reports the rest', () => {
-  const wt = n => path.join(root, `wt-${n}`);
-  const add = (n, f) => { git(`worktree add -q -b ${n} ${wt(n)} origin/main`); fs.writeFileSync(path.join(wt(n), `${n}.txt`), n); git('add -A', wt(n)); git(`commit -qm ${n}`, wt(n)); if (f) f(); };
-  add('merged', () => { git('push -q -u origin merged', wt('merged')); git('merge -q --ff-only merged'); git('push -q origin main'); });
-  add('squashed', () => { git('push -q -u origin squashed', wt('squashed')); git('merge -q --squash squashed'); git('commit -qm sq'); git('push -q origin main'); git('push -q origin --delete squashed'); });
-  add('dirty', () => { git('push -q -u origin dirty', wt('dirty')); git('push -q origin --delete dirty'); fs.writeFileSync(path.join(wt('dirty'), 'wip.txt'), 'wip'); });
-  add('unpushed');
-  add('gone-unpushed', () => { git('push -q -u origin gone-unpushed', wt('gone-unpushed')); fs.writeFileSync(path.join(wt('gone-unpushed'), 'more.txt'), 'm'); git('add -A', wt('gone-unpushed')); git('commit -qm more', wt('gone-unpushed')); git('push -q origin --delete gone-unpushed'); });
-  add('live', () => git('push -q -u origin live', wt('live')));
-  let r = eng('clean', '--worktrees');
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /would remove.*wt-merged \[merged\]/); assert.match(r.stdout, /would remove.*wt-squashed \[squashed\].*merged into origin\/main \(content\)/);
-  assert.match(r.stdout, /keep.*wt-dirty.*DIRTY/); assert.match(r.stdout, /keep.*wt-unpushed.*UNPUSHED/);
-  assert.match(r.stdout, /keep.*wt-gone-unpushed.*UNPUSHED/); assert.match(r.stdout, /keep.*wt-live.*still live upstream/);
-  assert.match(r.stdout, /REPORT to the repo lead/); assert.match(r.stdout, /2 worktree\(s\) removable \(dry run/);
-  for (const n of ['merged', 'squashed']) assert.ok(fs.existsSync(wt(n)), 'dry run deletes nothing');
-  r = eng('clean', '--worktrees', '--apply');
-  assert.equal(r.status, 0, r.stderr);
-  for (const n of ['merged', 'squashed']) assert.ok(!fs.existsSync(wt(n)), `${n} removed`);
-  for (const n of ['dirty', 'unpushed', 'gone-unpushed', 'live']) assert.ok(fs.existsSync(wt(n)), `${n} kept`);
-  assert.ok(fs.existsSync(path.join(wt('dirty'), 'wip.txt')));
 });
 
 test('lint rule test-bare-tmpdir: flags bare tmpdir in tests, passes ENG_TMP; rules prove bites', () => {
@@ -134,8 +97,8 @@ test('sync renders .eng/test-tmp.mjs and the hygiene SOP in SHIPPING.md and AGEN
   setCfg(c => { c.e2e && (c.e2e = c.e2e); });
   const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
   const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
-  assert.match(ship, /## 5\. Disk hygiene/); assert.match(ship, /eng clean --worktrees --apply/); assert.match(ship, /Never delete unpushed or dirty worktrees/);
-  assert.match(agents, /eng clean --worktrees --apply/); assert.match(agents, /test-bare-tmpdir/);
+  assert.match(ship, /## 5\. Disk hygiene/); assert.match(ship, /git worktree remove <path>/); assert.match(ship, /Never delete unpushed or dirty worktrees/);
+  assert.match(agents, /git worktree remove <path>/); assert.match(agents, /test-bare-tmpdir/);
   // Fixed rule 18: clean up on merge or close (devbox forensics, 17 Oct 2026)
   for (const doc of [ship, agents]) assert.match(doc, /18\. \*\*Clean up on merge or close\.\*\* When a PR merges or closes, its worktrees and evidence are deleted/);
   assert.match(ship, /reuse it for every review round/); assert.match(ship, /never one per lane or worktree/); assert.match(ship, /CARGO_INCREMENTAL=0/);

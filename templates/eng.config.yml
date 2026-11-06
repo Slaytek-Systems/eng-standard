@@ -1,5 +1,5 @@
 # eng.config.yml: every setting and decision for this repo. Owner: Matt. Agents draft changes; Matt approves.
-# Run `eng sync` after editing. `eng drift-check` fails if generated files differ from what this renders.
+# Run `eng sync` after editing. `eng sync --check` fails if generated files differ from what this renders.
 version: 1
 
 project:
@@ -41,14 +41,13 @@ stack:
     - "Bun vs Vite+: vp test/check/build run on Node (vp manages Node); bun is the package manager under vp (viteplus.dev/guide, llms-full.txt). Bun runtime is for scripts and the Convex CLI, run via `vp run` or `bun`."
     - "Confect needs Node >= 24 for its CLI, TS strict:true, and only a subset of Effect Schema (confect.dev quickstart)."
     - "Convex functions run in Convex's runtime regardless of local runtime choice; the toolchain only affects CLI, codegen, tests and the app shell."
-    - "Convex 1.49 needs Node 22 or newer. eng stack-check fails a Convex repo whose engines.node, .nvmrc/.node-version, CI node-version or convex.json node.nodeVersion is lower."
     - "Validate a function handle with v.function({ fnType, args, returns }) (Convex 1.49+), not v.string() plus an `as FunctionHandle<...>` cast. Its type is FunctionHandle_future. eng lint rule convex-function-handle-validator enforces it once the repo is on convex 1.49."
 
 agents:
   harnesses: [claude-code, codex, cursor]   # AGENTS.md is read by Codex and Cursor; CLAUDE.md imports it.
   skills_dir: .agents/skills
   # post_edit_command: "npm run lint:changed -- --hook"   # optional; rendered as a Claude Code PostToolUse hook (Edit|MultiEdit|Write) in .claude/settings.json. Exit 2 feeds stderr back to the agent.
-  rules:                          # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng verify maintain fails on a rule with nothing enforcing it.
+  rules:                          # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng doctor fails on a rule with nothing enforcing it.
     - { rule: "Orders are written only through saveOrder()", enforced_by: gate-only-writes }
   skills:                         # <source>/<name>. Vendored copies at pins in pkg/vendor/PINS.txt; eng/* are ours.
     - pstack/*                     # the full pstack set (61 skills + 2 subagents), pinned in pkg/vendor/PINS.txt
@@ -63,7 +62,7 @@ agents:
     - eng/property-test
     - eng/add-gate
     - eng/custom-lint
-    - eng/eng-retro                # learning loop: eng retro (copies pocock/retro + pstack correct)
+    - eng/eng-retro                # learning loop (copies pocock/retro + pstack correct)
     - pocock/retro
     - eng/e2e-flow
     - eng/eng-stack
@@ -95,7 +94,7 @@ models:                           # Which model does which job. The standard nam
 fallow:                           # JS/TS repos. Config lives in .fallowrc.json (entry, ignoreDependencies, rules, boundaries).
   version: 3.33.1                 # exact; must equal node_modules fallow --version and the vendored skill
   mode: greenfield                # greenfield = whole repo clean (bare `fallow`). brownfield = new findings only vs baselines.
-  baselines_dir: fallow-baselines # brownfield: `eng fallow --save-baseline` on main, commit, refresh per release (never per merge). Keep .fallow/ (cache) gitignored.
+  baselines_dir: fallow-baselines # brownfield: `fallow --save-baseline` on main, commit, refresh per release (never per merge). Keep .fallow/ (cache) gitignored. Run fallow as a project command (gate fallow).
 
 merge:                            # Per repo. There is no global merge rule. Only ship.manager runs this.
   owner: shipping manager (ship.manager)
@@ -106,13 +105,13 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
-  verifier: verification tooling # Verdict bound to the exact head SHA (eng verdict). It runs the change (eng verdict round --by <id> -- <cmd>); the builder may run it.
+  verifier: verification tooling # Verdict bound to the exact head SHA (eng verdict). It runs the change (eng run --by <id> -- <cmd>); the builder may run it.
   # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
   # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
   # in SHIPPING.md instead. Set merge_queue: { provider, max_group_size, ci_trigger } only to opt in (eng then warns if CI lacks merge_group).
   # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, high_risk_paths, high_risk_verifiers, post_merge.check, stuck_minutes,
-  # verdict_wait_minutes } plus eng merge gate|watch|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
+  # verdict_wait_minutes } plus eng merge gate|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
   high_risk:                      # Matt approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
     label: risk:high
     reasons: [auth, payments, schema/migrations, public APIs, CI, production data]
@@ -121,10 +120,7 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
 
 verification:
   checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present.
-  flake_runs: 3                   # maintain runs each check this many times; mixed results = FLAKY = fail.
-  stale_after_commits: 50
-  repeat_threshold: 2             # A mistake seen this often must become a rule or check.
-  # Verification first (Matt, 3 Nov 2026): a PASS needs passing eng verdict round runs on its commit. A review (eng verdict --review)
+  # Verification first (Matt, 3 Nov 2026): a PASS needs passing `eng run --by` runs on its commit. A review (eng verdict --review)
   # counts only when every changed file matches these globs: text no check can run. Default below; unknown files count as testable.
   review_only_paths: ["**/*.md", "**/*.mdx", "**/*.txt", "**/LICENSE*"]
 
@@ -135,31 +131,24 @@ formal:                           # Which skill formally checks what (lib/formal
 
 launch:                           # The repo owns its isolated local launch (pstack Launch/Doctor/Cleanup). The verify skill only CALLS these.
   # eng sets ENG_RUN_ID, ENG_PORT (free port picked per run) and ENG_RUN_DIR (outside the repo) for each command.
-  # basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts (eng ephemeral: <scratch root>/<id>; eng launch-check: <tmp>/eng-launch/<id>).
-  # eng ephemeral also sets ENG_SOCK_DIR: bind unix sockets there (short, the run's own, the path the docker daemon sees).
+  # basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng starts (eng run launch: <scratch root>/<id>; eng doctor --launch: <tmp>/eng-launch/<id>).
+  # eng run launch also sets ENG_SOCK_DIR: bind unix sockets there (short, the run's own, the path the docker daemon sees).
   up: sh scripts/launch.sh up         # start, return when ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}
   doctor: sh scripts/launch.sh doctor # read-only: exit 0 = this instance is worth driving
   down: sh scripts/launch.sh down     # stop only the PIDs in state.json; keep $ENG_RUN_DIR/evidence
   ready_timeout_s: 60
-  isolation:                      # The contract eng launch-check proves (two concurrent runs, then down).
+  isolation:                      # The contract eng doctor --launch proves (two concurrent runs, then down).
     ports: per_run                # ENG_PORT, never a fixed port
     storage: per_run              # own db/storage under ENG_RUN_DIR
     run_id: ENG_RUN_ID
     kill: own_pids_only           # never pkill/killall by name
     evidence: outside_repo        # ENG_RUN_DIR/evidence survives down
-  worktree: private               # eng launch -- <cmd>: a fresh worktree in a 0700 round dir under hygiene.scratch_root, removed on exit; never chmod a shared checkout
-  mode: "0700"
-  base: main                      # ref eng launch checks out (origin/<base> when fetched)
 
-isolation:                        # Devbox project isolation (docs/project-isolation.md): .eng/project.toml + eng run-service/connect/stop/status.
-  mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean. fail also enforces isolation in eng ephemeral runs.
-  network: host                   # host | private. private: each eng ephemeral run gets its own network namespace (loopback only; docker and ENG_SOCK_DIR still work) and ENG_NETWORK_ISOLATED=1.
 
-# renovation:                     # Written by `eng renovate apply` when init meets a repo that already ships (renovation/README.md). A new repo has none.
-#   version: 0.9.0
-#   completed_steps: []
-#   policy_owner: "@lead"
-#   merge_policy: { strict: false, verdict_carry: patch-id }   # verdict_carry no longer carries (0.13.0): a verdict binds the exact commit
+# renovation:                     # Written by `eng init` when it meets a repo that already ships (renovation/README.md). A new repo has none.
+#   version: 0.14.0
+#   policy_owner: "@lead"            # owns renovation/baselines/ in CODEOWNERS
+#   merge_policy: { strict: false } # strict: true is listed in renovation/divergences.md
 
 audits:
   maintain_verification:          # Daily audit: pstack maintain-verification-skill, unchanged. eng renders .eng/ci/audit.yml; a human creates the schedule.
@@ -171,13 +160,9 @@ audits:
 laws:
   enabled: true
   dir: laws
-  laws_file: LAWS.bend            # Human-owned. Any change needs `eng laws approve <who> <note>` (hash recorded in approval_file).
-  proof_file: PROOF.bend          # Agent-owned. `bend PROOF.bend` must print ALL PROOFS CHECK.
+  laws_file: LAWS.bend            # Human-owned: agents draft, Matt approves the change in review.
+  proof_file: PROOF.bend          # Agent-owned. `bend PROOF.bend` must print ALL PROOFS CHECK (eng rules prove runs it).
   bend_version: 2.0.36            # Exact; `bend version` must match (pi-fabric pins the same).
-  approval_file: .eng/laws-approval.json
-  kernels:                        # pi-fabric pattern: the app executes JS compiled from Bend; checked in, rebuilt and byte-compared by `eng laws`.
-    - { source: laws/cart.bend, out: src/generated/cart-kernel.mjs }
-  manifest: src/generated/bend-manifest.json   # sha256 of every .bend input and every generated output.
   parity: vp test run src/cart.parity.test.ts # prism pattern: TS reference vs Bend kernel, random inputs; skip = fail.
   mutations:                      # pi-fabric pattern: each planted bug must break the proofs, or the laws are too weak.
     - { name: discount ignored, file: cart.bend, from: "  sub(subtotal, discount)", to: "  subtotal" }
@@ -192,7 +177,7 @@ e2e:
   node_bin: /workspace/eng-standard/.tools/node24/bin   # e2e CLI needs Node >=24.8 (or ^22.22.3); box default is Node 20.
   evidence_dir: .eng/evidence     # Video, screenshots, trace.md, junit.xml land in <evidence_dir>/<sha>/e2e/.
   flake_runs: 3                   # A new or changed e2e test must pass this many consecutive runs (eng e2e --flake-check) before it may block. Mixed = quarantine + issue.
-  policy:                         # When e2e runs (approved by Matt, 13 Oct 2026). `eng e2e-required` prints the decision for a diff.
+  policy:                         # When e2e runs (approved by Matt, 13 Oct 2026). `eng e2e --required` prints the decision for a diff.
     mode: path_based              # path_based: PRs run e2e only when needed (below). always: every PR runs it (the old rule).
     labels: [risk:high]           # a PR with any of these labels always runs e2e
     unmatched: run                # a changed file no list below matches: run (safe default) or skip
@@ -213,37 +198,36 @@ e2e:
 
 hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / eng e2e always run with a per-run $ENG_TMP removed on exit.
   tmp_lint: true                  # eng lint rule test-bare-tmpdir: test code may not write to bare os.tmpdir() or /tmp. false = off (say why).
-  tmp_max_age_hours: 6            # eng clean: eng-<repo>-* temp dirs older than this (and whose process is gone) are stale.
   disk_lint: true                 # eng lint built-in disk rules: script-bare-tmpdir, cargo-target-tmp, cargo-target-per-run, deno-dir-unstable, container-no-rm, volume-prune-all, credential-to-disk.
-  scratch_root: "${XDG_CACHE_HOME}/eng/${repo}/scratch"   # repo-owned root, never /tmp. eng launch/verdict round/gate/e2e make one 0700 round dir here per run and remove it on exit.
+  scratch_root: "${XDG_CACHE_HOME}/eng/${repo}/scratch"   # repo-owned root, never /tmp. eng run/gate/e2e make one 0700 round dir here per run and remove it on exit.
   caches:                         # one shared build cache per toolchain per repo; eng exports the env var to every child (eng doctor requires each toolchain the repo uses).
     cargo_target: "${XDG_CACHE_HOME}/eng/${repo}/cargo-target"   # CARGO_TARGET_DIR (+ CARGO_INCREMENTAL=0)
     vite: "${XDG_CACHE_HOME}/eng/${repo}/vite"                   # ENG_VITE_CACHE_DIR; vite.config: cacheDir: process.env.ENG_VITE_CACHE_DIR ?? 'node_modules/.vite'
     bun: "${XDG_CACHE_HOME}/eng/${repo}/bun"                     # BUN_INSTALL_CACHE_DIR
     deno: "${XDG_CACHE_HOME}/eng/${repo}/deno"                   # DENO_DIR (stable, never per run)
-  containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>); eng clean --containers --apply removes them with their volumes. Never docker volume prune -a.
-  evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; eng clean --evidence --apply clears merged or closed PRs.
+  containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>). Never docker volume prune -a.
+  evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; cleared when the PR merges or closes.
   evidence_roots: [.eng/evidence]  # where run evidence lands (default: e2e.evidence_dir). Add a proof harness's root, e.g. "~/.local/state/<repo>-proof".
   disk_rules:                     # Four disk rules (Matt, 30 Oct 2026). Every mode: fail | warn | off (eng doctor fails on off). SHIPPING.md §5.
     tests_leave_nothing:          # Tests and proofs leave nothing behind.
-      mode: fail                  # eng gate gives each step its own TMPDIR/ENG_TMP; an entry left in it fails the step. eng leave-nothing -- <cmd> does the same for one command.
+      mode: fail                  # eng gate gives each step its own TMPDIR/ENG_TMP; an entry left in it fails the step. eng run <name> does the same for one declared run.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     no_cache_in_evidence:         # No build caches inside evidence folders.
-      mode: fail                  # eng evidence check and eng e2e fail on a marker file under an evidence run dir; eng lint rule cargo-target-per-run.
+      mode: fail                  # eng verdict check and eng e2e fail on a marker file under an evidence run dir; eng lint rule cargo-target-per-run.
       markers: [CACHEDIR.TAG]     # file names that mark a cache dir (Cargo writes CACHEDIR.TAG in every target and build dir). Non-empty list.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     pinned_downloads:             # Pinned downloads are fetched once into a shared, checksummed cache.
-      mode: fail                  # eng downloads check runs prepare twice on one fresh cache, the second offline (bwrap): no second download, nothing copied or extracted into $ENG_RUN_DIR, every file checksummed or extracted beside a checksummed artifact.
+      mode: fail                  # no built-in check since 0.14.0; a repo that pins downloads checks them with its own command.
       cache: "${XDG_CACHE_HOME}/eng/downloads"   # absolute, not under a temp dir; shared by every repo. eng exports it as ENG_DOWNLOAD_CACHE.
-      prepare: null               # command that fetches every pinned download with `eng fetch <name> <version> <url> <sha256>`; null = the repo has none.
+      prepare: null               # command that fetches every pinned download into ENG_DOWNLOAD_CACHE; null = the repo has none.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     evidence_budget:              # Evidence folders have a size budget.
-      mode: fail                  # eng evidence check and eng e2e fail when a run dir is over max_mb. They report; they never delete.
+      mode: fail                  # eng verdict check and eng e2e fail when a run dir is over max_mb. They report; they never delete.
       max_mb: 100                 # positive number. A run dir is <root>/<run> or <root>/pr-<n>/<sha>.
       source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
   run_rules:                      # Runs are ephemeral by default (Matt, 30 Oct 2026). SHIPPING.md §5. eng doctor fails mode: off.
     ephemeral_runs:               # Every local test, review and probe run is thrown away when it ends, like a Boat sandbox.
-      mode: fail                  # fail | warn | off. eng ephemeral check runs each run, then fails on a container, network, volume, temp entry or process it left; removes what carries the run's label, reports volumes. eng gate wraps those steps.
+      mode: fail                  # fail | warn | off. eng run <name> runs a run (eng gate runs each one), then fails on a container, network, volume, temp entry or process it left; removes what carries the run's label, reports volumes. eng gate wraps those steps.
       runs: null                  # null = test, plus launch (up then down) when launch.up and launch.down are declared. Or a list of project.commands names and launch.
       persist_label: slaytek.persist=true   # a container or volume with this label may outlive the run (a permanent dev server), as may a container with a restart policy. slaytek.persist=true always counts too. Same rule the devbox keeps.
       persist_env: SLAYTEK_PERSIST=true     # a process with this in its environment may keep running, e.g. SLAYTEK_PERSIST=true pnpm dev.
@@ -257,7 +241,7 @@ db:
   additive_only: true
 
 hooks:
-  pre_commit: []                  # optional extra commands; .githooks/pre-commit runs each in its own sh -c after drift-check, stack-check and lint, and stops at the first failure.
+  pre_commit: []                  # optional extra commands; .githooks/pre-commit runs each in its own sh -c after sync --check and lint, and stops at the first failure.
 
 constraints:
   rules:
@@ -286,4 +270,4 @@ constraints:
 
 gates:
   skipped_is_failed: true         # Schema constant.
-  required: [drift, stack, lint, fallow, rules, typecheck, test, launch, verify, verdict, laws, conform, e2e, evidence, downloads]
+  required: [drift, lint, rules, typecheck, test, launch, verdict, e2e]   # built in: drift, lint, rules, e2e, launch, verdict, doctor; any other name runs project.commands.<name>

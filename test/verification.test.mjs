@@ -81,7 +81,7 @@ test('an unknown file list is testable, and review_only_paths is a list of globs
   assert.equal(reviewOnlyErrors({ review_only_paths: 'docs' }).length, 1);
 });
 
-// The CLI end to end: eng verdict round records evidence, eng verdict records it, eng verdict check applies the same rule.
+// The CLI end to end: eng run --by records evidence, eng verdict records it, eng verdict check applies the same rule.
 let dir;
 const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8' });
@@ -108,11 +108,11 @@ test('eng verdict: the builder verifies its own code with runs on the commit; re
   r = eng('verdict', 'check');
   assert.equal(r.status, 1, 'review-only on testable code'); assert.match(out(r), /review-only PASS on testable code \(lib\/sum\.mjs\)/);
 
-  r = eng('verdict', 'round', '--by', 'verifier-2', '--', 'sh', '-c', 'echo property sum ok; exit 3');
+  r = eng('run', '--by', 'verifier-2', '--', 'sh', '-c', 'echo property sum ok; exit 3');
   assert.equal(r.status, 3);
   assert.match(out(eng('verdict', 'PASS', '--by', 'verifier-2')), /exited 3 on .*record FAIL/, 'a failing run cannot back a PASS');
 
-  r = eng('verdict', 'round', '--by', 'builder-1', '--', process.execPath, '-e', "import('./lib/sum.mjs').then(m => { if (m.sum(2, 3) !== 5) process.exit(1); console.log('sum ok'); })");
+  r = eng('run', '--by', 'builder-1', '--', process.execPath, '-e', "import('./lib/sum.mjs').then(m => { if (m.sum(2, 3) !== 5) process.exit(1); console.log('sum ok'); })");
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /sum ok/); assert.match(r.stdout, /recorded the run by builder-1/);
   r = eng('verdict', 'PASS', '--by', 'builder-1');
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /recorded PASS \(verification, 1 run\) by builder-1/);
@@ -148,7 +148,7 @@ test('eng verdict PASS is refused after 1 failing round and 20 passing rounds of
   git('checkout -q main'); git('checkout -qb aged');
   fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/aged.mjs'), 'export const aged = 1;\n'); git('add -A'); git('commit -qm aged -m "Agent: builder-1"');
   const sha = git('rev-parse HEAD');
-  assert.equal(eng('verdict', 'round', '--by', 'builder-1', '--', 'sh', '-c', 'echo e2e broke; exit 1').status, 1);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'echo e2e broke; exit 1').status, 1);
   const log = runLog(git('rev-parse --path-format=absolute --git-common-dir'));
   for (let i = 0; i < 20; i++) recordRun(log, { sha, by: 'builder-1', cmd: `true ${i}`, exit: 0, output: 'ok', at: new Date().toISOString() });
   const r = eng('verdict', 'PASS', '--by', 'builder-1');
@@ -159,7 +159,7 @@ test('eng verdict PASS is refused after 1 failing round and 20 passing rounds of
 test('eng verdict check does not carry a PASS to a new SHA with the same patch-id (message-only amend, whitespace-only change)', () => {
   git('checkout -q main'); git('checkout -qb carry');
   fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/carry.mjs'), 'export const carry = 1;\n'); git('add -A'); git('commit -qm carry -m "Agent: builder-1"');
-  assert.equal(eng('verdict', 'round', '--by', 'builder-1', '--', 'true').status, 0);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
   assert.equal(eng('verdict', 'PASS', '--by', 'builder-1').status, 0);
   const tested = git('rev-parse HEAD');
   assert.equal(eng('verdict', 'check').status, 0, 'the tested commit passes');
