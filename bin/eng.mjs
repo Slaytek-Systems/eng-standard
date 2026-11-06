@@ -9,7 +9,7 @@ import YAML from 'yaml';
 import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS, REMOVED_GATES } from '../lib/render.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, TMP_RULE, slug, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
+import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
 import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
@@ -17,7 +17,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
@@ -69,6 +69,7 @@ function configErrors(c) {
   errs.push(...diskRuleErrors(c.hygiene));
   errs.push(...runRuleErrors(c));
   errs.push(...reviewOnlyErrors(c.verification));
+  errs.push(...checkErrors(c.verification));
   errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
   errs.push(...modelErrors(c.models));
   errs.push(...neverErrors(c));
@@ -134,7 +135,7 @@ function init() {
     else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
   const cfg = loadConfig();
-  fs.mkdirSync(path.join(ROOT, cfg.verification.checks_dir), { recursive: true });
+  fs.mkdirSync(path.join(ROOT, checksDir(cfg)), { recursive: true });
   sync();
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
@@ -324,7 +325,7 @@ function clean() { if (sh('git status --porcelain -- . ":(exclude).eng/mistakes.
 
 // ---------- rule -> enforcer (pstack correct: "keep a table that pairs each rule with what enforces it") ----------
 function enforcerIds(cfg) {
-  const d = path.join(ROOT, cfg.verification.checks_dir);
+  const d = path.join(ROOT, checksDir(cfg));
   const checks = fs.existsSync(d) ? fs.readdirSync(d).filter(f => f.endsWith('.sh')).map(f => f.slice(0, -3)) : [];
   return { rules: builtinRules(cfg).map(r => r.id), checks, gates: cfg.gates.required };
 }
@@ -610,13 +611,23 @@ function verdictCheck() {
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 
+// eng gate [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then declared runs
+// that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its own identity.
 function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
-  const map = GATE_COMMANDS;
+  const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
-  for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
-    const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
+  const dir = checksDir(cfg), names = fs.existsSync(path.join(ROOT, dir)) ? fs.readdirSync(path.join(ROOT, dir)) : [];
+  const checks = checkSteps({ dir, names, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg), quote: quoteArg });
+  const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
+  for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
+  const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
+  for (const s of steps) {
+    const g = s.name;
+    if (s.none) { res.push([g, 'pass', s.none, []]); continue; }
+    if (s.fail) { res.push([g, 'FAIL', s.fail, []]); continue; }
+    const n = g.replace(/^ephemeral:/, ''), c = s.cmd ?? (wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g]);
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
     const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
     const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
@@ -683,7 +694,7 @@ const COMMANDS = [
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
-  ['gate', 'gate', 'run every verifier in gates.required; skipped or missing = failed', gate],
+  ['gate', 'gate [<step>...]', 'run every script in verification.checks_dir, then every verifier in gates.required; skipped or missing = failed. Named steps run only those (checks = the scripts)', gate],
   ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules; --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];

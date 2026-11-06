@@ -1,6 +1,7 @@
 // Verification tooling decides, not who ran it (Matt, 6 Nov 2026): every gate accepts a verification verdict with runs on its commit,
 // and refuses a verdict-free or review-only one on testable code. Review stays the required check for text no check can run.
 import { test, before, after } from 'node:test';
+import { pipeline } from '../lib/render.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -200,4 +201,46 @@ test('eng verdict PASS is refused when the same command passed, then could not s
   assert.equal(r.status, 127, out(r)); assert.match(out(r), /recorded the run by builder-3 .* \(exit 127\)/);
   const v = eng('verdict', 'PASS', '--by', 'builder-3');
   assert.equal(v.status, 1, out(v)); assert.match(out(v), /exited 127/);
+});
+
+// Matt, 7 Nov 2026: the checks are the wall. eng gate runs every checks_dir script first, whatever gates.required says.
+test('eng gate runs every check first: a failing, flaky or stale check fails the gate despite a passing verdict', () => {
+  git('checkout -q main'); git('checkout -qb wall');
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'), c = YAML.parse(orig);
+  c.gates.required = ['verdict']; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.verification = { ...c.verification, checks_dir: '.eng/checks', flake_runs: 2 }; fs.writeFileSync(p, YAML.stringify(c));
+  fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.eng/checks/broken.sh'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(path.join(dir, '.eng/checks/flaky.sh'), '#!/bin/sh\nf=.eng/flaky-ran; if [ -e "$f" ]; then rm "$f"; exit 1; fi; touch "$f"\n');
+  fs.writeFileSync(path.join(dir, '.eng/checks/stale.sh'), '# covers: lib/gone.mjs\nexit 0\n');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/wall.mjs'), 'export const w = 1;\n');
+  git('add -A'); git('commit -qm wall -m "Agent: builder-1"');
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
+  assert.equal(eng('verdict', 'PASS', '--by', 'builder-1').status, 0);
+  assert.equal(eng('verdict', 'check').status, 0, 'the verdict alone passes');
+  let r = eng('gate');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /FAIL\s+check:broken eng: FAIL check broken: failed 2\/2/);
+  assert.match(r.stdout, /FAIL\s+check:flaky eng: FAIL check flaky: FLAKY, passed 1\/2/);
+  assert.match(r.stdout, /FAIL\s+check:stale check stale is stale: covers missing path\(s\) lib\/gone\.mjs/);
+  assert.match(r.stdout, /pass\s+verdict/);
+  r = eng('gate', 'checks');
+  assert.equal(r.status, 1, out(r)); assert.doesNotMatch(r.stdout, /verdict/, 'gate checks runs only the checks');
+  assert.match(eng('gate', 'nope').stderr, /gate: nope is not a step here/);
+  for (const f of ['broken', 'flaky', 'stale']) fs.writeFileSync(path.join(dir, `.eng/checks/${f}.sh`), '#!/bin/sh\nexit 0\n');
+  git('add -A'); git('commit -qm fixed -m "Agent: builder-1"');
+  eng('run', '--by', 'builder-1', '--', 'true'); eng('verdict', 'PASS', '--by', 'builder-1');
+  r = eng('gate'); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+check:broken check broken: passed 2\/2/);
+  fs.writeFileSync(p, orig); git('add -A'); git('commit -qm restore');
+});
+
+test('CI and the rendered pipeline run the checks: a command or gate cleanup cannot drop them quietly', () => {
+  const ci = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(ci, /^ {6}- run: node bin\/eng\.mjs gate checks\b/m, 'eng-standard CI runs its checks on the Actions identity');
+  const own = YAML.parse(fs.readFileSync(ROOTCFG, 'utf8'));
+  const scripts = fs.readdirSync(new URL('../' + own.verification.checks_dir + '/', import.meta.url)).filter(f => f.endsWith('.sh'));
+  assert.ok(scripts.includes('gate-runs-checks.sh'), 'the repo keeps the check that a failing check fails eng gate');
+  const tpl = YAML.parse(fs.readFileSync(new URL('../templates/eng.config.yml', import.meta.url), 'utf8'));
+  const pipe = pipeline(tpl);
+  assert.match(pipe, /key: "checks"\n    command: "npx eng gate checks"/);
+  assert.match(pipe, /for k in checks /, 'the finalizer requires the checks step to pass');
 });

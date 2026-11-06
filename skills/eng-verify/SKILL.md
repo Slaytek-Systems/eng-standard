@@ -17,7 +17,7 @@ pstack `create-verification-skill` assumes a Launch exists; `maintain-verificati
 ## Record (per change)
 1. Write `.eng/checks/<id>.sh` that drives the real behaviour (via `verify-<app>`) and exits 0 only when it is right. First line: `# covers: <paths>`.
 2. Prove it bites: run this checkout's check against the base, `eng run --ref <merge-base> -- bash "$PWD/.eng/checks/<id>.sh"`. It must FAIL on the behaviour, not because a file is missing. On HEAD it PASSES.
-3. Commit the fix and the check, then run it as evidence on the exact commit: `eng run --by <id> -- bash .eng/checks/<id>.sh`, then `eng verdict PASS --by <id>`.
+3. Commit the fix and the check. From then on `eng gate` runs it first, in CI too, and a failing check fails the gate whatever the verdict says. Run it as evidence on the exact commit too: `eng run --by <id> -- bash .eng/checks/<id>.sh`, then `eng verdict PASS --by <id>`.
 
 ## Re-check (after a rebase onto main or a merge-in)
 1. A rebase, an amend or a merge-in of main makes a new commit. Re-run every check on it with `eng run --by <id> -- <cmd>`. A verdict never carries from another commit.

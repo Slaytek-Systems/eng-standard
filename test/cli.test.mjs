@@ -71,7 +71,7 @@ test('rendered pipeline, SHIPPING.md and AGENTS.md carry the policy; sync --chec
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const pipe = fs.readFileSync(path.join(dir, '.eng/ci/pipeline.yml'), 'utf8');
   assert.match(pipe, /npx eng e2e --if-required/);
-  assert.match(pipe, /label: "required checks \(skipped = failed\)"\n    command: "for k in drift lint rules typecheck test launch verdict e2e; do o=\$\$\(buildkite-agent step get outcome/, 'a skipped step fails the build');
+  assert.match(pipe, /label: "required checks \(skipped = failed\)"\n    command: "for k in checks drift lint rules typecheck test launch verdict e2e; do o=\$\$\(buildkite-agent step get outcome/, 'a skipped step fails the build');
   assert.doesNotMatch(pipe, /ci-verdict/);
   assert.match(pipe, /# e2e: PRs run it only when/);
   const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');

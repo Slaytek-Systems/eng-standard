@@ -26,6 +26,7 @@ ship:
       - ".github/**"              # workflows (CI, risk-label, self-merge), CODEOWNERS, actions
       - ".buildkite/**"
       - ".eng/ci/**"
+      - ".eng/checks/**"           # the checks eng gate runs first: the wall
       - ".githooks/**"
       - "eng.config.yml"          # this file: the high-risk list and merge rule
       - "AGENTS.md"               # the merge rule
@@ -84,6 +85,10 @@ hygiene:                          # Four disk rules and ephemeral runs (Matt, 30
       persist_label: slaytek.persist=true
       persist_env: SLAYTEK_PERSIST=true
       source: core:nd78q9vjkp392tp223ng7g6ydx8h9vcn
+
+verification:                     # eng gate runs every script here first, whatever gates.required says. CI: eng gate checks.
+  checks_dir: .eng/checks
+  flake_runs: 1
 
 gates:
   skipped_is_failed: true

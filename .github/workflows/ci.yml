@@ -20,6 +20,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: node bin/eng.mjs run test                    # npm test once: it must leave nothing behind (ephemeral_runs, tests_leave_nothing)
+      - run: node bin/eng.mjs gate checks                 # every .eng/checks script, as github-actions[bot]; a failing check fails CI
       - run: node bin/eng.mjs --help
   start-self-merge:
     # The post-merge check on main, or an auto-revert branch's test, just finished: self-merge reads the result now (a red

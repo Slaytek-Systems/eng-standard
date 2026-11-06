@@ -39,11 +39,11 @@ To use any skill, read `.agents/skills/<name>/SKILL.md`; do not rely on descript
 1. Branch from current `origin/<BASE>`.
 2. Grill the plan before code (`grilling` skill). Architecture and engineering questions are answered first.
 3. Edit loop: `<TEST>`.
-4. Add a check for the behaviour in `.eng/checks/<id>.sh` that fails on base and passes on HEAD. The verifier runs it on the exact commit: `eng run --by <id> -- bash .eng/checks/<id>.sh`.
+4. Add a check for the behaviour in `.eng/checks/<id>.sh` that fails on base and passes on HEAD. `eng gate` runs it from then on, in CI too.
 
 ## 2. What must pass before merge (on the exact head SHA)
 
-`<GATE>` runs every required gate in `eng.config.yml` (`gates.required`). A skipped, missing or blocked gate is a failure.
+`<GATE>` runs every check in `verification.checks_dir` first (`flake_runs` times each), whatever `gates.required` says, then every required gate in `eng.config.yml` (`gates.required`). A failing, flaky or stale check fails the gate, whatever the verdict says. A skipped, missing or blocked gate is a failure. CI runs the checks as their own step (`eng gate checks`).
 After merging `<BASE>` in, the head is a new SHA: it needs its own runs (`eng run --by <id> -- <cmd>`) and verdict.
 
 **E2E is path-based on PRs** (`eng.config.yml` → `e2e.policy`). A PR runs e2e when it touches app code, routes, DB schema/migrations, deps/build config or CI, or is labelled `risk:high`. Docs-only, config-only (non-CI) and test-only PRs skip it: the `e2e` gate passes with `NOT REQUIRED` and the reason. Run `eng e2e --required` to see the decision and which file triggered it. A file no list matches runs e2e.
