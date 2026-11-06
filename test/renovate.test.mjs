@@ -79,13 +79,13 @@ test('proof ledger: timeout and admission are blocked, never pass; resume skips 
   assert.match(validateRenovation({ version: '0.9.0', completed_steps: [], proof: { gates: [{ name: 'a', command: 'x', timeout_s: 1 }, { name: 'a', command: 'y', timeout_s: 1 }] } }).join(), /duplicate gate name a/);
 });
 
-test('merge policy: strict + behind refreshes first; patch-id carry keeps the verdict but a receipt is redrafted', () => {
+test('merge policy: strict + behind refreshes first; a verdict never carries by patch-id; a receipt is redrafted per head', () => {
   const v = [{ sha: 'a'.repeat(40), patch_id: 'p1', result: 'PASS' }];
   assert.equal(refreshPlan({ strict: true, behind: 2, head: 'b'.repeat(40), patchId: 'p1', verdicts: v }).state, 'refresh');
-  const carried = refreshPlan({ strict: true, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' });
-  assert.equal(carried.state, 'receipt');
-  assert.match(carried.why, /carried from aaaaaaaa by patch-id/);
-  assert.equal(refreshPlan({ strict: true, carry: 'none', behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v }).state, 'reverify');
+  const moved = refreshPlan({ strict: true, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' });
+  assert.equal(moved.state, 'reverify', 'same patch-id, new SHA: the PASS does not carry');
+  assert.match(moved.why, /PASS on aaaaaaaa has the same patch-id but a verdict counts only for the exact commit/);
+  assert.equal(refreshPlan({ strict: true, behind: 0, head: 'a'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' }).state, 'receipt');
   const failedLater = refreshPlan({ strict: false, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: [...v, { sha: 'b'.repeat(40), patch_id: 'p1', result: 'FAIL', by: 'v2' }] });
   assert.equal(failedLater.state, 'reverify'); assert.match(failedLater.why, /latest verdict for this change is FAIL by v2/);
   assert.match(refreshPlan({ strict: false, behind: 3, head: 'a'.repeat(40), patchId: 'p1', verdicts: v }).why, /not required \(non-strict\)/);

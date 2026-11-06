@@ -84,6 +84,17 @@ supersedes another). The repo is public, so anyone can post a comment that looks
 - Verdict comments posted before 26 Oct 2026 carry `family` and `provider` fields. They still parse; the gate ignores
   those fields.
 
+**Caveats until lock A.** These hold by design until required results come from CI or from one App the builder cannot
+forge (lock A, a later change).
+
+- The builder may certify its own risk:low PR for self-merge: no gate compares the verifier with the authors.
+- The gate trusts the recorded run evidence. It checks each run's command, integer exit code, output and SHA, that the
+  SHA is the exact head, and that every exit code is 0 for a PASS. It does not re-run the commands at merge time.
+  `eng verdict` attaches only runs that `eng verdict round` captured, but a hand-written comment from an account with
+  write access would pass the same field checks.
+- risk:high counts distinct `--by` names (`v.key ?? v.by`). One GitHub login that posts under two `--by` names counts
+  as two verifiers. Verifiers are tools or lanes, not people.
+
 **Residual.** eng-standard has no `verifier_logins` yet. Every agent posts through Matt's account, so a comment with
 write access can claim any `by`. A dedicated verifier login listed in `verifier_logins` closes this.
 
@@ -107,12 +118,12 @@ Running the change replaces most model review rounds and spends fewer tokens. A 
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the
 builder's or lead's discretion.
 
-A risk:high PR needs counted PASSes from `ship.high_risk.verifiers` (default 2) distinct verifiers. `--pr` records the verdict (git note bound to the patch-id), posts it as an `eng-verdict/v1` PR comment, and
+A risk:high PR needs counted PASSes from `ship.high_risk.verifiers` (default 2) distinct verifiers. `--pr` records the verdict (a git note on the exact head), posts it as an `eng-verdict/v1` PR comment, and
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when
 local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when no PASS counts (no runs, a failing
-run, or a review on testable code) or a verifier's latest verdict is FAIL. After a push that keeps the patch-id (a clean rebase),
-`node bin/eng.mjs verdict status --pr <n>` re-posts without a new run; a changed patch needs a new verdict.
+run, or a review on testable code) or a verifier's latest verdict is FAIL. Every new head, a clean rebase or a
+message-only amend included, needs a new run and verdict: a verdict counts only for the exact commit it ran on.
 Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is risk:high.
 
 ## Post-merge check and auto-revert

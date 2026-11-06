@@ -106,7 +106,7 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
-  verifier: verification tooling # Verdict bound to the head SHA / patch-id (eng verdict). It runs the change (eng verdict round --by <id> -- <cmd>); the builder may run it.
+  verifier: verification tooling # Verdict bound to the exact head SHA (eng verdict). It runs the change (eng verdict round --by <id> -- <cmd>); the builder may run it.
   # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
   # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
@@ -159,7 +159,7 @@ isolation:                        # Devbox project isolation (docs/project-isola
 #   version: 0.9.0
 #   completed_steps: []
 #   policy_owner: "@lead"
-#   merge_policy: { strict: false, verdict_carry: patch-id }
+#   merge_policy: { strict: false, verdict_carry: patch-id }   # verdict_carry no longer carries (0.13.0): a verdict binds the exact commit
 
 audits:
   maintain_verification:          # Daily audit: pstack maintain-verification-skill, unchanged. eng renders .eng/ci/audit.yml; a human creates the schedule.

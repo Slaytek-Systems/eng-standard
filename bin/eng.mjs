@@ -884,7 +884,7 @@ function verdictRecord(result) {
   if (method === 'verification' && result !== 'FAIL') {
     if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one round per check: eng verdict round --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
     const bad = runs.find(r => r.exit !== 0);
-    if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix and re-run on a new commit`);
+    if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix it and re-run that same command until it passes`);
   }
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
   const rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, method,
@@ -926,17 +926,20 @@ function verdictCheck() {
     const mp = mergedPatchId(), v = mp === 'empty' ? null : verdictsFor(mp).sort(byTime).at(-1);
     return console.log(`eng verdict: PASS (no change against base${v ? `; merged change ${H.slice(0, 8)} carries ${v.result} by ${v.by} from ${v.sha.slice(0, 8)}, same patch-id` : ''})`);
   }
-  const all = patchVerdicts(pid);
-  console.log(`  patch-id ${pid.slice(0, 12)}`);
-  if (!all.length) die(`verdict: no verdict for this patch-id. Run the change on this commit with eng verdict round --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
+  // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
+  // another SHA with the same patch-id is reported and never carried.
+  const others = patchVerdicts(pid), all = others.filter(x => x.sha === H);
+  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}`);
+  for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
+  if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng verdict round --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
   const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
   if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
   const testable = testableFiles(sh(`git diff --no-renames --name-only ${sh(`git merge-base ${baseRef(cfg)} HEAD`)} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
   for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
   const v = latest.filter(x => !passProblem(x, testable)).at(-1);
-  if (!v) die('verdict: no PASS counts for this patch: verify it by running checks on this commit (eng verdict round --by <id> -- <cmd>), then eng verdict PASS --by <id>');
-  console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)}${v.sha === H ? '' : ', carried to ' + H.slice(0, 8) + ': same patch-id'})`);
+  if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng verdict round --by <id> -- <cmd>), then eng verdict PASS --by <id>');
+  console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 
 // ---------- fallow: codebase graph analysis (fallow.tools, MIT) ----------

@@ -10,8 +10,8 @@ Verdict comments, the trust policy (`author_association`, `verifier_logins`, an 
 |---|---|---|
 | Where | any repo | org-owned public repos, or private on Enterprise Cloud (user-owned repos get HTTP 422) |
 | Branch protection | required check `eng-merge-gate` (a status from `gate.yml`), strict (up to date with main), squash only, no bypass | required check `eng-merge-gate` (`gate.yml` on PR heads, `queued-gate` on the queued commit), merge queue of one, squash only, no bypass |
-| Verdict binds | the exact PR head commit | the patch-id of the queued merge_group commit (`head^..head`) |
-| After main moves | `eng merge watch` updates the branch (auto-merge on), then the new head needs a new verdict | the queue rebuilds; the verdict carries while the patch-id is unchanged |
+| Verdict binds | the exact PR head commit | the exact PR head that was queued (the sha in the merge_group `head_ref`), and the queued commit must carry the same patch-id. This is the one exception to exact-commit binding: GitHub builds the merge_group commit after the PR is queued, so no verifier can run it first; its own tests run in the same job |
+| After main moves | `eng merge watch` updates the branch (auto-merge on), then the new head needs a new verdict | the queue rebuilds the merge_group commit; the verdict still binds the queued PR head, so a new PR head needs a new verdict |
 | Who merges | GitHub auto-merge | the merge queue |
 
 `eng doctor` reads the live repo (owner type, visibility, rulesets, auto-merge) and fails if the declared `merge.auto.mode` is not the one the repo runs. `eng merge settings` prints the ruleset for the declared mode and never applies it.
@@ -36,6 +36,8 @@ Verdict comments, the trust policy (`author_association`, `verifier_logins`, an 
 4. Allow GitHub Actions to create pull requests. Without it the auto-revert branch is pushed but its PR is refused, and `eng merge post` says so. `eng doctor` checks this.
 5. Repo secret `ENG_RESTART_WEBHOOK`: the URL that restarts an owning job. Without it, `eng merge watch` only comments.
 6. Post verdicts from a dedicated GitHub login (a bot account or GitHub App), and list it in `merge.auto.verifier_logins`.
+
+Until lock A (required results from CI or one App the builder cannot forge) lands, the gate trusts recorded run evidence and does not re-run the commands, so a builder can certify its own risk:low PR. High-risk paths count distinct `--by` names, so one login posting under two names counts as two verifiers. See the caveats in [self-merge.md](self-merge.md).
 
 eng-standard (`Slaytek-Systems/eng-standard`, org-owned and public, so both modes are available) has not adopted it: `allow_auto_merge` is false and its ruleset requires `test` and `verdict`.
 

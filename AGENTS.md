@@ -20,6 +20,12 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     (`--by` names, such as two tools or lanes). A PR is risk:high when any changed path matches `ship.high_risk.paths` in `eng.config.yml`: workflows
     and CI, this merge setup, `bin/`, `scripts/`, package scripts and dependencies, vendored code, and auth or
     billing paths. `.github/workflows/risk-label.yml` sets the label on every push, and self-merge recomputes it.
+  - **Until lock A lands (caveats, 6 Nov 2026).** The builder may certify its own risk:low PR for self-merge, because
+    no gate compares the verifier with the authors (by design). The gate trusts the recorded run evidence (command,
+    exit code, output, SHA): it checks those fields and that every run is on the exact head, but it does not re-run
+    the commands at merge time. Required results from CI or one App the builder cannot forge (lock A) close this later.
+  - **Distinct verifiers are `--by` names.** risk:high counts distinct `--by` names, so one GitHub login that posts
+    under two `--by` names counts as two verifiers. That is the rule: verifiers are tools or lanes, not people.
   - No verdict, a verdict for another head, or a FAIL refuses the merge. Each verifier's latest verdict counts, and
     any FAIL blocks.
   - No `hold` label and not draft.

@@ -46,7 +46,7 @@ Author stops at merge-ready (gate green, description, evidence, risk label). Ver
 Loop, whenever a PR becomes ready (`eng ship next` prints the next PR and the commands):
 1. Oldest ready PR with a PASS verdict; skip `risk:high` not yet approved.
 2. `gh pr update-branch <n>`.
-3. Wait for the gate on the new head. Same patch-id: verdict stands. Otherwise back to the verifier.
+3. Wait for the gate on the new head. The new head needs its own run and verdict; a verdict never carries from the old head.
 4. `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 5. Main green after merge, else revert now and return the PR to its author.
 6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.
