@@ -163,6 +163,12 @@ test('eng verdict PASS is refused when a different argv with the same joined tex
   assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'exit', '7').status, 0);
   const r = eng('verdict', 'PASS', '--by', 'builder-1');
   assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c 'exit 7'` by builder-1 exited 7/);
+  // A failure an older eng recorded with the unquoted key is never superseded by a new run of the same text.
+  const sha = git('rev-parse HEAD'), log = runLog(git('rev-parse --path-format=absolute --git-common-dir'));
+  recordRun(log, { sha, by: 'builder-2', cmd: 'sh -c exit 7', exit: 7, output: '', at: new Date().toISOString() });
+  assert.equal(eng('run', '--by', 'builder-2', '--', 'sh', '-c', 'exit', '7').status, 0);
+  const old = eng('verdict', 'PASS', '--by', 'builder-2');
+  assert.equal(old.status, 1, out(old)); assert.match(out(old), /run `sh -c exit 7` by builder-2 exited 7/);
 });
 
 // PR #42 review, finding 1: a PASS counts only for the exact commit it ran on. Patch-id ignores the message and whitespace.
