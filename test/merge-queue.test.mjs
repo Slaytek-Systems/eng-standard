@@ -491,3 +491,15 @@ test('eng merge post --dry-run and eng verdict --pr', () => {
   assert.match(log, new RegExp(`statuses/${git('rev-parse HEAD')} -f state=success -f context=verdict`));
 });
 const out = r => r.stdout + r.stderr;
+
+test('eng merge post: a tip whose check failed and whose revert is pushed stays red on later runs, and never opens a second revert', t => {
+  git('checkout -q --detach origin/main');
+  const sha = git('rev-parse HEAD'), origin = path.join(dir, '.gh', 'origin.git');
+  execSync(`git init -q --bare ${origin}`); git(`remote add origin ${origin}`); t.after(() => git('remote remove origin'));
+  git(`push -q origin HEAD:refs/heads/auto-revert/${sha.slice(0, 12)}`);
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${sha}&per_page=20`, { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'failure' }, { id: 2, status: 'in_progress' }] });
+  let r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /already ran \(merge-post\.yml run 1, failure, auto-revert\/[0-9a-f]{12} pushed\); not run again\. It failed/);
+  r = eng(['merge', 'post', '--dry-run']);
+  assert.equal(r.status, 1); assert.match(r.stdout, /auto-revert\/[0-9a-f]{12} is already pushed; not opening a second revert/);
+});

@@ -152,7 +152,17 @@ test('eng verdict PASS is refused after 1 failing round and 20 passing rounds of
   const log = runLog(git('rev-parse --path-format=absolute --git-common-dir'));
   for (let i = 0; i < 20; i++) recordRun(log, { sha, by: 'builder-1', cmd: `true ${i}`, exit: 0, output: 'ok', at: new Date().toISOString() });
   const r = eng('verdict', 'PASS', '--by', 'builder-1');
-  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c echo e2e broke; exit 1` by builder-1 exited 1/);
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c 'echo e2e broke; exit 1'` by builder-1 exited 1/);
+});
+
+// PR #48 review, round 2: two argvs that join to the same text are different commands, so one never hides the other's failure.
+test('eng verdict PASS is refused when a different argv with the same joined text passes after a failing run', () => {
+  git('checkout -q main'); git('checkout -qb argv');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/argv.mjs'), 'export const argv = 1;\n'); git('add -A'); git('commit -qm argv -m "Agent: builder-1"');
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'exit 7').status, 7);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'exit', '7').status, 0);
+  const r = eng('verdict', 'PASS', '--by', 'builder-1');
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c 'exit 7'` by builder-1 exited 7/);
 });
 
 // PR #42 review, finding 1: a PASS counts only for the exact commit it ran on. Patch-id ignores the message and whitespace.
