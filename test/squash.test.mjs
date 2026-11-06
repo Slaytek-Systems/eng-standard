@@ -31,7 +31,7 @@ test('squash merge: verify maintain and verdict check resolve PR-head records on
     fs.writeFileSync(path.join(dev, '.eng/checks/feature.sh'), 'test -f feature.txt\n');
     g('add -A'); g('commit -qm base'); g('push -q origin main');
 
-    // PR branch: two commits, verified and given an independent verdict on its head.
+    // PR branch: two commits, verified and given a verdict on its head.
     g('checkout -qb feat');
     fs.writeFileSync(path.join(dev, 'feature.txt'), 'one\n'); g('add -A'); g('commit -qm wip');
     fs.appendFileSync(path.join(dev, 'feature.txt'), 'two\n'); g('commit -qam done');

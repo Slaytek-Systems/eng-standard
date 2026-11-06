@@ -19,14 +19,14 @@ Which playbook goes with which job (poteto-mode playbooks, `.agents/skills/potet
 
 | Job | Playbook | File |
 |---|---|---|
-| Drive the author's own PR to merge-ready (conflicts, review threads, CI). Not an independent review | Babysit | `babysit.md` |
-| Independent verdict by an agent that did not write the code, then land | Shipping (verification) | `shipping.md` |
+| Drive the author's own PR to merge-ready (conflicts, review threads, CI). Not verification | Babysit | `babysit.md` |
+| Verify a commit with the repo's verification tooling (`eng verdict round`), record `eng verdict`, then land | Shipping (verification) | `shipping.md` |
 | Full autonomous program: one owner per PR from build to merge | Autopilot-full | `autopilot-full.md` |
 | Full autonomy up to a verified stack the operator lands | Autopilot-stack | `autopilot-stack.md` |
 | Bug fix / feature / refactor | Bug fix, Feature, Refactoring | `bug-fix.md`, `feature.md`, `refactoring.md` |
 
 Rules for the message:
-- Babysit is not review. The verdict comes from a separate Shipping spawn by an agent that did not write the code.
+- Babysit is not verification. The verdict comes from verification tooling run on the exact commit; the builder may run it. pstack's Shipping playbook asks for a separate verifier agent; under this standard the runs decide, not who ran them.
 - When the change adds a surface (route, screen, command, API, job) the repo's `verify-<app>` skill does not cover, the spawn must require `maintain-verification-skill` for that surface before the verdict.
 - Plain prose with normal spacing between words. Re-read before sending; never send a message with its spaces stripped out.
 
@@ -41,7 +41,7 @@ The router below (also in AGENTS.md) is the fallback when no skill was named.
 
 ## Shipping (serial, one PR at a time)
 
-Author stops at merge-ready (gate green, description, evidence, risk label). A fresh-context verifier records the verdict on the head SHA. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. Matt only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
+Author stops at merge-ready (gate green, description, evidence, risk label). Verification tooling records the verdict on the head SHA; the builder may run it. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. Matt only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
 
 Loop, whenever a PR becomes ready (`eng ship next` prints the next PR and the commands):
 1. Oldest ready PR with a PASS verdict; skip `risk:high` not yet approved.

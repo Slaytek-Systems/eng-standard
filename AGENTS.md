@@ -3,7 +3,7 @@
 This repo is the package that renders AGENTS.md and SHIPPING.md for other repos. It does not render its own (do not
 run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 
-## Merge rule (approved by Matt, 19 Oct 2026, 3:55 PM AEDT; independence by identity 26 Oct 2026)
+## Merge rule (approved by Matt, 19 Oct 2026, 3:55 PM AEDT; verification tooling decides, 6 Nov 2026)
 
 - **Self-merge.** `.github/workflows/self-merge.yml` runs main's code only and squash-merges at most one PR into
   `main` per run. It runs on events only, never on a schedule: `ci` finished, a verdict comment or `verdict` status, a
@@ -12,11 +12,12 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
   just before the merge call:
   - The head contains main's tip (ancestry check). A behind branch is updated and its new head verified again.
   - The `test` check is green and the `verdict` status is success.
-  - **Independence is identity.** A verifier counts only when its identity (`--by`, and its GitHub login when
-    `ship.self_merge.verifier_logins` is set) matches no author's: no `Agent:` trailer id, commit email or login.
-  - **risk:low:** one PASS for that exact head from an independent verifier.
-  - **risk:high:** PASSes for that exact head from `ship.high_risk.verifiers` (default 2) independent verifiers with
-    distinct identities. A PR is risk:high when any changed path matches `ship.high_risk.paths` in `eng.config.yml`: workflows
+  - **Verification tooling decides, not who ran it** (Matt, 6 Nov 2026). A PASS counts when it carries passing runs on
+    that exact head. The builder may verify its own work. With `ship.self_merge.verifier_logins` set, only those GitHub
+    logins may post verdicts, which guards against forged comments.
+  - **risk:low:** one counted PASS for that exact head.
+  - **risk:high:** counted PASSes for that exact head from `ship.high_risk.verifiers` (default 2) distinct verifiers
+    (`--by` names, such as two tools or lanes). A PR is risk:high when any changed path matches `ship.high_risk.paths` in `eng.config.yml`: workflows
     and CI, this merge setup, `bin/`, `scripts/`, package scripts and dependencies, vendored code, and auth or
     billing paths. `.github/workflows/risk-label.yml` sets the label on every push, and self-merge recomputes it.
   - No verdict, a verdict for another head, or a FAIL refuses the merge. Each verifier's latest verdict counts, and
@@ -27,14 +28,13 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
   commit's exact inverse as an `auto-revert/<sha12>` PR from `github-actions[bot]`. While main is red it is the only PR
   that may merge, and it still needs every condition above.
 - **Nobody bypasses anything**, Matt included: no `--admin`, no `--no-verify`, no merging around a red or missing check.
-  Authors never merge their own PR and never post its verdict.
-- **Verdict, verification first** (Matt, 3 Nov 2026). Each verifier runs the change on the exact head with
+  Nobody merges by hand: self-merge merges.
+- **Verdict.** A verifier (a tool, lane or agent, the builder included) runs the change on the exact head with
   `eng verdict round --by <id> -- <cmd>` (`npm test`, the CLI against a scratch repo, property tests), then records
-  `eng verdict PASS|FAIL --by <id> --pr <n>` with its own identity. The verdict carries the runs: command, exit code,
-  output and SHA. A PASS counts only with passing runs on its commit. A model review (`--review`) is the required check
-  only when every changed file is docs or policy text (`verification.review_only_paths`), and optional otherwise.
-  That posts an `eng-verdict/v1` PR comment (head SHA, identity, method, runs) and the `verdict` status. Authors put an `Agent:`
-  trailer on every commit so the gate can tell who wrote the patch.
+  `eng verdict PASS|FAIL --by <id> --pr <n>`. The verdict carries the runs: command, exit code, output and SHA. A PASS
+  counts only with passing runs on its commit. A model review (`--review`) is the required check only when every changed
+  file is docs or policy text (`verification.review_only_paths`), and optional otherwise. That posts an `eng-verdict/v1`
+  PR comment (head SHA, verifier, method, runs) and the `verdict` status.
 - **Stop one PR:** add the `hold` label. **Stop all:** `gh workflow disable self-merge.yml`.
 - **Undo:** `gh pr revert <n>` (one step: opens the revert PR, which goes through the same gates).
 

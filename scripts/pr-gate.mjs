@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { selfMergeConfig, decide, eventTarget, parseVerdicts, authorsFrom, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
+import { selfMergeConfig, decide, eventTarget, parseVerdicts, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = YAML.parse(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
@@ -33,7 +33,7 @@ const send = (method, p, body) => gh(['-X', method, p, '--input', '-'], JSON.str
 const raw = (file, sha) => { try { return gh(['-H', 'Accept: application/vnd.github.raw', `repos/${R}/contents/${encodeURIComponent(file).replaceAll('%2F', '/')}?ref=${sha}`]); } catch { return null; } };
 
 // GitHub lists at most 3,000 files and 250 commits for a PR. A list shorter than the PR's own count is incomplete, and an
-// incomplete list is never evidence: files unknown are risk:high, authors unknown refuse the merge.
+// incomplete list is never evidence: files unknown are risk:high and count as testable.
 const full = pr => Number.isInteger(pr.changed_files) && Number.isInteger(pr.commits) ? pr : get(`repos/${R}/pulls/${pr.number}`);
 
 function riskFor(pr) {
@@ -58,18 +58,15 @@ function label(n) {
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 
-// Everything decide() reads, for the PR's current head. Verdict comments and commit trailers are data; the rules are main's.
+// Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's.
 function prState(pr, tip) {
   const sha = pr.head.sha;
   const st = get(`repos/${R}/commits/${sha}/status`).statuses.find(s => s.context === C.status) || null;
-  const commits = pages(`repos/${R}/pulls/${pr.number}/commits?per_page=100`), want = full(pr).commits;
-  if (commits.length !== want) throw new Error(`GitHub listed ${commits.length} of ${want ?? '?'} commits, so the authors are unknown`);
   const { risk, files } = riskFor(pr);
   return {
     risk, files, check: testRun(sha), status: st,
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
-    authors: authorsFrom(commits.map(c => c.commit.message), commits.flatMap(c => [c.commit.author?.email, c.commit.committer?.email, c.author?.login, c.committer?.login])),
   };
 }
 

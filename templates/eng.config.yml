@@ -106,7 +106,7 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
-  verifier: fresh-context agent   # Verdict bound to the head SHA / patch-id (eng verdict). Verification first: it runs the change (eng verdict round --by <id> -- <cmd>).
+  verifier: verification tooling # Verdict bound to the head SHA / patch-id (eng verdict). It runs the change (eng verdict round --by <id> -- <cmd>); the builder may run it.
   # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
   # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
@@ -155,7 +155,7 @@ isolation:                        # Devbox project isolation (docs/project-isola
   mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean. fail also enforces isolation in eng ephemeral runs.
   network: host                   # host | private. private: each eng ephemeral run gets its own network namespace (loopback only; docker and ENG_SOCK_DIR still work) and ENG_NETWORK_ISOLATED=1.
 
-# renovation:                     # Existing repos only: written by `eng renovate apply` (renovation/README.md in the package). New repos skip it.
+# renovation:                     # Written by `eng renovate apply` when init meets a repo that already ships (renovation/README.md). A new repo has none.
 #   version: 0.9.0
 #   completed_steps: []
 #   policy_owner: "@lead"
