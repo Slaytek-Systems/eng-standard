@@ -119,6 +119,9 @@ test('after eng sync, eng lint and sync --check both pass (vendored test files a
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const l = eng('lint'); assert.equal(l.status, 0, l.stderr + l.stdout);
   assert.equal(eng('sync', '--check').status, 0);
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true }); fs.writeFileSync(path.join(dir, 'src/password.ts'), 'export const minLength = 12;\n');
+  const named = eng('lint'); fs.rmSync(path.join(dir, 'src'), { recursive: true });
+  assert.equal(named.status, 0, `a repo with no secret-filename baseline is not checked for credential-looking names: ${named.stdout}${named.stderr}`);
   // a repo-owned test file with a bare tmpdir is still flagged
   fs.writeFileSync(path.join(dir, 'own.test.mjs'), "const d = os.tmpdir();\n");
   const bad = eng('lint'); fs.rmSync(path.join(dir, 'own.test.mjs'));

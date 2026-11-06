@@ -428,6 +428,10 @@ test('eng merge post --dry-run: stuck flag, restart on FAIL, update-branch for a
   comments([V({ patch_id: 'x', sha: head })], 8); // with a PASS, a behind branch is the only thing left: update it (a FAIL restarts the owner instead)
   r = tend(['--dry-run']);
   assert.match(r.stdout, /#8: behind main with auto-merge on: would update the branch/);
+  // A cancelled run proves nothing: the check runs again.
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${git('rev-parse HEAD')}&per_page=20`, { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'cancelled' }, { id: 2, status: 'in_progress' }] });
+  r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, /post-merge check on [0-9a-f]{8}: bash scripts\/shipped-artifact-check\.sh/, 'a cancelled run does not count as checked');
   // A bot-armed merge fires no push run: the scheduled run finds no finished run for the tip and checks it, then still tends PRs.
   put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${git('rev-parse HEAD')}&per_page=20`, { workflow_runs: [{ id: 2, status: 'in_progress' }] });
   r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });

@@ -255,7 +255,8 @@ function lint() {
     console.log(`  baseline ${baselinePath('lint')}: ${c.known.length} baselined, ${c.gone.length} fixed since the baseline`);
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
-  const sb = readOr(baselinePath('secret-filename')), secrets = compareBaseline(sb ? JSON.parse(sb) : null, secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')))).fresh;
+  // Credential-looking filenames are checked where eng init baselined them (a repo that adopted the standard while shipping).
+  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')))).fresh : [];
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
@@ -677,7 +678,7 @@ const [cmd, ...a] = process.argv.slice(2);
 const COMMANDS = [
   ['init', 'init [--owner <@handle>]', 'set up this repo: an empty repo gets the starter config; a repo that already ships also gets baselines, so only new findings fail', init],
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
-  ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules and secret filenames; baselined findings pass', lint],
+  ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],

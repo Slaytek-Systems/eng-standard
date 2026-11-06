@@ -307,6 +307,26 @@ test('mode warn reports and removes but passes; mode off still runs the tests an
   assert.deepEqual(rounds(), []);
 });
 
+test('eng run --here keeps argv boundaries: several arguments are one command, not shell text', () => {
+  let r = eng('run', '--here', '--', 'bash', '-c', 'exit 7');
+  assert.equal(r.status, 7, out(r));
+  r = eng('run', '--here', '--', 'sh', '-c', 'test "$1" = "a b"', 'x', 'a b');
+  assert.equal(r.status, 0, out(r));
+  r = eng('run', '--here', '--', 'exit 3');
+  assert.equal(r.status, 3, 'one argument is a shell command line');
+});
+
+test('ephemeral_runs off still checks tests_leave_nothing: a temp leftover fails in fail mode', t => {
+  t.after(() => setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; }));
+  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/leak"'; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
+  let r = eng('run', 'test');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /left 1 entry in its private TMPDIR: leak \(tests_leave_nothing/);
+  setCfg(c => { c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
+  r = eng('run', 'test');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /WARN left 1 entry/);
+  assert.deepEqual(rounds(), [], 'the private TMPDIR goes with its round');
+});
+
 test('mixed modes: ephemeral_runs warn still fails a temp leftover while tests_leave_nothing is fail, in eng run and eng gate', t => {
   t.after(() => setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; }));
   setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/m"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
