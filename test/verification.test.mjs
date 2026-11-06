@@ -188,3 +188,16 @@ test('eng verdict check does not carry a PASS to a new SHA with the same patch-i
   assert.equal(r.status, 1, `whitespace-only change must not carry the PASS: ${out(r)}`);
 });
 
+
+// PR #48 review, round 4: a command that cannot start is a failed run, so an earlier pass of that same command stops counting.
+test('eng verdict PASS is refused when the same command passed, then could not start', () => {
+  git('checkout -q main'); git('checkout -qb nostart');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/nostart.mjs'), 'export const n = 1;\n'); git('add -A'); git('commit -qm nostart -m "Agent: builder-1"');
+  const tool = path.join(dir, '.git', 'eng-check-tool'); fs.writeFileSync(tool, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  assert.equal(eng('run', '--by', 'builder-3', '--', tool).status, 0);
+  fs.chmodSync(tool, 0o644);
+  const r = eng('run', '--by', 'builder-3', '--', tool);
+  assert.equal(r.status, 127, out(r)); assert.match(out(r), /recorded the run by builder-3 .* \(exit 127\)/);
+  const v = eng('verdict', 'PASS', '--by', 'builder-3');
+  assert.equal(v.status, 1, out(v)); assert.match(out(v), /exited 127/);
+});
