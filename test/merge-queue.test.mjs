@@ -147,7 +147,7 @@ let dir, ghd, calls;
 const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
 const pidOf = range => execSync(`git diff --binary ${range} | git patch-id --stable`, { cwd: dir, encoding: 'utf8' }).split(' ')[0];
 const put = (k, v) => fs.writeFileSync(path.join(ghd, k.replace(/[^a-z0-9]+/gi, '_')), JSON.stringify(v));
-const eng = (args, extra = {}) => spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: `${path.join(dir, '.bin')}:${process.env.PATH}`, GH_DIR: ghd, GH_CALLS: calls, GITHUB_REPOSITORY: 'o/r', GITHUB_EVENT_PATH: '', GITHUB_STEP_SUMMARY: '', GITHUB_SHA: '', ENG_PR: '', ENG_RESTART_WEBHOOK: '', ...extra } });
+const eng = (args, extra = {}) => spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: `${path.join(dir, '.bin')}:${process.env.PATH}`, GH_DIR: ghd, GH_CALLS: calls, GITHUB_REPOSITORY: 'o/r', GITHUB_EVENT_PATH: '', GITHUB_STEP_SUMMARY: '', GITHUB_SHA: '', GITHUB_RUN_ID: '', ENG_PR: '', ENG_RESTART_WEBHOOK: '', ...extra } });
 // The mode is main's config, committed there, so a PR fixture never carries the config change itself.
 const setMode = mode => {
   git('checkout -q --detach origin/main'); const p = path.join(dir, 'eng.config.yml'), t = fs.readFileSync(p, 'utf8'), n = t.replace(/mode: (strict|queue)/, `mode: ${mode}`);
