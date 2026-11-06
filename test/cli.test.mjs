@@ -130,7 +130,7 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
   assert.match(r.stdout, /Required checks are NOT strict/);
   assert.match(r.stdout, /Strict up-to-date is not recommended/);
   assert.match(r.stdout, /full run on `main` after every merge plus an immediate revert on red/);
-  assert.match(r.stdout, /carries over by patch-id/);
+  assert.match(r.stdout, /A verdict counts only for the exact commit it ran on/);
   assert.match(r.stdout, /\/poteto-mode -> Shipping playbook: verify commit <sha>/);
   const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
   for (const doc of [ship, agents]) {

@@ -8,8 +8,8 @@ Turning it on is a separate decision for Matt. Why it exists: [principles/slow-d
 | Level | What agents may do alone | Evidence to reach it (example values) |
 |---|---|---|
 | `draft-only` | open PRs; a human merges | none: every repo starts here |
-| `merge-on-verifier-pass` | merge after an independent verifier PASS on the exact head | 10 consecutive independent verifier PASSes and at least 14 days at `draft-only` |
-| `deploy-on-own` | merge and deploy without a human | 25 consecutive independent verifier PASSes and at least 30 days at `merge-on-verifier-pass` |
+| `merge-on-verifier-pass` | merge after a counted verifier PASS on the exact head | 10 consecutive verifier PASSes and at least 14 days at `draft-only` |
+| `deploy-on-own` | merge and deploy without a human | 25 consecutive verifier PASSes and at least 30 days at `merge-on-verifier-pass` |
 
 A repo moves up one level at a time. Evidence counts from the last level change.
 

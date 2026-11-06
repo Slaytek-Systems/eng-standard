@@ -1,6 +1,6 @@
 # The ONE required check, eng-merge-gate (merge rule v0.10.0, AGENTS.md). Trusted: pull_request_target, workflow_run,
 # issue_comment and workflow_dispatch all run main's copy of this file and main's code; the PR's commits are only read as
-# data. It waits for the PR's `test` check, applies eng merge gate (strict: an independent PASS for the exact head), and posts
+# data. It waits for the PR's `test` check, applies eng merge gate (strict: a counted PASS for the exact head), and posts
 # eng-merge-gate as a commit status on the PR head.
 name: gate
 on:

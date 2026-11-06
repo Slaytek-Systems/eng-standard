@@ -79,19 +79,19 @@ test('proof ledger: timeout and admission are blocked, never pass; resume skips 
   assert.match(validateRenovation({ version: '0.9.0', completed_steps: [], proof: { gates: [{ name: 'a', command: 'x', timeout_s: 1 }, { name: 'a', command: 'y', timeout_s: 1 }] } }).join(), /duplicate gate name a/);
 });
 
-test('merge policy: strict + behind refreshes first; patch-id carry keeps the verdict but a receipt is redrafted', () => {
+test('merge policy: strict + behind refreshes first; a verdict never carries by patch-id; a receipt is redrafted per head', () => {
   const v = [{ sha: 'a'.repeat(40), patch_id: 'p1', result: 'PASS' }];
   assert.equal(refreshPlan({ strict: true, behind: 2, head: 'b'.repeat(40), patchId: 'p1', verdicts: v }).state, 'refresh');
-  const carried = refreshPlan({ strict: true, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' });
-  assert.equal(carried.state, 'receipt');
-  assert.match(carried.why, /carried from aaaaaaaa by patch-id/);
-  assert.equal(refreshPlan({ strict: true, carry: 'none', behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v }).state, 'reverify');
+  const moved = refreshPlan({ strict: true, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' });
+  assert.equal(moved.state, 'reverify', 'same patch-id, new SHA: the PASS does not carry');
+  assert.match(moved.why, /PASS on aaaaaaaa has the same patch-id but a verdict counts only for the exact commit/);
+  assert.equal(refreshPlan({ strict: true, behind: 0, head: 'a'.repeat(40), patchId: 'p1', verdicts: v, adapter: 'core-edge.ship-receipt/v1' }).state, 'receipt');
   const failedLater = refreshPlan({ strict: false, behind: 0, head: 'b'.repeat(40), patchId: 'p1', verdicts: [...v, { sha: 'b'.repeat(40), patch_id: 'p1', result: 'FAIL', by: 'v2' }] });
   assert.equal(failedLater.state, 'reverify'); assert.match(failedLater.why, /latest verdict for this change is FAIL by v2/);
   assert.match(refreshPlan({ strict: false, behind: 3, head: 'a'.repeat(40), patchId: 'p1', verdicts: v }).why, /not required \(non-strict\)/);
 });
 
-test('core-edge receipt adapter: valid receipt bound to the verifier identity; self-review is rejected', () => {
+test('core-edge receipt adapter mirrors the core-edge schema: valid receipt bound to the verifier session; its self-review rule is core-edge\'s', () => {
   const ad = ADAPTERS['core-edge.ship-receipt/v1'];
   const x = { pr: 373, head: 'a'.repeat(40), baseSha: 'b'.repeat(40), tree: 'c'.repeat(40), authorSession: 'builder-1', at: Date.parse('2026-10-23T01:02:03.456Z'),
     verdict: { result: 'PASS', by: 'verifier-1', session: 'verifier-1' } };
@@ -218,15 +218,16 @@ test('eng renovate ci-preflight and prove: needs-decision exits 3; a timeout rec
   git('add -A'); git('commit -qm proof-gates-reset');
 });
 
-test('eng verdict records the verifier identity; eng renovate receipt drafts a core-edge receipt and never posts', () => {
+test('eng verdict records the verifier; eng renovate receipt drafts a core-edge receipt and never posts', () => {
   git('add -A'); git('commit -q --allow-empty -m "step3" -m "Agent: builder-1"');
   let r = eng('renovate', 'apply', 'gates-enforce'); assert.equal(r.status, 0, out(r));
   r = eng('renovate', 'apply', 'verifier', '--adapter', 'core-edge.ship-receipt/v1'); assert.equal(r.status, 0, out(r));
   assert.equal(eng('renovate', 'render', '--check').status, 0, 'apply re-renders what its config edit changed');
   git('add -A'); git('commit -qm "step4-5" -m "Agent: builder-1"');
+  r = eng('verdict', 'round', '--by', 'verifier-1', '--', 'true'); assert.equal(r.status, 0, out(r));
   r = eng('verdict', 'PASS', '--by', 'verifier-1', '--session', 'verifier-1');
   assert.equal(r.status, 0, out(r));
-  assert.match(eng('verdict', 'check').stdout, /code written by .*builder-1/);
+  assert.match(eng('verdict', 'check').stdout, /PASS verification by verifier-1/);
   assert.match(out(eng('verdict', 'PASS', '--by', 'x', '--provider', 'p')), /--provider was removed/);
   r = eng('renovate', 'receipt', '--pr', '7', '--author-session', 'builder-1');
   assert.equal(r.status, 0, out(r));

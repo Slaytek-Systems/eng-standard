@@ -21,5 +21,5 @@ pstack `create-verification-skill` assumes a Launch exists; `maintain-verificati
 ## Re-check (after a rebase onto main or a merge-in)
 1. `eng verify maintain`. Done: every check re-run on the new SHA, flaky and stale checks named, patch-id compared with the last proof (pstack Shipping step 3).
 2. Flaky → fix the check or the race. Stale → re-prove or delete in a reviewed PR.
-3. Merge also needs `eng verdict check`: a verdict from an identity that did not write the code (`eng verdict PASS --by <id>`), matched by patch-id, so a rebase that keeps the patch keeps it.
+3. Merge also needs `eng verdict check`: a verdict from verification tooling for the exact HEAD commit. A rebase, an amend or a merge-in of main makes a new commit, which needs a new run and verdict. Who runs it does not matter; the builder may. The verifier runs each check on the exact commit (`eng verdict round --by <id> -- <cmd>`: the app, e2e, property and mutation tests, formal checks), then `eng verdict PASS --by <id>` attaches those runs. `--review` counts only for docs and policy text (`verification.review_only_paths`).
 4. A mistake seen twice → `eng mistake <key> "<what>"`, then the pstack `correct` skill picks the fix level; `custom-lint` is its lint rung.

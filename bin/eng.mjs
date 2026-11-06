@@ -20,6 +20,7 @@ import { validateIsolation } from '../lib/isolation.mjs';
 import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy, alwaysWatched } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
@@ -71,6 +72,7 @@ function configErrors(c) {
   errs.push(...trustErrors(c.trust));
   errs.push(...diskRuleErrors(c.hygiene));
   errs.push(...runRuleErrors(c));
+  errs.push(...reviewOnlyErrors(c.verification));
   errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
   errs.push(...modelErrors(c.models));
   errs.push(...neverErrors(c));
@@ -520,7 +522,7 @@ function retro() {
     const enforced = rules.includes(k) || checks.includes(k);
     let lvl, skill, why;
     if (/^(launch|verify-infra)/.test(k)) [lvl, skill, why] = ROUTE.launch;
-    else if (k === 'verdict:FAIL') [lvl, skill, why] = [3, 'eng-verify (+ create-verification-skill)', 'an independent verifier caught what the author missed; the failing behaviour needs a check that fails first'];
+    else if (k === 'verdict:FAIL') [lvl, skill, why] = [3, 'eng-verify (+ create-verification-skill)', 'a verifier caught what the build missed; the failing behaviour needs a check that fails first'];
     else if (k.startsWith('gate:')) [lvl, skill, why] = ROUTE[k.slice(5)] ?? [2, 'add-gate', 'a repo command failed repeatedly'];
     else if (enforced) [lvl, skill, why] = [0, 'add-gate (one write path) + pstack architect', `"${k}" already has an enforcer and still repeats; pstack correct: fix it at a higher level`];
     else [lvl, skill, why] = [2, 'custom-lint (or a check in ' + v.checks_dir + ')', 'no enforcer yet. First rule out architecture (one owner / one write path: add-gate) and types (write-law-and-proof); if neither fits, a lint whose error names the fix'];
@@ -860,44 +862,44 @@ function conform() {
 
 // ---------- gate: everything, skipped = failed ----------
 
-// ---------- verdict: independent verifier bound to patch-id (pstack Shipping steps 1 and 3) ----------
-// "Safe means a verdict from an agent that did not write the code. CI green is not a verdict."
+// ---------- verdict: verification tooling's result, bound to patch-id (pstack Shipping step 3) ----------
+// Soundness comes from what ran on the exact commit, not from who ran it (Matt, 6 Nov 2026). CI green is not a verdict.
 const VNOTES = 'eng-verdict';
+const gitCommonDir = () => sh('git rev-parse --path-format=absolute --git-common-dir');
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
-function codeAuthors(cfg) {
-  const mb = sh(`git merge-base ${baseRef(cfg)} HEAD`);
-  const ids = new Set();
-  const log = sh(`git log '--format=%ae%x1f%ce%x1f%(trailers:key=Agent,valueonly,separator=%x2C)%x1e' ${mb}..HEAD`);
-  for (const row of log.split('\x1e').map(r => r.trim()).filter(Boolean)) {
-    const [email, committer, agent] = row.split('\x1f');
-    [email, committer, ...(agent || '').split(',')].map(x => (x || '').trim()).filter(Boolean).forEach(x => ids.add(x));
-  }
-  return { ids };
-}
 function verdictsFor(pid) {
   let l = ''; try { l = sh(`git notes --ref ${VNOTES} list`); } catch {}
   return l.split('\n').filter(Boolean).flatMap(x => { try { return sh(`git notes --ref ${VNOTES} show ${x.split(' ')[1]}`).split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } }).filter(v => v.patch_id === pid);
 }
-function independentVerdicts(cfg, pid) { const { ids } = codeAuthors(cfg); return verdictsFor(pid).filter(v => !ids.has(v.by)).sort(byTime); }
+const patchVerdicts = pid => verdictsFor(pid).sort(byTime);
 function verdictRecord(result) {
   const cfg = loadConfig(); clean();
-  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <verifier-id> [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
+  if (!['PASS', 'PASS+NOTES', 'FAIL'].includes(result)) die('usage: eng verdict PASS|PASS+NOTES|FAIL --by <verifier-id> [--review] [--session <id>] [--route <r>] [--evidence <path>] [--pr <n>] [--base <ref>]');
   const by = arg('--by');
-  if (!by) die('verdict: --by <verifier-id> is required (the verifier\'s own identity, never an author\'s)');
-  for (const k of ['--family', '--provider', '--model']) if (process.argv.includes(k)) die(`verdict: ${k} was removed; verifier independence is judged by identity (--by)`);
+  if (!by) die('verdict: --by <verifier-id> is required (the name of the verifier: a tool, lane or agent, the builder included)');
+  for (const k of ['--family', '--provider', '--model']) if (process.argv.includes(k)) die(`verdict: ${k} was removed; a verdict counts by what ran on the commit, not by who ran it`);
+  // Verification first (lib/verification.mjs): the verdict carries the eng verdict round runs this verifier made on HEAD as evidence.
+  // --review records a reading of the diff instead: the required check for review-only text, optional elsewhere.
+  const H = head(), method = process.argv.includes('--review') ? 'review' : 'verification', runs = method === 'verification' ? runsFor(runLog(gitCommonDir()), H, by) : [];
+  if (method === 'verification' && result !== 'FAIL') {
+    if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one round per check: eng verdict round --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
+    const bad = runs.find(r => r.exit !== 0);
+    if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix it and re-run that same command until it passes`);
+  }
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
-  const H = head(), rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by,
+  const rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, method,
+    ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at }) => ({ cmd, exit, output, sha, at })) } : {}),
     ...Object.fromEntries([['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
   sh(`git notes --ref ${VNOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${H}`);
   if (result === 'FAIL') logMistake('verdict:FAIL', `FAIL by ${by}${rec.evidence ? ', evidence ' + rec.evidence : ''}`, 'verdict');
-  console.log(`eng verdict: recorded ${result} by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
+  console.log(`eng verdict: recorded ${result} (${method}${runs.length ? `, ${runs.length} run${runs.length === 1 ? '' : 's'}` : ''}) by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
   // --pr: the record (head SHA included) also goes on the PR as an eng-verdict/v1 comment; self-merge and eng merge gate read those.
   if (!arg('--pr')) return;
   try { postVerdict(engCtx(), arg('--pr'), rec, cfg); } catch (e) { die(`verdict: could not post the verdict comment: ${e.message}`); }
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
-// ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (an independent PASS for
+// ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (a counted PASS for
 // this patch-id); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
   const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
@@ -924,15 +926,20 @@ function verdictCheck() {
     const mp = mergedPatchId(), v = mp === 'empty' ? null : verdictsFor(mp).sort(byTime).at(-1);
     return console.log(`eng verdict: PASS (no change against base${v ? `; merged change ${H.slice(0, 8)} carries ${v.result} by ${v.by} from ${v.sha.slice(0, 8)}, same patch-id` : ''})`);
   }
-  const { ids } = codeAuthors(cfg), all = verdictsFor(pid);
-  console.log(`  patch-id ${pid.slice(0, 12)}; code written by ${[...ids].join(', ')}`);
-  if (!all.length) die(`verdict: no verdict for this patch-id. An agent that did not write the code runs verify-<app> and records: eng verdict PASS --by <id>`);
-  const indep = all.filter(v => !ids.has(v.by));
-  for (const v of all.filter(v => !indep.includes(v))) console.log(`  rejected: ${v.result} by ${v.by} on ${v.sha.slice(0, 8)}: verifier identity is an author of this patch`);
-  if (!indep.length) die('verdict: only self-recorded verdicts; need one from an identity that did not write the code');
-  const v = indep.sort(byTime).at(-1);
-  if (v.result === 'FAIL') die(`verdict: latest independent verdict is FAIL by ${v.by}`);
-  console.log(`eng verdict: PASS (${v.result} by ${v.by} on ${v.sha.slice(0, 8)}${v.sha === H ? '' : ', carried to ' + H.slice(0, 8) + ': same patch-id'})`);
+  // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
+  // another SHA with the same patch-id is reported and never carried.
+  const others = patchVerdicts(pid), all = others.filter(x => x.sha === H);
+  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}`);
+  for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
+  if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng verdict round --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
+  // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
+  const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
+  if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
+  const testable = testableFiles(sh(`git diff --no-renames --name-only ${sh(`git merge-base ${baseRef(cfg)} HEAD`)} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
+  for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
+  const v = latest.filter(x => !passProblem(x, testable)).at(-1);
+  if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng verdict round --by <id> -- <cmd>), then eng verdict PASS --by <id>');
+  console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 
 // ---------- fallow: codebase graph analysis (fallow.tools, MIT) ----------
@@ -1181,5 +1188,5 @@ const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'v
   renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a), merge: () => merge(engCtx(), a),
   'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
   ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
-function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, codeAuthors, independentVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | ephemeral check | ephemeral run <name> | ephemeral -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, patchVerdicts, loadConfig }; }
+(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | ephemeral check | ephemeral run <name> | ephemeral -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--by <id>] [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();

@@ -1,14 +1,15 @@
 # eng-standard self-merge
 
 Design A from the 19 Oct 2026 merge discussion, applied to eng-standard itself. risk:high PRs self-merge too, after
-PASSes from `ship.high_risk.verifiers` (default 2) independent verifiers with distinct identities. Independence is judged
-by identity (26 Oct 2026). Rule summary: [AGENTS.md](../AGENTS.md).
+counted PASSes on the exact head from `ship.high_risk.verifiers` (default 2) distinct verifiers. Verification tooling
+decides, not who ran it (Matt, 6 Nov 2026; Core nd716pq0vffa13z4c99e09552x8hqwp3): the builder may verify its own work.
+Rule summary: [AGENTS.md](../AGENTS.md).
 
 ## Pieces
 
 | Piece | Where | What it does |
 |---|---|---|
-| Merge rule | `eng.config.yml` (`merge`, `ship`), `AGENTS.md` | risk:low after one independent PASS, risk:high after PASSes from N distinct independent identities (default 2), nobody bypasses |
+| Merge rule | `eng.config.yml` (`merge`, `ship`), `AGENTS.md` | risk:low after one counted PASS, risk:high after counted PASSes from N distinct verifiers (default 2), nobody bypasses |
 | Risk label | `.github/workflows/risk-label.yml` → `scripts/pr-gate.mjs label` → `lib/risk.mjs` | On PR open, push, reopen, ready and edit (incl. retarget to main): `risk:high` if any changed path (or a rename's old path) matches `ship.high_risk.paths`, else `risk:low`. `package.json` / `package-lock.json` count only when more than the version changed. Runs main's code (`pull_request_target`, no PR checkout) so a PR cannot relabel itself |
 | Verdict comment | `eng verdict ... --pr <n>` (`bin/eng.mjs`) | Posts an `eng-verdict/v1` PR comment with the record as JSON: head SHA, patch-id, result, by. Self-merge reads verdicts from these comments |
 | Verdict status | `eng verdict ... --pr <n>` / `eng verdict status --pr <n>` (`bin/eng.mjs`) | Posts commit status `verdict` (success/failure) on the PR's exact head SHA from `eng verdict check`. The ruleset requires it |
@@ -22,19 +23,19 @@ Self-merge merges a PR only when **all** hold:
 - The head contains main's tip: `compare/<tip>...<head>` reports `behind_by: 0`.
 - The latest `test` check run (GitHub Actions) is success on the head SHA, and the `verdict` status is success on it.
 - The verdict comments pass the tier's rule. First the trust policy (below) drops every untrusted comment. Then only
-  comments whose `sha` is the head SHA count. A comment whose identity (`by`, or the login under `verifier_logins`)
-  equals an author's identity (`Agent:` id, commit author or committer email, or GitHub login) never counts. Each
-  verifier's latest comment counts, and any FAIL among them refuses the merge.
-  - **risk:low** needs one PASS (or PASS+NOTES).
-  - **risk:high** needs PASSes from `ship.high_risk.verifiers` (default 2) independent verifiers with distinct
-    identities. A PR is risk:high if its label says so or the files recomputed against
+  comments whose `sha` is the head SHA count. Who wrote the change plays no part. Each
+  verifier's latest comment counts, and any FAIL among them refuses the merge. A PASS counts only as verification:
+  passing runs on its own commit (`lib/verification.mjs`). A review PASS (`--review`) counts only when every changed file
+  matches `verification.review_only_paths` (docs and policy text). An incomplete file list counts as testable.
+  - **risk:low** needs one counted PASS (or PASS+NOTES).
+  - **risk:high** needs counted PASSes from `ship.high_risk.verifiers` (default 2) distinct verifiers (`by` names,
+    for example two tools or lanes). A PR is risk:high if its label says so or the files recomputed against
     `ship.high_risk.paths` say so. Path patterns match raw names, newlines included (`glob2re` uses dotAll), for both
     a file's name and a rename's old name.
 - A comment's time is its last edit (`max(created_at, updated_at)`) when deciding which verdict is a verifier's latest.
 
-GitHub lists at most 3,000 files and 250 commits for a PR. When the listed files fall short of the PR's
-`changed_files`, the PR is risk:high; when the listed commits fall short of its `commits`, the authors are unknown and
-the PR is skipped. An incomplete list is never evidence.
+GitHub lists at most 3,000 files for a PR. When the listed files fall short of the PR's `changed_files`, the PR is
+risk:high and every file counts as testable. An incomplete list is never evidence.
 
 There is no wait (Matt, 26 Oct 2026: "Merge as soon as it's verified; post-merge checks roll back breakage"). A PR
 merges in the first run after its last rule goes green. A new push gives a new head SHA, so everything must go green
@@ -78,37 +79,51 @@ supersedes another). The repo is public, so anyone can post a comment that looks
 
 - Only comments whose GitHub `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` count.
 - When `ship.self_merge.verifier_logins` (a list of GitHub logins, in main's `eng.config.yml`) is set, only those
-  logins count. The identity is the login, whatever `by` the comment claims, and each login is one verifier for
-  superseding and for counting distinct identities.
-- Without it, a verifier's identity is its `by` field.
+  logins may post verdicts. This guards against forged comments. It is not a rule about who wrote the change.
+- A verifier is its `by` name either way. Each verifier's latest verdict supersedes only its own.
 - Verdict comments posted before 26 Oct 2026 carry `family` and `provider` fields. They still parse; the gate ignores
   those fields.
 
+**Caveats until lock A.** These hold by design until required results come from CI or from one App the builder cannot
+forge (lock A, a later change).
+
+- The builder may certify its own risk:low PR for self-merge: no gate compares the verifier with the authors.
+- The gate trusts the recorded run evidence. It checks each run's command, integer exit code, output and SHA, that the
+  SHA is the exact head, and that every exit code is 0 for a PASS. It does not re-run the commands at merge time.
+  `eng verdict` attaches only runs that `eng verdict round` captured, but a hand-written comment from an account with
+  write access would pass the same field checks.
+- risk:high counts distinct `--by` names (`v.key ?? v.by`). One GitHub login that posts under two `--by` names counts
+  as two verifiers. Verifiers are tools or lanes, not people.
+
 **Residual.** eng-standard has no `verifier_logins` yet. Every agent posts through Matt's account, so a comment with
-write access can claim any `by`. Separate verifier identities listed in `verifier_logins` close this.
+write access can claim any `by`. A dedicated verifier login listed in `verifier_logins` closes this.
 
 The controller is main's code and main's `eng.config.yml`. A PR's comments and commit messages are read only as data,
 so a PR cannot change the rule it is judged by.
 
 ## The checker's command
 
-Run by a fresh T3 thread that Eng Manager launches. It must not have written any commit in the PR, and its identity
-(`--by`) must differ from every author identity in the PR's commits.
+Any thread may run it, the builder included: what counts is what ran on the exact head, not who ran it.
 
 ```sh
-# inputs: <n> PR number, <id> the checker's own identity (e.g. its T3 thread id),
+# inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
-git fetch origin main && gh pr checkout <n> && git pull --ff-only
-npm ci && npm test                      # plus the review its brief asks for
-node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL
+git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
+node bin/eng.mjs verdict round --by <id> -- npm test          # one round per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
+# docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
 
-A risk:high PR needs this from `ship.high_risk.verifiers` (default 2) verifiers with distinct identities. `--pr` records the verdict (git note bound to the patch-id), posts it as an `eng-verdict/v1` PR comment, and
+Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
+reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the
+builder's or lead's discretion.
+
+A risk:high PR needs counted PASSes from `ship.high_risk.verifiers` (default 2) distinct verifiers. `--pr` records the verdict (a git note on the exact head), posts it as an `eng-verdict/v1` PR comment, and
 then posts
 `gh api repos/{owner}/{repo}/statuses/<head-sha> -f state=success|failure -f context=verdict`. It refuses to run when
-local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when the only verdicts are by an author
-identity, or the latest independent verdict is FAIL. After a push that keeps the patch-id (a clean rebase),
-`node bin/eng.mjs verdict status --pr <n>` re-posts without a new review; a changed patch needs a new verdict.
+local HEAD is not the PR's live head or the tree is dirty, and posts `failure` when no PASS counts (no runs, a failing
+run, or a review on testable code) or a verifier's latest verdict is FAIL. Every new head, a clean rebase or a
+message-only amend included, needs a new run and verdict: a verdict counts only for the exact commit it ran on.
 Running the PR's own `bin/eng.mjs` is safe for risk:low PRs because `bin/**` is risk:high.
 
 ## Post-merge check and auto-revert
@@ -137,7 +152,8 @@ delete the ruleset as the repo admin; that is the only way around it. Merge queu
 ```sh
 R=Mattslayga/eng-standard
 
-# 1. Labels the workflows use (risk:high already exists)
+# 1. Labels the workflows use
+gh label create risk:high --repo $R --color B60205 --force --description "Needs counted PASSes on the exact head from N distinct verifiers"   # --force updates an existing label
 gh label create risk:low --repo $R --color 0E8A16 --description "Self-merges after test + verdict"
 gh label create hold     --repo $R --color FBCA04 --description "Stops self-merge for this PR"
 
@@ -177,8 +193,7 @@ gh workflow run self-merge.yml --repo $R -f dry_run=true     # first run: report
 
 ## Known limits
 
-- Every agent and Matt share the `Mattslayga` identity, so GitHub cannot tell who posted `verdict` or a verdict
-  comment, and a comment's `by` is self-declared. Independence rests
-  on the checker command and the commit trailers. A separate agent identity (GitHub App) would let the ruleset pin
-  `verdict` to that app, as it pins `test` to GitHub Actions.
+- Every agent and Matt share the `Mattslayga` account, so GitHub cannot tell who posted `verdict` or a verdict
+  comment, and a comment's `by` is self-declared. The runs it carries are the evidence. A dedicated verifier login
+  (GitHub App) would let the ruleset pin `verdict` to that app, as it pins `test` to GitHub Actions.
 - The labeller and self-merge only run from `main`, so they first act after this PR merges.

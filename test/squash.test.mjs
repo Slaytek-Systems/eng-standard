@@ -31,12 +31,14 @@ test('squash merge: verify maintain and verdict check resolve PR-head records on
     fs.writeFileSync(path.join(dev, '.eng/checks/feature.sh'), 'test -f feature.txt\n');
     g('add -A'); g('commit -qm base'); g('push -q origin main');
 
-    // PR branch: two commits, verified and given an independent verdict on its head.
+    // PR branch: two commits, verified and given a verdict on its head.
     g('checkout -qb feat');
     fs.writeFileSync(path.join(dev, 'feature.txt'), 'one\n'); g('add -A'); g('commit -qm wip');
     fs.appendFileSync(path.join(dev, 'feature.txt'), 'two\n'); g('commit -qam done');
     const create = eng(dev, 'verify', 'create', 'feature');
     assert.equal(create.status, 0, create.stdout + create.stderr);
+    const round = eng(dev, 'verdict', 'round', '--by', 'verifier-x', '--', 'sh', '.eng/checks/feature.sh');
+    assert.equal(round.status, 0, round.stdout + round.stderr);
     const rec = eng(dev, 'verdict', 'PASS', '--by', 'verifier-x');
     assert.equal(rec.status, 0, rec.stdout + rec.stderr);
     const prHead = g('rev-parse HEAD');

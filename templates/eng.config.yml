@@ -90,7 +90,7 @@ models:                           # Which model does which job. The standard nam
     arena cross-judge pool: inherit-parent
     swarm workers: inherit-parent
     architect runners: [inherit-parent, inherit-parent]
-    interrogate reviewers: [inherit-parent, inherit-parent]
+    interrogate reviewers: [inherit-parent, inherit-parent]   # optional model review: required only for review_only_paths, never the default check
 
 fallow:                           # JS/TS repos. Config lives in .fallowrc.json (entry, ignoreDependencies, rules, boundaries).
   version: 3.33.1                 # exact; must equal node_modules fallow --version and the vendored skill
@@ -106,7 +106,7 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
-  verifier: fresh-context agent   # Verdict bound to the head SHA / patch-id (eng verdict).
+  verifier: verification tooling # Verdict bound to the exact head SHA (eng verdict). It runs the change (eng verdict round --by <id> -- <cmd>); the builder may run it.
   # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
   # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
@@ -124,6 +124,9 @@ verification:
   flake_runs: 3                   # maintain runs each check this many times; mixed results = FLAKY = fail.
   stale_after_commits: 50
   repeat_threshold: 2             # A mistake seen this often must become a rule or check.
+  # Verification first (Matt, 3 Nov 2026): a PASS needs passing eng verdict round runs on its commit. A review (eng verdict --review)
+  # counts only when every changed file matches these globs: text no check can run. Default below; unknown files count as testable.
+  review_only_paths: ["**/*.md", "**/*.mdx", "**/*.txt", "**/LICENSE*"]
 
 formal:                           # Which skill formally checks what (lib/formal.mjs). Rendered into AGENTS.md; each skill must be in agents.skills.
   stateful: statechart            # Default for a flow that moves between states: merge flow, rollout, booking or other state machines, protocols. TLA+ checked by TLC, drawn as a Mermaid statechart (eng-sandbox PR #17: found five merge-flow holes, then proved the fixes).
@@ -152,11 +155,11 @@ isolation:                        # Devbox project isolation (docs/project-isola
   mode: warn                      # eng isolation check (gate `isolation`): warn reports findings, fail exits 1. Flip to fail once clean. fail also enforces isolation in eng ephemeral runs.
   network: host                   # host | private. private: each eng ephemeral run gets its own network namespace (loopback only; docker and ENG_SOCK_DIR still work) and ENG_NETWORK_ISOLATED=1.
 
-# renovation:                     # Existing repos only: written by `eng renovate apply` (renovation/README.md in the package). New repos skip it.
+# renovation:                     # Written by `eng renovate apply` when init meets a repo that already ships (renovation/README.md). A new repo has none.
 #   version: 0.9.0
 #   completed_steps: []
 #   policy_owner: "@lead"
-#   merge_policy: { strict: false, verdict_carry: patch-id }
+#   merge_policy: { strict: false, verdict_carry: patch-id }   # verdict_carry no longer carries (0.13.0): a verdict binds the exact commit
 
 audits:
   maintain_verification:          # Daily audit: pstack maintain-verification-skill, unchanged. eng renders .eng/ci/audit.yml; a human creates the schedule.

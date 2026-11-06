@@ -22,7 +22,7 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
     gate_workflow: gate.yml
     # gate_app_id: <id>           # a GitHub App that posts eng-merge-gate; the ruleset then binds the check to it (eng doctor fails until set)
     base: main
-    # A PR touching these needs PASSes from high_risk_verifiers independent verifiers with distinct identities (gate, auth, billing).
+    # A PR touching these needs counted PASSes from high_risk_verifiers distinct verifiers (gate, auth, billing).
     high_risk_paths:
       - ".github/**"              # workflows (ci, merge-post, merge-watch), CODEOWNERS, actions
       - ".buildkite/**"
@@ -45,15 +45,15 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
       - "**/billing.*"
       - "**/payments/**"
       - "**/payments.*"
-    high_risk_verifiers: 2        # N distinct independent identities for high_risk_paths (default 2)
+    high_risk_verifiers: 2        # N distinct verifiers for high_risk_paths (default 2)
     post_merge: { check: "bash scripts/shipped-artifact-check.sh" }   # tests on merged main + the npm-packed artifact; red = auto-revert PR
     stuck_minutes: 30             # red or missing required check, no activity this long = `stuck` label
     verdict_wait_minutes: 30      # no verdict this long after the head was pushed = restart the owner
     restart_webhook_env: ENG_RESTART_WEBHOOK   # repo secret: URL that restarts the owning job; unset = comment only
-    # verifier_logins: [<github-login>, <github-login>]   # bind verdicts to verifier identities: one login is one verifier. Unset: verdicts are self-declared (one shared GitHub identity); eng doctor flags it
+    # verifier_logins: [<github-login>, <github-login>]   # only these logins may post verdicts (guards against forged comments). Unset: any write-access account can (one shared GitHub account); eng doctor flags it
 
 ship:
-  verifier: fresh-context agent whose identity differs from every author's (eng verdict --by <id> --pr <n>)
+  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng verdict round --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
 
 gates:
   skipped_is_failed: true

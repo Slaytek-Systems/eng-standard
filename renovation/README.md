@@ -1,4 +1,4 @@
-# Renovation pack (eng-standard 0.9.0)
+# Contextual init for a repo that already ships (`eng renovate`)
 
 ## T3 message delivery and queue health
 
@@ -26,9 +26,9 @@ Build the snapshot from the coordinator's thread list, each thread's queue list,
 
 The checker reports the thread, queued run, age, and configured limit.
 
-The renovation pack brings an existing repo up to the standard. The repo lead applies it through normal PRs. The pack never merges, never bypasses protection, never edits rulesets and never touches prod. It writes files on a branch; the lead reviews, commits and opens the PR, and that PR goes through the repo's own gates and verifier.
+There is one standard and one init (Matt, 6 Nov 2026; Core nd71bs9kx7rnwphcj0jhp50b1n8hpk4d). A new repo runs `eng init` and gets the checks from the start. A repo that already ships reaches the same bar through `eng renovate`, without pretending it is greenfield. The repo lead applies it through normal PRs. It never merges, never bypasses protection, never edits rulesets and never touches prod. It writes files on a branch; the lead reviews, commits and opens the PR, and that PR goes through the repo's own gates and verifier.
 
-Spec: renovation pack v1 (approved by Matt, 23 Oct 2026). Code: `lib/renovate.mjs` (rules, pure) and `lib/renovate-cli.mjs` (IO).
+Spec: renovation v1 (approved by Matt, 23 Oct 2026). Code: `lib/renovate.mjs` (rules, pure) and `lib/renovate-cli.mjs` (IO).
 
 ## How a lead applies it
 
@@ -66,8 +66,8 @@ Repeat `plan` → branch → `apply <step>` → PR for each step. A step runs on
 | `eng renovate scan` | Compares secret filenames and eng lint findings with the baselines. Prints a notice when a baseline changed on this branch. Fails on new findings, or on baselines with no CODEOWNERS owner. Warn mode reports only | 1 on new findings in enforce mode |
 | `eng renovate wire --ci buildkite\|github` | Writes `renovation/wire/<ci>.yml` (preflight, scan, lint, render check, fallow) and prints the ruleset change for an admin. It never applies it | 0 |
 | `eng renovate ci-preflight` | Compares the repo's Bun and Node pins (`packageManager`, `.bun-version`, `.node-version`, `.nvmrc`, `.tool-versions`) with `renovation.ci.toolchain` for the named image and queue. A mismatch is `needs-decision: ci-image-operator` with the image and queue named. The pack does not build images | 3 on needs-decision |
-| `eng renovate refresh` | Applies the merge policy: strict and behind → update the branch (merge, no force push), then refresh again. Otherwise it reports whether the verdict carries by patch-id, needs a fresh verifier, or needs a new receipt draft | 3 when a refresh or re-verify is needed |
-| `eng renovate receipt --pr <n> --author-session <id>` | Drafts the repo's receipt from the latest independent verdict for this patch-id into `renovation/receipts/<head>.md`. Never posts | 0 |
+| `eng renovate refresh` | Applies the merge policy: strict and behind → update the branch (merge, no force push), then refresh again. Otherwise it reports whether this exact head has a verdict, needs a new run, or needs a new receipt draft. A verdict never carries to a new head | 3 when a refresh or re-verify is needed |
+| `eng renovate receipt --pr <n> --author-session <id>` | Drafts the repo's receipt from the latest verdict for this exact head into `renovation/receipts/<head>.md`. Never posts | 0 |
 | `eng renovate prove [--gate g]... [--timeout s] [--force]` | Runs each proof gate with a timeout and records pass, fail or blocked (timeout or admission) in `renovation/proof/<sha>.json` after every gate. A re-run resumes and skips passed gates. Anything but all-pass is NOT PROVED | 0 proved, 1 failed, 3 blocked |
 | `eng launch [--ref r] -- <cmd>` / `eng launch --keep` / `eng launch down <dir>` | Makes a private 0700 round dir under `hygiene.scratch_root` (never /tmp) with a 0700 worktree and a 0700 tmp. It never chmods an existing checkout. `-- <cmd>` runs the command there and removes the round on exit, pass or fail (v0.9.2). `--keep` keeps it; `down` removes it without `--force` | the command's exit code |
 
@@ -78,7 +78,7 @@ renovation:
   version: 0.9.0                   # pack version last applied; audit reports drift against a newer pack
   completed_steps: [docs-config]   # apply appends; order is fixed
   policy_owner: "@lead"            # owns renovation/baselines/ in CODEOWNERS
-  merge_policy: { strict: false, verdict_carry: patch-id }   # strict: true is a divergence, recorded in divergences.md
+  merge_policy: { strict: false, verdict_carry: patch-id }   # strict: true is a divergence, recorded in divergences.md. verdict_carry no longer carries (0.13.0)
   divergences: []                  # [{ rule, standard, local, reason, owner }]
   gates: { mode: warn }            # warn | enforce
   ci: { provider: buildkite, queue: <queue>, image: <image>, toolchain: { bun: 1.4.4, node: 24 } }
@@ -89,19 +89,20 @@ renovation:
 
 ## Verifier and receipts
 
-The builder and the verifier are different identities and sessions with fresh context. The verifier records its own identity:
+Verification tooling runs the change on the exact head; who runs it does not matter, and the builder may (Matt, 6 Nov 2026). Each verifier records its name:
 
 ```sh
-eng verdict PASS --by <id> --session <id> --pr <n>
+eng verdict round --by <id> -- <cmd>        # one per check, on the exact head: app, e2e, property and mutation tests, formal checks
+eng verdict PASS --by <id> --session <id> --pr <n>   # attaches the rounds; --review only for docs and policy text
 ```
 
-The record binds the head SHA, the merge-base, the base tip, the head tree (the diff fingerprint) and the patch-id (`refs/notes/eng-verdict`). An adapter turns it into the repo's own format. Adapter 1 is `core-edge.ship-receipt/v1`: a COMMENT review body with the `<!-- core-edge.ship-receipt/v1 -->` marker. Its `diff_fingerprint` is the head tree SHA and its `base_sha` is the base tip. A rebase therefore always needs a new receipt draft. The verdict itself carries over when the patch-id is unchanged and `verdict_carry` is `patch-id`. The lead or the lead's lane posts the draft; the pack never does.
+The record binds the head SHA, the merge-base, the base tip, the head tree (the diff fingerprint) and the patch-id (`refs/notes/eng-verdict`). An adapter turns it into the repo's own format. Adapter 1 is `core-edge.ship-receipt/v1`: a COMMENT review body with the `<!-- core-edge.ship-receipt/v1 -->` marker. Its `diff_fingerprint` is the head tree SHA and its `base_sha` is the base tip. A rebase therefore always needs a new receipt draft. The verdict itself never carries over: a verdict counts only for the exact commit it ran on, whatever `verdict_carry` says. The lead or the lead's lane posts the draft; eng never does. The core-edge schema itself still requires the builder session to differ from the verifier session. That rule belongs to core-edge's own gate, so changing it is a core-edge change.
 
 ## Gaps this closes
 
 | Repo | Gap | Piece |
 |---|---|---|
-| Core Edge #373 | independent-verifier receipt | `eng verdict --by` + `eng renovate receipt` (core-edge adapter) |
+| Core Edge #373 | verifier receipt | `eng verdict --by` + `eng renovate receipt` (core-edge adapter) |
 | Core Edge #373 | up-to-date landing gate | `renovation.merge_policy` + `eng renovate refresh` |
 | Infotech #462 | v7 operator | `eng renovate ci-preflight` → `needs-decision: ci-image-operator` |
 | Infotech #462 | native proof | `eng renovate prove` ledger with timeouts |

@@ -11,6 +11,7 @@ To use a skill, read `.agents/skills/<name>/SKILL.md` and follow it. Do not rely
 
 This is the primary path. A lead that spawns or steers a coding thread (for example in T3) starts the message with one line naming the mode and the playbook, then the job:
 - `/poteto-mode -> Shipping playbook: verify commit <sha> with verify-<app>, record eng verdict`
+  (the verifier runs each check with `eng verdict round --by <id> -- <cmd>`, then records the verdict, which carries the runs)
 - `/poteto-mode -> Babysit playbook (drive): get PR #<n> to merge-ready`
 - When steering mid-task: `/poteto-mode -> Switch to the Shipping playbook` or `Run blast-radius on this diff`.
 
@@ -18,14 +19,14 @@ Which playbook goes with which job (poteto-mode playbooks, `.agents/skills/potet
 
 | Job | Playbook | File |
 |---|---|---|
-| Drive the author's own PR to merge-ready (conflicts, review threads, CI). Not an independent review | Babysit | `babysit.md` |
-| Independent verdict by an agent that did not write the code, then land | Shipping (verification) | `shipping.md` |
+| Drive the author's own PR to merge-ready (conflicts, review threads, CI). Not verification | Babysit | `babysit.md` |
+| Verify a commit with the repo's verification tooling (`eng verdict round`), record `eng verdict`, then land | Shipping (verification) | `shipping.md` |
 | Full autonomous program: one owner per PR from build to merge | Autopilot-full | `autopilot-full.md` |
 | Full autonomy up to a verified stack the operator lands | Autopilot-stack | `autopilot-stack.md` |
 | Bug fix / feature / refactor | Bug fix, Feature, Refactoring | `bug-fix.md`, `feature.md`, `refactoring.md` |
 
 Rules for the message:
-- Babysit is not review. The verdict comes from a separate Shipping spawn by an agent that did not write the code.
+- Babysit is not verification. The verdict comes from verification tooling run on the exact commit; the builder may run it. pstack's Shipping playbook asks for a separate verifier agent; under this standard the runs decide, not who ran them.
 - When the change adds a surface (route, screen, command, API, job) the repo's `verify-<app>` skill does not cover, the spawn must require `maintain-verification-skill` for that surface before the verdict.
 - Plain prose with normal spacing between words. Re-read before sending; never send a message with its spaces stripped out.
 
@@ -35,17 +36,17 @@ The router below (also in AGENTS.md) is the fallback when no skill was named.
 
 - **plan:** `poteto-mode` (it picks the playbook: bug-fix, feature, refactoring ...), then `how` / `why` / `architect`; `figure-it-out` for large work; `grilling` / `grill-with-docs` for product calls; `find-the-laws` for rules that must always hold.
 - **build:** the playbook steps; `tdd` for bug fixes; `typescript-best-practices` on every .ts/.tsx edit; `show-me-your-work` for long or unattended runs.
-- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; the skill `formal.stateful` in eng.config.yml names for a flow that moves between states (default `statechart`), and the one `formal.other` names for non-stateful high-cost code (default `create-formal-verification-skill`); `interrogate` for contested design, `blast-radius` for small risky diffs.
+- **verify:** `principle-prove-it-works`, the repo `verify-<app>` skill (use it wherever pstack says `control-cli` / `control-ui`), `eng verify create <id>`; the skill `formal.stateful` in eng.config.yml names for a flow that moves between states (default `statechart`), and the one `formal.other` names for non-stateful high-cost code (default `create-formal-verification-skill`); the verifier runs each check on the exact commit with `eng verdict round --by <id> -- <cmd>`; `interrogate` (optional) for contested design and for text no check can run, `blast-radius` for small risky diffs.
 - **ship:** author: the Opening a PR playbook (`no-comments`, then `technical-writing` + `unslop`) up to merge-ready, never merge. Shipping manager: the loop below.
 
 ## Shipping (serial, one PR at a time)
 
-Author stops at merge-ready (gate green, description, evidence, risk label). A fresh-context verifier records the verdict on the head SHA. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. Matt only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
+Author stops at merge-ready (gate green, description, evidence, risk label). Verification tooling records the verdict on the head SHA; the builder may run it. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. Matt only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
 
 Loop, whenever a PR becomes ready (`eng ship next` prints the next PR and the commands):
 1. Oldest ready PR with a PASS verdict; skip `risk:high` not yet approved.
 2. `gh pr update-branch <n>`.
-3. Wait for the gate on the new head. Same patch-id: verdict stands. Otherwise back to the verifier.
+3. Wait for the gate on the new head. The new head needs its own run and verdict; a verdict never carries from the old head.
 4. `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 5. Main green after merge, else revert now and return the PR to its author.
 6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.
