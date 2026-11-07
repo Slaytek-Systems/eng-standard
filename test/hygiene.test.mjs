@@ -23,7 +23,7 @@ const engDirs = () => fs.readdirSync(base).filter(n => n.startsWith('eng-hyg-'))
 before(() => {
   fs.mkdirSync(base); git(`init -q --bare -b main ${remote}`, root); git(`clone -q ${remote} repo`, root);
   git('config user.email t@t'); git('config user.name t');
-  fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml'));
+  fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml')); fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });  // eng sync keeps it tracked
   // These tests pin the gate's own ENG_TMP; wrapping steps in ephemeral runs is tested in ephemeral.test.mjs.
   setCfg(c => { c.project.name = 'hyg'; c.gates.required = ['test']; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
   fs.writeFileSync(path.join(dir, '.gitignore'), '.eng/mistakes.jsonl\n');

@@ -20,7 +20,7 @@ const write = (p, data) => { fs.mkdirSync(path.dirname(p), { recursive: true });
 before(() => {
   fs.mkdirSync(dir, { recursive: true });
   execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir });
-  fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml'));
+  fs.copyFileSync(TPL, path.join(dir, 'eng.config.yml')); fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });  // eng sync keeps it tracked
   // These tests pin the disk rules; the starter's launch has no scripts here, so ephemeral runs (its own tests) are off.
   setCfg(c => { c.project.name = 'disk'; c.gates.required = ['test']; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
 });

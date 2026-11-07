@@ -37,7 +37,7 @@ before(() => {
   execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir });
   const c = YAML.parse(fs.readFileSync(TPL, 'utf8'));
   c.project.name = 'eph'; c.project.commands.test = 'true'; c.gates.required = ['test']; delete c.launch; delete c.constraints;
-  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
+  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c)); fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });  // eng sync keeps it tracked
   execSync('git add -A && git commit -qm base', { cwd: dir });
 });
 // Cleans up even when the check under test is broken and left things behind.

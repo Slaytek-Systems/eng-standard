@@ -110,6 +110,7 @@ test('eng init on an empty repo seeds the starter config and no renovation block
   assert.match(r.stdout, /seeded eng\.config\.yml/, out(r));
   assert.equal(fs.readFileSync(path.join(empty, 'eng.config.yml'), 'utf8'), fs.readFileSync(TPL, 'utf8'));
   assert.ok(!fs.existsSync(path.join(empty, 'renovation')));
+  assert.ok(fs.existsSync(path.join(empty, '.eng/checks/.gitkeep')), 'eng sync keeps the checks dir tracked, so eng gate can tell no checks from a moved dir');
 });
 
 test('eng run --keep: private 0700 worktree and tmp under the scratch root; the shared 775 checkout is never chmodded', () => {

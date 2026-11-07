@@ -244,3 +244,28 @@ test('CI and the rendered pipeline run the checks: a command or gate cleanup can
   assert.match(pipe, /key: "checks"\n    command: "npx eng gate checks"/);
   assert.match(pipe, /for k in checks /, 'the finalizer requires the checks step to pass');
 });
+
+test('eng gate never skips or misreads a check: odd names, other entries and a missing configured dir all fail', () => {
+  git('checkout -q main'); git('checkout -qb wall2');
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'), c = YAML.parse(orig), d = path.join(dir, '.eng/checks');
+  c.gates.required = []; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.verification = { ...c.verification, checks_dir: '.eng/checks' }; fs.writeFileSync(p, YAML.stringify(c));
+  const gate = () => eng('gate', 'checks');
+  try {
+    fs.rmSync(d, { recursive: true, force: true });
+    let r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /verification\.checks_dir \.eng\/checks does not exist/);
+    fs.mkdirSync(d, { recursive: true });
+    const evil = 'bad"; exit 0; fi; $(touch injected) #.sh';
+    fs.writeFileSync(path.join(d, evil), 'exit 7\n');
+    r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL check bad"; exit 0; fi; \$\(touch injected\) #: failed 1\/1/);
+    assert.ok(!fs.existsSync(path.join(dir, 'injected')), 'a check name is never run as shell code');
+    fs.rmSync(path.join(d, evil));
+    fs.writeFileSync(path.join(d, 'noext'), 'exit 1\n');
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /\.eng\/checks\/noext is not a check: checks are \.eng\/checks\/<id>\.sh files/);
+    fs.rmSync(path.join(d, 'noext')); fs.mkdirSync(path.join(d, 'nested')); fs.writeFileSync(path.join(d, 'nested/broken.sh'), 'exit 1\n');
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /nested is not a check: .*, with no subdirectories/);
+    fs.rmSync(path.join(d, 'nested'), { recursive: true }); fs.writeFileSync(path.join(d, '.gitkeep'), '');
+    r = gate(); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+checks\s+no scripts in \.eng\/checks/);
+    const withChecks = { ...c, gates: { ...c.gates, required: ['checks'] } }; fs.writeFileSync(p, YAML.stringify(withChecks));
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stderr, /gates\.required: checks is built in/);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); fs.writeFileSync(p, orig); }
+});

@@ -53,6 +53,7 @@ function configErrors(c) {
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
   if (c.gates?.skipped_is_failed !== true) errs.push('gates.skipped_is_failed must be true');
   for (const g of c.gates?.required || []) if (REMOVED_GATES[g] && !c.project?.commands?.[g]) errs.push(`gates.required: ${g} is not an eng gate any more: ${REMOVED_GATES[g]}`);
+  if ((c.gates?.required || []).includes('checks')) errs.push('gates.required: checks is built in: eng gate always runs verification.checks_dir first; remove it from the list');
   for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
   for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
   const pre = c.hooks?.pre_commit;
@@ -618,8 +619,8 @@ function gate() {
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
-  const dir = checksDir(cfg), names = fs.existsSync(path.join(ROOT, dir)) ? fs.readdirSync(path.join(ROOT, dir)) : [];
-  const checks = checkSteps({ dir, names, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg), quote: quoteArg });
+  const dir = checksDir(cfg), abs = path.join(ROOT, dir), entries = fs.existsSync(abs) ? fs.readdirSync(abs, { withFileTypes: true }).map(e => [e.name, e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name), { throwIfNoEntry: false })?.isFile()) ? 'file' : e.isDirectory() ? 'dir' : 'other']) : null;
+  const checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg), quote: quoteArg });
   const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
   for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
