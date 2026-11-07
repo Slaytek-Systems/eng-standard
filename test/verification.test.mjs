@@ -263,7 +263,10 @@ test('eng gate never skips or misreads a check: odd names, other entries and a m
     r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /\.eng\/checks\/noext is not a check: checks are \.eng\/checks\/<id>\.sh files/);
     fs.rmSync(path.join(d, 'noext')); fs.mkdirSync(path.join(d, 'nested')); fs.writeFileSync(path.join(d, 'nested/broken.sh'), 'exit 1\n');
     r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /nested is not a check: .*, with no subdirectories/);
-    fs.rmSync(path.join(d, 'nested'), { recursive: true }); fs.writeFileSync(path.join(d, '.gitkeep'), '');
+    fs.rmSync(path.join(d, 'nested'), { recursive: true });
+    fs.mkdirSync(path.join(d, '.gitkeep')); fs.writeFileSync(path.join(d, '.gitkeep/failing.sh'), 'exit 7\n');
+    r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /\.gitkeep is not a check: .*, with no subdirectories/, 'only a .gitkeep file is exempt');
+    fs.rmSync(path.join(d, '.gitkeep'), { recursive: true }); fs.writeFileSync(path.join(d, '.gitkeep'), '');
     r = gate(); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+checks\s+no scripts in \.eng\/checks/);
     const withChecks = { ...c, gates: { ...c.gates, required: ['checks'] } }; fs.writeFileSync(p, YAML.stringify(withChecks));
     r = gate(); assert.equal(r.status, 1); assert.match(r.stderr, /gates\.required: checks is built in/);
