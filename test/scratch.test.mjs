@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
-import { DISK_RULES, doctorConfig, evidenceKey, classifyEvidence, cacheEnv, scratchRoot, underTmp, HYGIENE_DEFAULTS } from '../lib/hygiene.mjs';
+import { DISK_RULES, doctorConfig, evidenceKey, cacheEnv, scratchRoot, underTmp, HYGIENE_DEFAULTS } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
@@ -21,7 +21,7 @@ const rounds = () => fs.existsSync(scratch()) ? fs.readdirSync(scratch()) : [];
 before(() => {
   fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(marks);
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
-  const c = YAML.parse(fs.readFileSync(TPL, 'utf8')); c.project.name = 'scratch-repo'; c.gates.required = ['doctor']; delete c.constraints;
+  const c = YAML.parse(fs.readFileSync(TPL, 'utf8')); c.project.name = 'scratch-repo'; c.gates.required = ['doctor']; delete c.constraints; delete c.agents.rules; c.laws.enabled = false;
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
   fs.writeFileSync(path.join(dir, 'README.md'), 'x\n');
   git('add -A'); git('commit -qm base');
@@ -58,18 +58,12 @@ test('disk rules: each Warden case bites; the fixed line passes', () => {
   }
 });
 
-test('evidence is per PR and only merged or closed PRs are removable', () => {
+test('evidence is per PR', () => {
   assert.equal(evidenceKey({ ENG_PR: '12' }), 'pr-12');
   assert.equal(evidenceKey({ GITHUB_REF: 'refs/pull/7/merge' }), 'pr-7');
   assert.equal(evidenceKey({ BUILDKITE_PULL_REQUEST: '373' }), 'pr-373');
   assert.equal(evidenceKey({ BUILDKITE_PULL_REQUEST: 'false', ENG_BRANCH: 'feat/x' }), 'branch-feat-x');
   assert.equal(evidenceKey({}, 5), 'pr-5');
-  const rows = classifyEvidence(['pr-1', 'pr-2', 'pr-3', 'pr-4', 'a'.repeat(40), 'branch-x'], n => ({ 1: 'MERGED', 2: 'CLOSED', 3: 'OPEN' })[n] ?? null);
-  assert.deepEqual(rows.filter(r => !r.keep).map(r => r.name), ['pr-1', 'pr-2']);
-  assert.match(rows.find(r => r.name === 'pr-4').why, /state unknown/);
-  assert.match(rows.find(r => r.name.length === 40).why, /legacy per-SHA/);
-  const br = classifyEvidence(['branch-a', 'branch-b', 'branch-c', 'branch-d'], () => null, n => ({ 'branch-a': 'GONE', 'branch-b': 'MERGED', 'branch-c': 'OPEN' })[n] ?? null);
-  assert.deepEqual(br.filter(r => !r.keep).map(r => r.name), ['branch-a', 'branch-b'], 'branch dirs (push builds) are cleared once merged or gone');
   assert.equal(evidenceKey({ GITHUB_REF: 'refs/heads/main', ENG_BRANCH: 'main' }), 'branch-main', 'a push ref is not a PR');
 });
 
@@ -98,25 +92,26 @@ test('doctor config: every skipped piece fails; the template declares them all',
   }
 });
 
-test('eng launch -- <cmd>: one 0700 round under the scratch root, shared caches, removed on failure', () => {
+test('eng run -- <cmd>: one 0700 round under the scratch root, shared caches, removed on failure', () => {
   const probe = n => `echo "$TMPDIR|$ENG_SCRATCH|$CARGO_TARGET_DIR|$(stat -c %a "$ENG_SCRATCH")|$(pwd)" > ${marks}/${n}; touch "$TMPDIR/big"`;
-  let r = eng('launch', '--ref', 'HEAD', '--', 'sh', '-c', `${probe('a')}; exit 3`);
+  let r = eng('run', '--ref', 'HEAD', '--', 'sh', '-c', `${probe('a')}; exit 3`);
   assert.equal(r.status, 3, out(r));
   const [tmpA, roundA, cargoA, modeA, cwdA] = fs.readFileSync(path.join(marks, 'a'), 'utf8').trim().split('|');
   assert.ok(roundA.startsWith(scratch() + path.sep), `round ${roundA} is under the scratch root`);
   assert.equal(tmpA, path.join(roundA, 'tmp')); assert.equal(modeA, '700'); assert.equal(cwdA, path.join(roundA, 'wt'));
   assert.ok(!fs.existsSync(roundA), 'round removed after a failing command'); assert.deepEqual(rounds(), []);
   assert.ok(!git('worktree list').includes(roundA), 'its worktree is gone from git worktree list');
-  r = eng('verdict', 'round', '--', 'sh', '-c', probe('b'));
+  r = eng('run', '--', 'sh', '-c', probe('b'));
   assert.equal(r.status, 0, out(r));
   const [, roundB, cargoB] = fs.readFileSync(path.join(marks, 'b'), 'utf8').trim().split('|');
   assert.notEqual(roundB, roundA); assert.equal(cargoB, cargoA, 'one shared Cargo target across rounds');
   assert.ok(!fs.existsSync(roundB)); assert.deepEqual(rounds(), []);
-  assert.match(out(eng('verdict', 'round')), /usage: eng verdict round/);
+  assert.match(out(eng('run')), /usage: eng run \[--by <verifier-id>\]/);
+  assert.match(out(eng('run', '--by', 'v')), /usage: eng run/, '--by needs a command to run');
 });
 
-test('eng launch -- <cmd>: round removed on SIGTERM', async () => {
-  const p = spawn(process.execPath, [ENG, 'launch', '--ref', 'HEAD', '--', 'sh', '-c', `echo "$ENG_SCRATCH" > ${marks}/c; sleep 20`], { cwd: dir, env, detached: true });
+test('eng run -- <cmd>: round removed on SIGTERM', async () => {
+  const p = spawn(process.execPath, [ENG, 'run', '--ref', 'HEAD', '--', 'sh', '-c', `echo "$ENG_SCRATCH" > ${marks}/c; sleep 20`], { cwd: dir, env, detached: true });
   const m = path.join(marks, 'c');
   for (let i = 0; i < 100 && !(fs.existsSync(m) && fs.readFileSync(m, 'utf8').trim()); i++) await new Promise(r => setTimeout(r, 100));
   const round = fs.readFileSync(m, 'utf8').trim(); assert.ok(fs.existsSync(round));
@@ -125,8 +120,8 @@ test('eng launch -- <cmd>: round removed on SIGTERM', async () => {
   assert.ok(!fs.existsSync(round), 'round removed after SIGTERM');
 });
 
-test('eng launch -- <cmd>: SIGTERM to eng alone stops the command, exits 143 and removes the round', async () => {
-  const p = spawn(process.execPath, [ENG, 'launch', '--ref', 'HEAD', '--', 'sh', '-c', `echo "$ENG_SCRATCH $$" > ${marks}/d; exec sleep 30`], { cwd: dir, env });
+test('eng run -- <cmd>: SIGTERM to eng alone stops the command, exits 143 and removes the round', async () => {
+  const p = spawn(process.execPath, [ENG, 'run', '--ref', 'HEAD', '--', 'sh', '-c', `echo "$ENG_SCRATCH $$" > ${marks}/d; exec sleep 30`], { cwd: dir, env });
   const m = path.join(marks, 'd');
   for (let i = 0; i < 100 && !(fs.existsSync(m) && fs.readFileSync(m, 'utf8').trim()); i++) await new Promise(r => setTimeout(r, 100));
   const [round, pid] = fs.readFileSync(m, 'utf8').trim().split(' ');
@@ -136,9 +131,9 @@ test('eng launch -- <cmd>: SIGTERM to eng alone stops the command, exits 143 and
   assert.ok(!fs.existsSync(round), 'round removed');
 });
 
-test('eng launch -- <cmd>: SIGTERM stops the whole command tree; nothing writes after eng exits', async () => {
+test('eng run -- <cmd>: SIGTERM stops the whole command tree; nothing writes after eng exits', async () => {
   const beat = path.join(marks, 'beat');
-  const p = spawn(process.execPath, [ENG, 'launch', '--ref', 'HEAD', '--', 'sh', '-c', `(while :; do date +%s%N >> ${beat}; sleep 0.1; done) & echo "$ENG_SCRATCH" > ${marks}/e; wait`], { cwd: dir, env });
+  const p = spawn(process.execPath, [ENG, 'run', '--ref', 'HEAD', '--', 'sh', '-c', `(while :; do date +%s%N >> ${beat}; sleep 0.1; done) & echo "$ENG_SCRATCH" > ${marks}/e; wait`], { cwd: dir, env });
   const m = path.join(marks, 'e');
   for (let i = 0; i < 100 && !(fs.existsSync(m) && fs.readFileSync(m, 'utf8').trim() && fs.existsSync(beat)); i++) await new Promise(r => setTimeout(r, 100));
   const round = fs.readFileSync(m, 'utf8').trim();
@@ -150,10 +145,10 @@ test('eng launch -- <cmd>: SIGTERM stops the whole command tree; nothing writes 
   assert.ok(!fs.existsSync(round), 'round removed');
 });
 
-test('eng launch -- <cmd> on a terminal: re-parented background workers stop on SIGTERM and on normal exit', async () => {
+test('eng run -- <cmd> on a terminal: re-parented background workers stop on SIGTERM and on normal exit', async () => {
   const run = async (n, finish) => {
     const beat = path.join(marks, `tty-beat-${n}`), m = path.join(marks, `tty-${n}`);
-    const inner = `${process.execPath} ${ENG} launch --ref HEAD -- sh -c '(while :; do date +%s%N >> ${beat}; sleep 0.1; done) & echo "$ENG_SCRATCH $PPID" > ${m}; ${finish}'`;
+    const inner = `${process.execPath} ${ENG} run --ref HEAD -- sh -c '(while :; do date +%s%N >> ${beat}; sleep 0.1; done) & echo "$ENG_SCRATCH $PPID" > ${m}; ${finish}'`;
     const p = spawn('script', ['-qefc', inner, '/dev/null'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] }); // the child gets the pty as stdin
     const exited = new Promise(r => p.on('exit', r)); // at spawn: on a fast runner script can exit before the marks file is read
     for (let i = 0; i < 150 && !(fs.existsSync(m) && fs.readFileSync(m, 'utf8').trim()); i++) await new Promise(r => setTimeout(r, 100));
@@ -175,7 +170,7 @@ test('eng launch -- <cmd> on a terminal: re-parented background workers stop on 
   assert.ok(!fs.existsSync(round), 'round removed');
 });
 
-test('eng launch -- <cmd>: SIGTERM while the worktree is still being made removes the round and the worktree', { timeout: 30000 }, async () => {
+test('eng run -- <cmd>: SIGTERM while the worktree is still being made removes the round and the worktree', { timeout: 30000 }, async () => {
   // The post-checkout hook is the synchronization point: it reports its directory through one FIFO, then blocks on another
   // that the test never writes, so the SIGTERM always lands while git worktree add is still running. No sleeps, no polling.
   const hooks = path.join(marks, 'hooks'), ready = path.join(marks, 'ready'), hold = path.join(marks, 'hold');
@@ -184,7 +179,7 @@ test('eng launch -- <cmd>: SIGTERM while the worktree is still being made remove
   fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\necho "$PWD" > ${ready}\nread x < ${hold}\n`, { mode: 0o755 });
   git(`config core.hooksPath ${hooks}`);
   try {
-    const p = spawn(process.execPath, [ENG, 'launch', '--ref', 'HEAD', '--', 'sh', '-c', `touch ${marks}/ran`], { cwd: dir, env });
+    const p = spawn(process.execPath, [ENG, 'run', '--ref', 'HEAD', '--', 'sh', '-c', `touch ${marks}/ran`], { cwd: dir, env });
     const wt = (await fs.promises.readFile(ready, 'utf8')).trim();
     const code = await new Promise(r => { p.on('exit', (c, s) => r(c ?? s)); p.kill('SIGTERM'); });
     assert.equal(code, 143);

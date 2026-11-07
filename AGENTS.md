@@ -36,7 +36,7 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 - **Nobody bypasses anything**, Matt included: no `--admin`, no `--no-verify`, no merging around a red or missing check.
   Nobody merges by hand: self-merge merges.
 - **Verdict.** A verifier (a tool, lane or agent, the builder included) runs the change on the exact head with
-  `eng verdict round --by <id> -- <cmd>` (`npm test`, the CLI against a scratch repo, property tests), then records
+  `eng run --by <id> -- <cmd>` (`npm test`, the CLI against a scratch repo, property tests), then records
   `eng verdict PASS|FAIL --by <id> --pr <n>`. The verdict carries the runs: command, exit code, output and SHA. A PASS
   counts only with passing runs on its commit. A model review (`--review`) is the required check only when every changed
   file is docs or policy text (`verification.review_only_paths`), and optional otherwise. That posts an `eng-verdict/v1`

@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { VERBATIM, verbatimBlock, verbatimError } from '../lib/principles.mjs';
-import { agentsBlock, PRINCIPLES_LINE } from '../lib/render.mjs';
-import { withLocalRules } from '../lib/renovate.mjs';
+import { agentsBlock, PRINCIPLES_LINE, withLocalRules } from '../lib/render.mjs';
 
 for (const [file, sha] of Object.entries(VERBATIM)) {
   test(`${file}: verbatim block matches its stored sha256`, () => {

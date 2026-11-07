@@ -1,6 +1,6 @@
 # Reference merge.auto config (v0.10.0 merge rule: Matt, 24 Oct 2026, 10:31 AM AEDT; option 2 at 11:22 AM AEDT). It is the
 # config the merge-rule sandboxes ran. A consuming repo copies the `merge` block, the workflows next to this file into its
-# .github/workflows/, and applies `eng merge settings`. eng-standard itself merges through self-merge.yml (root eng.config.yml).
+# .github/workflows/, and applies the settings `eng doctor` prints. eng-standard itself merges through self-merge.yml (root eng.config.yml).
 version: 1
 
 project:
@@ -24,7 +24,7 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
     base: main
     # A PR touching these needs counted PASSes from high_risk_verifiers distinct verifiers (gate, auth, billing).
     high_risk_paths:
-      - ".github/**"              # workflows (ci, merge-post, merge-watch), CODEOWNERS, actions
+      - ".github/**"              # workflows (ci, gate, merge-post), CODEOWNERS, actions
       - ".buildkite/**"
       - ".eng/ci/**"
       - ".githooks/**"
@@ -53,7 +53,7 @@ merge:                            # The merge rule (AGENTS.md). No PR needs a hu
     # verifier_logins: [<github-login>, <github-login>]   # only these logins may post verdicts (guards against forged comments). Unset: any write-access account can (one shared GitHub account); eng doctor flags it
 
 ship:
-  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng verdict round --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
+  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng run --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
 
 gates:
   skipped_is_failed: true
