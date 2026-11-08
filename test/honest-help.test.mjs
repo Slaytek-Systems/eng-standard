@@ -175,4 +175,12 @@ test('rewrite modes: a harness with no deny list is told the truth about raw for
     assert.match(agents, /no local guard on feature branches/, `${hs}: protected AGENTS.md rule table names the gap`);
     assert.match(renderAll(never, null)['SHIPPING.md'], /so the git hooks are their only local guard\)/, `${hs}: never mode keeps its accurate wording`);
   }
+  // PR #53 verdict 2: protected mode with no harness at all has no deny list either; the hooks still guard protected refs only.
+  const none = renderAll(cfg([], 'protected'), null);
+  assert.doesNotMatch(none['SHIPPING.md'], /`\.githooks\/pre-rebase` enforce this locally\./, 'protected, no harness: no claim of full local enforcement');
+  assert.match(none['SHIPPING.md'], /enforce this locally for protected branches and tags; there is no agent deny list, so nothing local stops a raw force-push of a feature branch/);
+  assert.match(none['AGENTS.md'], /no agent deny list, so no local guard on feature branches/);
+  const claude = renderAll(cfg(['claude-code'], 'protected'), null);
+  assert.match(claude['SHIPPING.md'], /enforce this locally for protected branches and tags; the Claude Code deny list blocks a raw force-push on any branch\./, 'protected, claude-code only: the deny list covers feature branches');
+  assert.doesNotMatch(claude['SHIPPING.md'] + claude['AGENTS.md'], /no local guard|nothing local stops/, 'protected, claude-code only: no gap to name');
 });
