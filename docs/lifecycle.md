@@ -37,8 +37,8 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 
 | Check | Fails when | Where it runs |
 |---|---|---|
-| `eng sync --check` | a generated file, symlink or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one; the pin floats; the config has entries this release retired. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
-| `eng doctor` | a config piece, an enforcer, the merge settings or a disk rule is wrong; the lock is stale or the pin floats. It also prints the installed, rendered and latest versions | on demand; the gate where listed |
+| `eng sync --check` | a generated file, symlink or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one; the pin floats; the config has entries this release retired or lacks `git.rewrite_pushed`. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
+| `eng doctor` | a config piece, an enforcer, the merge settings or a disk rule is wrong; the lock is stale or the pin floats. It also prints the `git.rewrite_pushed` mode and the installed, rendered and latest versions | on demand; the gate where listed |
 
 `eng doctor` reads the latest version and CHANGELOG from eng-standard `main` on GitHub, or from `ENG_STANDARD_SOURCE`
 (an eng-standard checkout or a base URL). Behind is a `WARN` with the CHANGELOG entries in between, not a failure: an
@@ -51,7 +51,9 @@ current.
    permissions.
 2. On a branch, move the pin to the new `vX.Y.Z` tag and install with the repo's package manager.
 3. `eng sync`. It rewrites the generated files and `.eng/lock.json`, and migrates retired config entries in place
-   (it prints each one). Review the diff.
+   (it prints each one). From 0.15.0 it also adds `git.rewrite_pushed` when the config lacks it: `protected` when the
+   checkout has `.git/.graphite_repo_config` (with a comment that `never` is recommended), otherwise `never`. It prints
+   which and why. Review the diff.
 4. `eng sync --check`, then `eng gate`.
 5. One PR, titled `eng-standard X.Y.Z`. It goes through the repo's own gates and verification like any PR.
 
@@ -71,9 +73,15 @@ current.
    (`@AGENTS.md`). Codex reads `AGENTS.md` directly.
 2. Put `Agent:` and `Agent-Family:` trailers on every commit.
 3. Run `eng gate` before you ask for review. Never merge your own PR.
-4. Pushed history is never rewritten (Matt, 3 Nov 2026). Tidy commits only before their first push. After a push, every
-   follow-up is a new commit, and the base comes in by merge (`gh pr update-branch <n>`). The rendered pre-push hook
-   refuses a non-fast-forward push to any branch and refuses moving a pushed tag (SHIPPING.md rule 1).
+4. Read `git.rewrite_pushed` in `eng.config.yml` (SHIPPING.md rule 1 says the same).
+   - `never` (the default and the recommendation). Pushed history is never rewritten. Tidy commits only before their
+     first push. After a push, every follow-up is a new commit, and the base comes in by merge
+     (`gh pr update-branch <n>`). The pre-push hook refuses a non-fast-forward push to any branch, and the pre-rebase
+     hook refuses a rebase that would rewrite pushed commits.
+   - `protected`. The default branch, `project.protected_branches` and tags are locked. A pushed feature branch may be
+     rewritten only through the repo's guarded tool, for example Graphite's `gt restack` and lease-protected `gt submit`.
+   - In both modes a pushed tag never moves, a protected branch is never deleted or rewritten, and the agent deny list
+     blocks a raw forced push.
 5. Never hand-edit a generated file. Edit `eng.config.yml` and run `eng sync`.
 
 ## Uninstall
@@ -106,8 +114,11 @@ output. Fix it upstream in eng-standard, never by editing generated files in the
   rendered file names an `eng <command>` that does not exist, when a relative link is broken, when a doc is not shipped
   in the package, or when a file still names the old repo owner.
 - `test/no-force-push.test.mjs`. It fails when a doc, template or rendered file, vendored skills included, tells an
-  agent to force-push, and drives the rendered pre-push hook against a bare remote. Upstream pstack sentences that say to
-  force-push are rewritten at install time through `vendor/pstack/REWRITES.tsv`; the vendored copy stays byte-identical.
+  agent to rewrite pushed history with a forced push. It reads tracked and untracked files, so a new doc counts before
+  its first commit. Upstream pstack sentences that say otherwise are rewritten at install time through
+  `vendor/pstack/REWRITES.tsv`; the vendored copy stays byte-identical.
+- `test/rewrite-mode.test.mjs`. It drives the rendered pre-push and pre-rebase hooks against a bare remote in both
+  `git.rewrite_pushed` modes, and proves the `eng sync` migration, `eng init` and the config error.
 - `test/standard.test.mjs`. It proves the rendered "This standard" section, the `sync --check` pin and lock checks, and
   the `eng doctor` version lines in a scratch repo.
 - `test/release.test.mjs`. It covers the release-tag rule and the `release-tag` job in `ci.yml`.

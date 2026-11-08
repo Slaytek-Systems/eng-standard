@@ -5,13 +5,18 @@ version: 1
 project:
   name: sandbox-repo
   default_branch: main
-  protected_branches: [main]       # Never rebased, force-pushed or deleted. Pushed history on any branch is never rewritten.
+  protected_branches: [main]       # Never rebased, force-pushed or deleted, in either git.rewrite_pushed mode.
   commands:                       # The repo's own commands, unchanged. `eng gate` runs the ones listed in gates.required.
     install: vp install             # vp drives the pinned packageManager (bun@x.y.z) from package.json
     typecheck: vp check              # Oxfmt + Oxlint (type-aware) + type check; tsconfig needs skipLibCheck if plain tsc is also used (bun-types vs vite client types)
     test: vp test run                # Vitest via Vite+; single runner (convex-test needs Vite's import.meta.glob)
     dev: vp dev
   ui_paths: ["src/ui/**"]
+
+git:
+  rewrite_pushed: never           # never (recommended): no pushed branch or tag is ever rewritten. protected: only default_branch,
+                                  # protected_branches and tags are locked, so a guarded tool (Graphite's gt restack and gt submit)
+                                  # may rewrite feature branches. Agents never force-push with git in either mode (deny list).
 
 # ---------------- STACK: every choice is a DRAFT decision for Matt ----------------
 stack:

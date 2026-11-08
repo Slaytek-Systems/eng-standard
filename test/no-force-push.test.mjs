@@ -21,29 +21,31 @@ const NEG = /\b(never|no|not|don't|do not|block|blocks|blocked|deny|denied|refus
 // Per sentence, so a prohibition later on the same line cannot excuse an instruction.
 const tellsToForcePush = text => text.split('\n').flatMap((l, i) => l.split(/(?<=[.!?;])\s+/).map(x => [i + 1, x])).filter(([, x]) => FLAG.test(x) || (WORD.test(x) && !NEG.test(x)));
 
-function rendered(template) {
+function rendered(template, mode) {
   const dir = tmp('eng-fp-');
   execSync('git init -q -b main', { cwd: dir });
-  fs.copyFileSync(path.join(ROOT, template), path.join(dir, 'eng.config.yml'));
+  const cfg = fs.readFileSync(path.join(ROOT, template), 'utf8');
+  fs.writeFileSync(path.join(dir, 'eng.config.yml'), cfg.replace(/^(  rewrite_pushed: )\S+/m, `$1${mode}`));
   const s = spawnSync(process.execPath, [ENG, 'sync'], { cwd: dir, encoding: 'utf8' }); assert.equal(s.status, 0, s.stderr);
   return dir;
 }
 const walk = (d, rel = '') => fs.readdirSync(path.join(d, rel), { withFileTypes: true }).flatMap(e =>
   e.name === '.git' || e.isSymbolicLink() ? [] : e.isDirectory() ? walk(d, path.join(rel, e.name)) : [path.join(rel, e.name)]);
 
-test('no rendered file, vendored skill included, tells an agent to force-push (the starter config)', () => {
+test('no rendered file, vendored skill included, tells an agent to force-push (the starter config, both git.rewrite_pushed modes)', () => {
   const bad = [];
-  for (const t of ['templates/eng.config.yml']) {
-    const dir = rendered(t);
+  for (const t of ['templates/eng.config.yml']) for (const mode of ['never', 'protected']) {
+    const dir = rendered(t, mode);
     for (const f of walk(dir).filter(f => !f.startsWith('.githooks/') && f !== '.claude/settings.json'))
-      for (const [n, l] of tellsToForcePush(fs.readFileSync(path.join(dir, f), 'utf8'))) bad.push(`${t} -> ${f}:${n}: ${l.trim().slice(0, 120)}`);
+      for (const [n, l] of tellsToForcePush(fs.readFileSync(path.join(dir, f), 'utf8'))) bad.push(`${t} (${mode}) -> ${f}:${n}: ${l.trim().slice(0, 120)}`);
   }
   assert.deepEqual(bad, []);
 });
 
 test('no doc or template in this repo tells an agent to force-push', () => {
-  const files = spawnSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n')
-    .filter(f => /\.(md|ya?ml|ts|tsv)$/.test(f) && !/^(vendor|docs\/evidence|test|fixtures)\//.test(f) && f !== 'CHANGELOG.md');
+  // Untracked files too: a new doc is checked before its first commit, not only in CI.
+  const files = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' }).stdout.split('\n')
+    .filter(f => fs.existsSync(path.join(ROOT, f)) && /\.(md|ya?ml|ts|tsv)$/.test(f) && !/^(vendor|docs\/evidence|test|fixtures)\//.test(f) && f !== 'CHANGELOG.md');
   const bad = files.flatMap(f => tellsToForcePush(fs.readFileSync(path.join(ROOT, f), 'utf8')).map(([n, l]) => `${f}:${n}: ${l.trim().slice(0, 120)}`));
   assert.deepEqual(bad, []);
 });

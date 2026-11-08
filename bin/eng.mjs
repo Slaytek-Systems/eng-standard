@@ -7,7 +7,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
-import { retired, migrate, FIX } from '../lib/migrate.mjs';
+import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
@@ -75,6 +75,7 @@ function configErrors(c) {
   errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
   errs.push(...modelErrors(c.models));
   errs.push(...neverErrors(c));
+  errs.push(...rewriteModeErrors(c));
   return errs;
 }
 
@@ -103,11 +104,21 @@ function migrateConfig() {
   const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
   if (cur === null) return 0;
   const { text, changes } = migrate(cur);
+  const added = addRewriteMode(text, graphiteRepo());
+  if (added) changes.push(added);
   if (!changes.length) return 0;
-  fs.writeFileSync(p, text);
+  fs.writeFileSync(p, added?.text ?? text);
   for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
   return changes.length;
 }
+// Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
+function graphiteRepo() {
+  let dir = path.join(ROOT, '.git'); try { dir = path.resolve(ROOT, sh('git rev-parse --git-common-dir')); } catch {}
+  return fs.existsSync(path.join(dir, '.graphite_repo_config'));
+}
+const rewriteModeLine = cfg => missingRewriteMode(cfg)
+  ? { ok: false, what: 'git.rewrite_pushed is missing', fix: 'run eng sync: it adds protected when Graphite is set up here, otherwise never, and prints why' }
+  : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
 function sync() {
   const migrated = migrateConfig();
@@ -195,8 +206,9 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
-  const due = retired(YAML.parse(readOr('eng.config.yml', '{}')));
-  if (due.length) die(`sync --check: eng.config.yml has ${due.length} retired entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.map(m => `${m.what}: ${m.why}`).join('\n  ')}\n  Fix: ${FIX}.`);
+  const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
+  const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
+  if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
   const files = render(cfg);
   const bad = [];
@@ -711,7 +723,7 @@ async function doctor() {
   const up = await upgradeInfo();
   console.log(up.line);
   const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean), merges = mergeDoctor(cfg);
-  const checks = [...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
