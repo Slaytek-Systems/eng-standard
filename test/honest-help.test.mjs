@@ -188,13 +188,17 @@ test('rewrite modes: a harness with no deny list is told the truth about raw for
 // PR #53 verdict 3: every claim that credits the Claude Code deny list says it catches the common forms only, and the rebase
 // hook's limits are named, in both modes.
 test('every claim that credits the Claude Code deny list or the rebase hook names its limit', () => {
-  for (const mode of ['never', 'protected']) {
-    const c = template(); c.agents.harnesses = ['claude-code', 'codex']; c.git = { ...(c.git ?? {}), rewrite_pushed: mode };
+  for (const mode of ['never', 'protected']) for (const hs of [[], ['claude-code'], ['codex'], ['claude-code', 'codex']]) {
+    const c = template(); c.agents.harnesses = hs; c.git = { ...(c.git ?? {}), rewrite_pushed: mode };
     const f = renderAll(c, null), text = f['AGENTS.md'] + '\n' + f['SHIPPING.md'];
     const credits = text.split('\n').filter(l => /Claude Code deny list/.test(l));
-    assert.ok(credits.length > 0, `${mode}: some line credits the deny list`);
+    assert.equal(credits.length > 0, hs.includes('claude-code'), `${mode} ${hs}: a line credits the deny list exactly when Claude Code is selected`);
     for (const l of credits) assert.match(l, /common forms only: a flag later on the line or bundled short flags such as `-vf` get through/, `${mode}: deny-list claim without its limit: ${l}`);
     const rebase = f['AGENTS.md'].split('\n').find(l => /\.githooks\/pre-rebase/.test(l) && l.startsWith('|'));
     assert.match(rebase, mode === 'never' ? /only when the branch has an upstream/ : /protected branches only\); the guarded-tool rule is this text only/, `${mode}: ${rebase}`);
+    // PR #53 verdict 4: every line that credits pre-rebase, in every rendered text, names its limit.
+    for (const l of text.split('\n').filter(l => /\.githooks\/pre-rebase/.test(l))) {
+      assert.match(l, mode === 'never' ? /only when the branch has an upstream/ : /protected branches/, `${mode}: pre-rebase claim without its limit: ${l}`);
+    }
   }
 });
