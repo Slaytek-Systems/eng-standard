@@ -368,3 +368,36 @@ test('a check that runs its allocator under env -i fails the gate on the watchdo
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /FAIL\s+check:clean\s+eng: FAIL check clean: stopped by its budget: memory 256 MB/);
 });
+
+// ---------- verdict finding on 771c7ea (PR 50, round 3): a gate under env -i lost its deferral and counted as a pass.
+// A gate that deferred a check exits 3 (incomplete), so every caller sees it, whatever environment the gate had. ----------
+const DEFERRING = { light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n' };
+const CLEAN_GATE = ['/usr/bin/env', '-i', `PATH=${process.env.PATH}`, `HOME=${process.env.HOME}`, 'ENG_BUDGET_ENFORCER=watchdog', process.execPath, ENG, 'gate', 'checks'];
+for (const nested of [false, true]) test(`a gate under env -i that deferred a failing heavy check is not a pass for the ${nested ? 'nested' : 'direct'} enclosing eng run --by`, async () => {
+  checks(DEFERRING);
+  const by = `env-i-${nested ? 'nested' : 'direct'}`;
+  const r = eng(['run', '--by', by, '--', ...(nested ? [process.execPath, ENG, 'run', '--'] : []), ...CLEAN_GATE], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.match(r.stdout, /deferred\s+check:model/, out(r));
+  assert.equal(r.status, 3, `the enclosing run exits with the gate's incomplete code: ${out(r)}`);
+  const rec = runsBy(by).at(-1);
+  const { passProblem } = await import('../lib/verification.mjs');
+  assert.ok(passProblem({ method: 'verification', sha: rec.sha, runs: [rec] }, ['lib/x.mjs']), `the record cannot back a PASS: ${JSON.stringify(rec)}`);
+  const v = eng(['verdict', 'PASS', '--by', by]);
+  assert.notEqual(v.status, 0, out(v));
+});
+test('eng gate exits 0 only when every selected check ran and passed; a deferred check makes it exit 3', () => {
+  checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 0\n' });
+  let r = eng(['gate', 'checks']);
+  assert.equal(r.status, 3, out(r));
+  assert.match(out(r), /INCOMPLETE/);
+  assert.match(out(r), /light checks passed/);
+  assert.match(out(r), /deferred: model/);
+  assert.match(out(r), /eng gate --heavy/);
+  r = eng(['gate', 'checks', '--heavy']);
+  assert.equal(r.status, 0, out(r));
+  r = eng(['gate', 'checks'], { CI: 'true' });
+  assert.equal(r.status, 0, `CI runs heavy checks, so a passing CI gate exits 0: ${out(r)}`);
+  checks({ light: '#!/bin/sh\nexit 0\n' });
+  r = eng(['gate', 'checks']);
+  assert.equal(r.status, 0, `a repo with no heavy checks never defers: ${out(r)}`);
+});
