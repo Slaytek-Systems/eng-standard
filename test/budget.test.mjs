@@ -531,8 +531,8 @@ test('eng gate exits 0 only when every selected check ran and passed; a deferred
 // script after the runtime's own options. ----------
 test('listens: eng is the program itself, never an argument to another program', async () => {
   const { listens } = await import('../lib/nested.mjs');
-  const yes = [['node', '/p/bin/eng.mjs', 'gate'], ['/usr/bin/node', '--max-old-space-size=64', '/p/eng.mjs', 'gate', 'checks'], ['node', '-r', '/x/hook.cjs', '/p/eng.mjs', 'gate'], ['/p/bin/eng', 'run', '--', 'sh', '-c', 'x'], ['node', '/p/eng.mjs', 'run', '--by', 'v', '--', 'cmd', '--here'], ['bun', '/p/eng.mjs', 'gate']];
-  const no = [['node', '/x/supervisor.mjs', '/p/bin/eng.mjs', 'gate'], ['node', '/x/harness.js', '--target', '/p/eng.mjs', 'gate'], ['python3', '/p/eng.mjs', 'gate'], ['node', '/p/eng.mjs', 'run', '--here', '--', 'cmd'], ['node', '/p/eng.mjs', 'lint'], ['sh', '-c', 'node /p/eng.mjs gate']];
+  const yes = [['node', '/p/bin/eng.mjs', 'gate'], ['/usr/bin/node', '--max-old-space-size=64', '/p/eng.mjs', 'gate', 'checks'], ['node', '-r', '/x/hook.cjs', '/p/eng.mjs', 'gate'], ['/p/bin/eng', 'run', '--', 'sh', '-c', 'x'], ['node', '/p/eng.mjs', 'run', '--by', 'v', '--', 'cmd', '--here'], ['bun', '/p/eng.mjs', 'gate'], ['node', '--', '/p/eng.mjs', 'gate'], ['node', '--inspect=0', '/p/eng.mjs', 'gate']];
+  const no = [['node', '/x/supervisor.mjs', '/p/bin/eng.mjs', 'gate'], ['node', '/x/harness.js', '--target', '/p/eng.mjs', 'gate'], ['python3', '/p/eng.mjs', 'gate'], ['node', '/p/eng.mjs', 'run', '--here', '--', 'cmd'], ['node', '/p/eng.mjs', 'lint'], ['sh', '-c', 'node /p/eng.mjs gate'], ['node', '--eval=0', '/p/eng.mjs', 'gate'], ['node', '-e', 'x', '/p/eng.mjs', 'gate'], ['node', '--eval', 'x', '/p/eng.mjs', 'gate'], ['node', '-pe', 'x', '/p/eng.mjs', 'gate'], ['node', '--print=1', '/p/eng.mjs', 'gate'], ['node', '-c', '/p/eng.mjs', 'gate'], ['node', '--test', '/p/eng.mjs', 'gate'], ['node', '-i', '/p/eng.mjs', 'gate']];
   for (const a of yes) assert.equal(listens(a), true, JSON.stringify(a));
   for (const a of no) assert.equal(listens(a), false, JSON.stringify(a));
 });
@@ -549,8 +549,12 @@ await new Promise(res => setTimeout(res, 200));
 console.log('urgent=' + urgent + ' inner=' + r.status);
 process.exit(urgent ? 1 : 0);
 `);
-  // The supervisor runs directly (not under eng run), carrying eng's path and `gate` as data arguments.
-  const r = spawnSync(process.execPath, [sup, ENG, 'gate'], { cwd: dir, encoding: 'utf8', env: { ...process.env, CI: '', ENG_BUDGET_ENFORCER: how } });
-  assert.match(r.stdout, /urgent=0 inner=3/, out(r));
-  assert.equal(r.status, 0, out(r));
+  // The supervisor runs directly (not under eng run), carrying eng's path and `gate` as data arguments: as an entry script,
+  // and as --eval code (round 8), where eng's path is only argv data to the inline program.
+  const env = { ...process.env, CI: '', ENG_BUDGET_ENFORCER: how };
+  for (const argv of [[sup, ENG, 'gate'], [`--eval=await import(${JSON.stringify(sup)})`, '--input-type=module', ENG, 'gate']]) {
+    const r = spawnSync(process.execPath, argv, { cwd: dir, encoding: 'utf8', env });
+    assert.match(r.stdout, /urgent=0 inner=3/, `${JSON.stringify(argv)}\n${out(r)}`);
+    assert.equal(r.status, 0, out(r));
+  }
 });
