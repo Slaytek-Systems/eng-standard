@@ -55,6 +55,19 @@ test('a budget parses from a check header; missing parts and a missing header ta
   assert.equal(env.NODE_OPTIONS, '--enable-source-maps --max-old-space-size=768', 'the caller\'s NODE_OPTIONS stay');
   assert.equal(env.GRADLE_OPTS, '-Dorg.gradle.workers.max=1');
 });
+// PR 50, round 10: a check inside an `eng run --budget` inherited the run's flags and got eng's own flags twice.
+test('tool flags inside an outer eng budget replace the flags eng set there and keep the user\'s own', () => {
+  const outer = toolEnv(DEFAULT_BUDGET, { JAVA_TOOL_OPTIONS: '-Dfile.encoding=UTF-8', NODE_OPTIONS: '--enable-source-maps' });
+  const same = toolEnv(DEFAULT_BUDGET, outer), inner = toolEnv({ memoryMb: 1024, workers: 1, timeoutS: 60 }, outer);
+  assert.equal(same.JAVA_TOOL_OPTIONS, '-Dfile.encoding=UTF-8 -Xmx1536m -XX:ActiveProcessorCount=2');
+  assert.equal(same.NODE_OPTIONS, '--enable-source-maps --max-old-space-size=1536');
+  assert.equal(same.GRADLE_OPTS, '-Dorg.gradle.workers.max=2');
+  assert.equal(inner.JAVA_TOOL_OPTIONS, '-Dfile.encoding=UTF-8 -Xmx768m -XX:ActiveProcessorCount=1');
+  assert.equal(inner.NODE_OPTIONS, '--enable-source-maps --max-old-space-size=768');
+  assert.equal(inner.GRADLE_OPTS, '-Dorg.gradle.workers.max=1');
+  const own = toolEnv(DEFAULT_BUDGET, { ENG_BUDGET_HEAP_MB: '1536', ENG_BUDGET_WORKERS: '2', JAVA_TOOL_OPTIONS: '-Xmx1536m -XX:ActiveProcessorCount=2 -Dx=1' });
+  assert.equal(own.JAVA_TOOL_OPTIONS, '-Xmx1536m -XX:ActiveProcessorCount=2 -Dx=1 -Xmx1536m -XX:ActiveProcessorCount=2', 'flags that are not eng\'s trailing ones are the user\'s and stay');
+});
 
 test('admission: a check starts only while the budgets fit; one bigger than the machine never starts', () => {
   const m = { memoryMb: 1000, cores: 4 }, b = (memoryMb, workers = 1) => ({ memoryMb, workers, timeoutS: 1 });
@@ -87,7 +100,7 @@ test('a check that runs past its timeout is stopped and fails, naming the budget
 
 test('a check with no budget runs under the default, and its tools get the matching flags', () => {
   checks({ plain: '#!/usr/bin/env bash\ngot="mem=$ENG_BUDGET_MEMORY_MB workers=$ENG_BUDGET_WORKERS java=$JAVA_TOOL_OPTIONS"\n[ "$got" = "mem=2048 workers=2 java=-Xmx1536m -XX:ActiveProcessorCount=2" ] || { echo "eng: FAIL check saw $got"; exit 1; }\n' });
-  const r = eng(['gate', 'checks']);
+  const r = eng(['gate', 'checks'], toolEnv(DEFAULT_BUDGET, {}));
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /start\s+check:plain \(light, default budget: memory 2048 MB, 2 workers, timeout 1800s\)/);
   assert.match(r.stdout, /pass\s+check:plain check plain: passed 1\/1/);
@@ -389,6 +402,35 @@ test('eng run --by around a deferring gate piped through cat records exit 3', ()
   assert.match(r.stderr, /eng run: INCOMPLETE \(exit 3\): a gate inside the command ended incomplete \(exit 3\)/);
   assert.equal(runsBy('piped-run').at(-1).exit, 3);
 });
+// ---------- verdict finding on ccc07e8 (PR 50, round 10): `eng run --by x -- eng run test` ended INCOMPLETE after 364 green
+// tests. `eng run test` runs the suite in bwrap, whose user namespace cannot read the outer run's /proc/<pid>/cwd, and a
+// fixture repo's deferring gate signalled the listener it could not place. A gate with no repository did the same. A
+// deferral in repository B never reaches a listener in repository A. ----------
+const FIXTURE_SUITE = `import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const [eng, cfg] = process.argv.slice(2), sh = (cmd, cwd) => spawnSync('sh', ['-c', cmd], { cwd, encoding: 'utf8', env: { ...process.env, CI: '' } });
+const repo = (dir, git) => { fs.mkdirSync(dir + '/.eng/checks', { recursive: true }); fs.copyFileSync(cfg, dir + '/eng.config.yml');
+  fs.writeFileSync(dir + '/.eng/checks/model.sh', ${JSON.stringify(DEFERRING.model)}, { mode: 0o755 }); if (git) sh('git init -q -b main', dir); return dir; };
+const b = repo(fs.mkdtempSync(process.env.TMPDIR + '/fixture-b-'), true), none = repo(fs.mkdtempSync('/tmp/eng-no-repo-'), false);
+const gate = \`\${process.execPath} \${eng} gate check:model\`, sandbox = spawnSync('bwrap', ['--dev-bind', '/', '/', '--', 'true']).status === 0;
+const runs = [['b direct', gate + '; echo exit=$?', b], ['b piped', gate + ' | cat; echo piped', b], ['no repository, piped', gate + ' | cat; echo piped', none]];
+if (sandbox) runs.push(['b in bwrap, piped', \`bwrap --dev-bind / / -- sh -c '\${gate} | cat'; echo piped\`, b]);
+for (const [name, cmd, cwd] of runs) { const r = sh(cmd, cwd); console.log(\`fixture \${name}: \${/deferred\\s+check:model/.test(r.stdout) ? 'deferred' : 'NOT DEFERRED'} \${r.stdout.trim().split('\\n').at(-1)}\`); }
+for (const d of [b, none]) fs.rmSync(d, { recursive: true, force: true });
+`;
+for (const how of hows) test(`a test suite's fixture gates that defer in another repository, or in none, leave eng run --by on this one at exit 0 (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  checks({ light: DEFERRING.light });
+  const suite = path.join(dir, '..', `fixture-suite-${how}.mjs`); fs.writeFileSync(suite, FIXTURE_SUITE); t.after(() => fs.rmSync(suite, { force: true }));
+  const by = `fixture-suite-${how}`;
+  const r = eng(['run', '--by', by, '--budget', 'memory=512M workers=1 timeout=60s', '--', process.execPath, suite, ENG, path.join(dir, 'eng.config.yml')], { ENG_BUDGET_ENFORCER: how });
+  t.diagnostic(r.stdout);
+  for (const line of ['b direct: deferred exit=3', 'b piped: deferred piped', 'no repository, piped: deferred piped']) assert.ok(r.stdout.includes(`fixture ${line}`), `the fixture gate ran and deferred: ${out(r)}`);
+  assert.doesNotMatch(r.stdout, /NOT DEFERRED/);
+  assert.equal(r.status, 0, out(r));
+  assert.doesNotMatch(r.stderr, /INCOMPLETE/);
+  assert.equal(runsBy(by).at(-1).exit, 0, JSON.stringify(runsBy(by).at(-1)));
+});
 test('a deferring gate in another process tree does not mark a gate that is running', async () => {
   checks({ ...DEFERRING, slow: '#!/bin/sh\nsleep 2\n' });
   const { spawn } = await import('node:child_process');
@@ -529,10 +571,30 @@ test('eng gate exits 0 only when every selected check ran and passed; a deferred
 // supervisor handed `eng.mjs gate` as arguments, with its own SIGURG handler, got the inner gate's signal and reported a
 // failure of its own. eng now signals a process only when eng is the program itself: argv[0], or a JS runtime's entry
 // script after the runtime's own options. ----------
-test('listens: only a process that named itself eng-listening is a recipient, never one with eng in its arguments', async () => {
+// PR 50, round 10: `node eng gate` leaves 13 bytes of argv, so the old title `eng-listening gate` was cut to `eng-listening`
+// and the enclosing gate missed the notice.
+test('the shortest launch, node eng gate, shows the whole eng@gate title and gets the notice from a deferring inner gate', { skip: process.platform !== 'linux' && 'reads /proc' }, async t => {
+  checks({ wrapper: `#!/bin/sh\nsleep 1\ncd sub && ${process.execPath} ${ENG} gate check:model | cat  # nested gate: the subject under test\n` });
+  const c = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')); c.verification.checks_dir = '../.eng/heavy';
+  fs.mkdirSync(path.join(dir, 'sub')); fs.writeFileSync(path.join(dir, 'sub', 'eng.config.yml'), YAML.stringify(c));
+  fs.mkdirSync(path.join(dir, '.eng/heavy')); fs.writeFileSync(path.join(dir, '.eng/heavy', 'model.sh'), DEFERRING.model, { mode: 0o755 });
+  fs.symlinkSync(ENG, path.join(dir, 'eng'));
+  t.after(() => { for (const p of ['sub', '.eng/heavy', 'eng']) fs.rmSync(path.join(dir, p), { recursive: true, force: true }); });
+  const { spawn } = await import('node:child_process');
+  const env = { ...process.env, ENG_BUDGET_ENFORCER: 'watchdog' }; delete env.CI;
+  const g = spawn('node', ['eng', 'gate'], { cwd: dir, env });
+  let text = ''; g.stdout.on('data', d => { text += d; }); g.stderr.on('data', d => { text += d; });
+  const code = new Promise(r => g.on('close', r));
+  let title = '';
+  for (let i = 0; i < 100 && !title.startsWith('eng@'); i++) { await new Promise(r => setTimeout(r, 20)); try { title = fs.readFileSync(`/proc/${g.pid}/cmdline`, 'utf8').replace(/\0+$/, ''); } catch {} }
+  assert.equal(title, 'eng@gate', `the whole title is in /proc/${g.pid}/cmdline`);
+  assert.equal(await code, 3, text);
+  assert.match(text, /INCOMPLETE\s+check:wrapper\s+eng: INCOMPLETE check:wrapper: a gate inside it ended incomplete/);
+});
+test('listens: only a process that named itself eng@gate or eng@run is a recipient, never one with eng in its arguments', async () => {
   const { listens } = await import('../lib/nested.mjs');
-  const yes = [['eng-listening gate', '', ''], ['eng-listening run', ''], ['eng-listening', 'gate']];
-  const no = [['node', '/p/bin/eng.mjs', 'gate'], ['node', '/x/supervisor.mjs', '/p/bin/eng.mjs', 'gate'], ['node', '--eval=0', '/p/eng.mjs', 'gate'], ['node', '-', '/p/eng.mjs', 'gate'], ['node', '--diagnostic-dir', '/p/eng.mjs', 'gate'], ['bun', '--cwd', '/p/eng.mjs', 'gate'], ['sh', '-c', 'eng-listening gate'], ['eng-listening lint'], []];
+  const yes = [['eng@gate', '', ''], ['eng@run', '']];
+  const no = [['node', '/p/bin/eng.mjs', 'gate'], ['node', '/x/supervisor.mjs', '/p/bin/eng.mjs', 'gate'], ['node', '--eval=0', '/p/eng.mjs', 'gate'], ['node', '-', '/p/eng.mjs', 'gate'], ['node', '--diagnostic-dir', '/p/eng.mjs', 'gate'], ['bun', '--cwd', '/p/eng.mjs', 'gate'], ['sh', '-c', 'eng@gate'], ['eng@lint'], ['eng@gate', 'x'], ['eng-listening gate'], []];
   for (const a of yes) assert.equal(listens(a), true, JSON.stringify(a));
   for (const a of no) assert.equal(listens(a), false, JSON.stringify(a));
 });
