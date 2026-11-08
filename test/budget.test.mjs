@@ -356,6 +356,54 @@ for (const nested of [false, true]) test(`a gate under env -i that deferred a fa
   const v = eng(['verdict', 'PASS', '--by', by]);
   assert.notEqual(v.status, 0, out(v));
 });
+// ---------- verdict finding on f1b160f (PR 50, round 4): a check ran an inner gate through `| cat`, so the inner exit 3
+// was lost and the outer gate passed. A check is a leaf (eng lint), and an inner gate that defers tells the gates and runs
+// that enclose it out of band (lib/nested.mjs), so the outer one is incomplete whatever the pipeline did. ----------
+const PIPED = pre => `#!/bin/sh\n${pre}${process.execPath} ${ENG} gate check:model | cat\n`;
+for (const how of hows) for (const [name, pre] of [['through | cat', ''], ['under env -i and through | cat', `/usr/bin/env -i PATH=${process.env.PATH} HOME=${process.env.HOME} `]]) test(`a check that runs a deferring gate ${name} makes the outer gate exit 3, and its record cannot back a PASS (${how} path)`, async t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  checks({ ...DEFERRING, wrapper: PIPED(pre) });
+  const by = `piped-${how}-${pre ? 'env' : 'plain'}`;
+  const r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'check:wrapper'], { ENG_BUDGET_ENFORCER: how });
+  assert.equal(r.status, 3, out(r));
+  assert.match(r.stdout, /INCOMPLETE\s+check:wrapper\s+eng: INCOMPLETE check:wrapper: a gate inside it deferred model/);
+  assert.doesNotMatch(r.stdout, /eng gate: PASS/);
+  const rec = runsBy(by).at(-1);
+  assert.equal(rec.exit, 3, JSON.stringify(rec));
+  const { passProblem } = await import('../lib/verification.mjs');
+  assert.ok(passProblem({ method: 'verification', sha: rec.sha, runs: [rec] }, ['lib/x.mjs']));
+  const v = eng(['verdict', 'PASS', '--by', by]);
+  assert.notEqual(v.status, 0, out(v)); assert.match(out(v), /exited 3/);
+});
+test('eng run --by around a deferring gate piped through cat records exit 3', () => {
+  checks(DEFERRING);
+  const r = eng(['run', '--by', 'piped-run', '--', 'sh', '-c', `${process.execPath} ${ENG} gate checks | cat`], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 3, out(r));
+  assert.match(r.stderr, /eng run: INCOMPLETE \(exit 3\): a gate inside the command deferred model/);
+  assert.equal(runsBy('piped-run').at(-1).exit, 3);
+});
+test('a deferring gate in another process tree does not mark a gate that is running', async () => {
+  checks({ ...DEFERRING, slow: '#!/bin/sh\nsleep 2\n' });
+  const { spawn } = await import('node:child_process');
+  const a = spawn(process.execPath, [ENG, 'gate', 'check:slow'], { cwd: dir, env: { ...process.env, CI: '', ENG_BUDGET_ENFORCER: 'watchdog' } });
+  let text = ''; a.stdout.on('data', d => { text += d; }); a.stderr.on('data', d => { text += d; });
+  const code = new Promise(r => a.on('close', r));
+  await new Promise(r => setTimeout(r, 700));
+  const b = eng(['gate', 'check:model']);
+  assert.equal(b.status, 3, out(b));
+  assert.equal(await code, 0, text);
+  assert.match(text, /eng gate: PASS/);
+});
+test('eng lint fails a check script that runs eng gate, and accepts one marked as a deliberate nested gate', () => {
+  for (const bad of ['node ./bin/eng.mjs gate check:model | cat', '$eng gate', '"${ENG}" gate checks', 'npx eng gate --heavy', 'out=$(eng gate 2>&1)']) {
+    checks({ wrapper: `#!/bin/sh\n${bad}\n` });
+    const r = eng(['lint']); assert.equal(r.status, 1, `${bad}\n${out(r)}`); assert.match(r.stderr, /wrapper\.sh:2: \[check-runs-gate\] A check is a leaf/);
+  }
+  for (const ok of ['echo "eng gate passed"', '# eng gate in a comment', '$eng gate  # nested gate: the gate of a fixture repo is the subject under test', 'eng run --by x -- npm test']) {
+    checks({ wrapper: `#!/bin/sh\n${ok}\n` });
+    const r = eng(['lint']); assert.equal(r.status, 0, `${ok}\n${out(r)}`);
+  }
+});
 test('eng gate exits 0 only when every selected check ran and passed; a deferred check makes it exit 3', () => {
   checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 0\n' });
   let r = eng(['gate', 'checks']);
