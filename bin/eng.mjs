@@ -13,12 +13,12 @@ import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
-import { scratchRun, RUN_USAGE, noteDeferred } from '../lib/run.mjs';
+import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
 import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps, deferredProblem } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
@@ -592,12 +592,10 @@ function verdictRecord(result) {
     if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one run per check: eng run --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
     const bad = runs.find(r => r.exit !== 0);
     if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix it and re-run that same command until it passes`);
-    const def = deferredProblem(runs);
-    if (def) die(`verdict: ${def}`);
   }
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
   const rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, method,
-    ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at, deferred }) => ({ cmd, exit, output, sha, at, ...(deferred ? { deferred } : {}) })) } : {}),
+    ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at }) => ({ cmd, exit, output, sha, at })) } : {}),
     ...Object.fromEntries([['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
   sh(`git notes --ref ${VNOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${H}`);
   console.log(`eng verdict: recorded ${result} (${method}${runs.length ? `, ${runs.length} run${runs.length === 1 ? '' : 's'}` : ''}) by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
@@ -655,7 +653,9 @@ function verdictCheck() {
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
 // declared runs that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its
 // own identity. Stages: light checks run everywhere; heavy ones run in CI (CI set) or with --heavy, and are listed as
-// deferred otherwise. Each check runs under its budget (lib/budget.mjs), in order (side by side with verification.parallel).
+// deferred otherwise, which makes the gate exit 3 (incomplete), never 0. Each check runs under its budget (lib/budget.mjs),
+// in order (side by side with verification.parallel).
+const GATE_INCOMPLETE = 3;
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
@@ -670,9 +670,6 @@ async function gate() {
   let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
   const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
   console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
-  // An incomplete stage never certifies full verification: under eng run --by, however deeply nested, the deferred checks
-  // go in the run's record, and eng verdict refuses that run as PASS evidence (lib/run.mjs noteDeferred).
-  if (deferred.length) { try { noteDeferred(sh('git rev-parse --path-format=absolute --git-common-dir'), sh('git rev-parse HEAD'), deferred.map(s => s.check.id)); } catch (e) { die(`gate: cannot record the deferred heavy checks for the enclosing eng run (${e.message}); it would count as a full verification`); } }
   const done = await runChecks(bounded, how, t, keep, parallel);
   const res = [];
   for (const s of steps) {
@@ -691,7 +688,13 @@ async function gate() {
   }
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
   if (res.some(r => !['pass', 'deferred'].includes(r[1]))) die('gate: not all required gates passed');
-  console.log(`eng gate: PASS${deferred.length ? ` (light stage; ${deferred.length} heavy check(s) deferred to CI or eng gate --heavy: ${deferred.map(s => s.check.id).join(', ')})` : ''}`);
+  // Exit 0 means every selected check ran and passed, nothing else. A deferred check makes the gate incomplete (exit 3), so
+  // every caller (eng run --by, eng verdict, CI, a script) sees it from the exit code alone, whatever environment it had.
+  if (deferred.length) {
+    console.log(`eng gate: INCOMPLETE (exit 3). The light checks passed, and every other step that ran. Deferred, not run: ${deferred.map(s => s.check.id).join(', ')}. Run them with eng gate --heavy, or in CI; only exit 0 means every selected check ran and passed.`);
+    process.exit(GATE_INCOMPLETE);
+  }
+  console.log('eng gate: PASS');
 }
 // A step's row: [name, status, the line that says why, more lines]. Removes the step's private TMPDIR and reports what it left.
 function stepResult(g, status, text, own, keep) {
@@ -814,7 +817,7 @@ const COMMANDS = [
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
-  ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy. Named steps run only those (checks = the scripts)', gate],
+  ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],
   ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];

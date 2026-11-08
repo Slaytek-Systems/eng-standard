@@ -102,10 +102,10 @@ test('a header eng cannot read fails the check and says why', () => {
 test('a heavy check runs in CI or with --heavy, and is listed as deferred, not passed, in a local run', () => {
   checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=256M workers=1\nexit 1\n' });
   let r = eng(['gate', 'checks']);
-  assert.equal(r.status, 0, out(r));
+  assert.equal(r.status, 3, out(r));
   assert.match(r.stdout, /stage: light \(heavy checks run in CI, or here with eng gate --heavy\)/);
   assert.match(r.stdout, /deferred\s+check:model heavy check, not run in this stage/);
-  assert.match(r.stdout, /eng gate: PASS \(light stage; 1 heavy check\(s\) deferred to CI or eng gate --heavy: model\)/);
+  assert.match(r.stdout, /eng gate: INCOMPLETE \(exit 3\)\. The light checks passed, and every other step that ran\. Deferred, not run: model\./);
   r = eng(['gate', 'checks', '--heavy']);
   assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /stage: light and heavy \(--heavy\)/); assert.match(r.stdout, /FAIL\s+check:model/);
   r = eng(['gate', 'checks'], { CI: 'true' });
@@ -233,13 +233,12 @@ test('a light stage that deferred a heavy check is not verdict evidence: eng ver
   checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=256M workers=1\nexit 1\n' });
   const by = 'deferred-probe';
   let r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'checks']);
-  assert.equal(r.status, 0, out(r));
+  assert.equal(r.status, 3, out(r));
   assert.match(r.stdout, /deferred\s+check:model/);
-  const rec = runsBy(by).at(-1);
-  assert.deepEqual(rec.deferred, ['model'], `the run says what it deferred: ${JSON.stringify(rec)}`);
+  assert.equal(runsBy(by).at(-1).exit, 3, `the run records the incomplete gate: ${JSON.stringify(runsBy(by).at(-1))}`);
   r = eng(['verdict', 'PASS', '--by', by]);
   assert.notEqual(r.status, 0, out(r));
-  assert.match(out(r), /deferred heavy check\(s\) model/);
+  assert.match(out(r), /exited 3/);
   r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'checks', '--heavy']);
   assert.notEqual(r.status, 0, 'run in full, the heavy check fails the gate');
 });
@@ -308,47 +307,20 @@ test('checks run one after another unless verification.parallel is true; in para
   } finally { fs.writeFileSync(cfgFile, orig); git('commit -qam unparallel --allow-empty'); }
 });
 
-test('eng verdict check does not count a recorded PASS whose run deferred heavy checks', async () => {
-  const { passProblem } = await import('../lib/verification.mjs');
-  const run = { cmd: 'eng gate checks', exit: 0, output: 'eng gate: PASS', sha: 'abc' };
-  assert.equal(passProblem({ method: 'verification', sha: 'abc', runs: [run] }, ['lib/x.mjs']), null, 'a full run counts');
-  assert.match(passProblem({ method: 'verification', sha: 'abc', runs: [{ ...run, deferred: ['model'] }] }, ['lib/x.mjs']), /deferred heavy check\(s\) model: it is not a full verification/);
-});
-
+const DEFERRING = { light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n' };
 // ---------- verdict findings on 8657413 (PR 50, round 2): a nested eng run keeps its deferrals; env -i does not leave the
 // watchdog ----------
-const fixtureRepo = () => {
-  const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-fixture-'));
-  const g = c => execSync(`git ${c}`, { cwd: d, stdio: 'pipe' });
-  g('init -q -b main'); g('config user.email t@t'); g('config user.name t');
-  fs.copyFileSync(path.join(dir, 'eng.config.yml'), path.join(d, 'eng.config.yml'));
-  fs.mkdirSync(path.join(d, '.eng/checks'), { recursive: true });
-  fs.writeFileSync(path.join(d, '.eng/checks/model.sh'), '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n', { mode: 0o755 });
-  g('add -A'); g('commit -qm fixture');
-  return d;
-};
-for (const inner of [[], ['--by', 'nested-inner']]) test(`a nested eng run ${inner.length ? 'with' : 'without'} --by keeps the deferred heavy check in the outer record`, () => {
-  checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n' });
+for (const inner of [[], ['--by', 'nested-inner']]) test(`a nested eng run ${inner.length ? 'with' : 'without'} --by passes the inner gate's incomplete exit to the outer record`, () => {
+  checks(DEFERRING);
   const by = `nested-outer-${inner.length}`;
   let r = eng(['run', '--by', by, '--', process.execPath, ENG, 'run', ...inner, '--', process.execPath, ENG, 'gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
-  assert.equal(r.status, 0, out(r));
+  assert.equal(r.status, 3, out(r));
   assert.match(r.stdout, /deferred\s+check:model/);
-  assert.deepEqual(runsBy(by).at(-1).deferred, ['model'], `the outer record says what the inner gate deferred: ${JSON.stringify(runsBy(by).at(-1))}`);
-  if (inner.length) assert.deepEqual(runsBy('nested-inner').at(-1).deferred, ['model'], 'the inner record says so too');
+  assert.equal(runsBy(by).at(-1).exit, 3, `the outer record says the run was incomplete: ${JSON.stringify(runsBy(by).at(-1))}`);
+  if (inner.length) assert.equal(runsBy('nested-inner').at(-1).exit, 3, 'the inner record says so too');
   r = eng(['verdict', 'PASS', '--by', by]);
   assert.notEqual(r.status, 0, out(r));
-  assert.match(out(r), /deferred heavy check\(s\) model/);
-});
-test('a gate on an unrelated fixture repo, run inside eng run --by, does not mark the outer record', () => {
-  checks({ light: '#!/bin/sh\nexit 0\n' });
-  const fx = fixtureRepo();
-  try {
-    const by = 'fixture-outer';
-    const r = eng(['run', '--by', by, '--', 'sh', '-c', `cd ${JSON.stringify(fx)} && ${JSON.stringify(process.execPath)} ${JSON.stringify(ENG)} gate checks`], { ENG_BUDGET_ENFORCER: 'watchdog' });
-    assert.equal(r.status, 0, out(r));
-    assert.match(r.stdout, /deferred\s+check:model/, 'the fixture gate deferred its heavy check');
-    assert.equal(runsBy(by).at(-1).deferred, undefined, `the outer record is not marked: ${JSON.stringify(runsBy(by).at(-1))}`);
-  } finally { fs.rmSync(fx, { recursive: true, force: true }); }
+  assert.match(out(r), /exited 3/);
 });
 
 // The allocator takes 32 MB every 40 ms up to 640 MB, holds 1s, then exits 0 by itself.
@@ -371,7 +343,6 @@ test('a check that runs its allocator under env -i fails the gate on the watchdo
 
 // ---------- verdict finding on 771c7ea (PR 50, round 3): a gate under env -i lost its deferral and counted as a pass.
 // A gate that deferred a check exits 3 (incomplete), so every caller sees it, whatever environment the gate had. ----------
-const DEFERRING = { light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n' };
 const CLEAN_GATE = ['/usr/bin/env', '-i', `PATH=${process.env.PATH}`, `HOME=${process.env.HOME}`, 'ENG_BUDGET_ENFORCER=watchdog', process.execPath, ENG, 'gate', 'checks'];
 for (const nested of [false, true]) test(`a gate under env -i that deferred a failing heavy check is not a pass for the ${nested ? 'nested' : 'direct'} enclosing eng run --by`, async () => {
   checks(DEFERRING);
@@ -391,7 +362,7 @@ test('eng gate exits 0 only when every selected check ran and passed; a deferred
   assert.equal(r.status, 3, out(r));
   assert.match(out(r), /INCOMPLETE/);
   assert.match(out(r), /light checks passed/);
-  assert.match(out(r), /deferred: model/);
+  assert.match(out(r), /Deferred, not run: model/);
   assert.match(out(r), /eng gate --heavy/);
   r = eng(['gate', 'checks', '--heavy']);
   assert.equal(r.status, 0, out(r));
