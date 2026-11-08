@@ -37,6 +37,7 @@ ship:
       - "lib/risk.mjs"
       - "lib/self-merge.mjs"
       - "lib/verification.mjs"    # which verdicts count: verification evidence, review-only paths
+      - "lib/budget.mjs"          # check weights and budgets, imported by lib/verification.mjs
       - "lib/run.mjs"             # eng run --by: writes the verdict evidence runs
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"

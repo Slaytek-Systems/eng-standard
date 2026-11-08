@@ -2,6 +2,20 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.16.0 (8 Nov 2026)
+
+**Checks are chosen and sized up front** (Matt, 8 Nov 2026; incident Core nd7ergzhq2anaav9ynqkqhfcr18hvk84: an ad hoc TLC run with no -Xmx reached 4.19 GB RSS with ~15 agent sessions running, swap hit 100%, and sshd and T3 Connect stopped answering). Anyone can run a repo's checks without a heavy tool locking the machine up. No new command.
+
+- **Tool choice, as suggestions.** `standard/checks.yml` is the suggested-tool catalog for checks. Each entry states its cost (runtime, typical memory and time), when it earns that cost, its weight and a starting budget. Formal checks default to the repo's own runtime (property tests; `statechart` for flows). TLC, Apalache and Alloy are suggested only for concurrency or distributed protocols, as heavy checks. `standard/tools/tlc.sh` is a pinned (tla2tools 1.7.4), SHA-256-checked, bounded TLC runner (-Xmx768m, -workers 1, timeout 120s; under eng the check's budget sets them).
+- **Weight and stage.** A check declares `# weight: heavy` in its header (default light). `eng gate` runs light checks everywhere; heavy ones run in CI (`CI` set) or with `eng gate --heavy`. A local run lists a heavy check as `deferred`, never as passed, and the summary names it. The first line of `eng gate` says which stage runs.
+- **Budget, the safety net.** A check declares `# budget: memory=768M workers=1 timeout=120s`; missing parts take the default (memory 3072 MB, 2 workers, timeout 1800s). `eng gate` enforces it: a transient `systemd-run --user --scope` with MemoryMax, MemorySwapMax=0 and CPUQuota where that works unprivileged, otherwise a timeout plus an RSS watchdog over the process tree. Each check also gets its tool flags in its own env only: `JAVA_TOOL_OPTIONS=-Xmx<75%> -XX:ActiveProcessorCount=<workers>`, `NODE_OPTIONS=--max-old-space-size=<75%>`, `GRADLE_OPTS=-Dorg.gradle.workers.max=<workers>`, and `ENG_BUDGET_MEMORY_MB`, `ENG_BUDGET_HEAP_MB`, `ENG_BUDGET_WORKERS`, `ENG_BUDGET_TIMEOUT_S` for TLC's `-workers` and the like. A check its budget stops fails, and the message names the budget and where to raise it. A header eng cannot read fails the check.
+- **Side by side only while it fits.** Checks run in parallel while their budgets fit the memory free when the gate started (MemAvailable; `ENG_BUDGET_FREE_MB` caps it) and the cores; a check that does not fit waits and says so. One whose budget is more than the free memory is not started and fails, saying so.
+- **`eng run -- <cmd>`** runs under the default budget, or `--budget "memory=4G workers=2 timeout=10m"`, and prints the budget and the enforcer. A command its budget stops exits non-zero with the budget named, and a `--by` run records that as evidence.
+- **`eng lint`** rule `heavy-tool-unbounded`: java, tlc, apalache, alloy or gradle called in a `verification.checks_dir` script with no bound (-Xmx, --max-workers, `ENG_BUDGET_*`, or `eng run`) fails. `eng rules prove` bites it on the incident's shape.
+- **Rendered AGENTS.md** gets "Checks are chosen and sized up front": run heavy tools through `eng run --`, declare weight and budget, how stages work, and where the catalog is.
+- `ENG_BUDGET_ENFORCER=systemd|watchdog` picks the path; asking for systemd where it does not work fails rather than falling back.
+- **Upgrade:** zero manual edits. Move the pin, run `eng sync` (AGENTS.md changes), commit. No config key is added or retired. Every check that ran before still runs: an undeclared check is light, so it runs in every stage, under the default budget. A check that needs more than 3 GB, more than 30 minutes, or raw java/gradle in its script now fails loudly; declare `# budget:` (or pass the bound) in that script.
+
 ## 0.15.0 (8 Nov 2026)
 
 **The standard carries its own instructions** (Matt; replaces PR #43, fitted onto the 0.14.0 hallway with no new command). Any agent in a repo can learn from the repo how the standard stays current, how to upgrade it and how to remove it.

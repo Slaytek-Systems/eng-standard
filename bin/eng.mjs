@@ -23,6 +23,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE } from '../lib/budget.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -253,6 +254,8 @@ function builtinRules(cfg) {
   const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
   if (cfg.hygiene?.disk_lint !== false) r.push(...DISK_RULES.filter(d => d.id !== 'cargo-target-per-run' || cacheMode !== 'off')
     .map(d => ({ ...d, ...(d.id === 'cargo-target-per-run' && cacheMode === 'warn' ? { warn: true } : {}), proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
+  // Heavy tools in a check script need their bound (lib/budget.mjs); the TLC incident of 8 Nov 2026.
+  r.push({ ...HEAVY_TOOL_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${HEAVY_TOOL_RULE.id}` } });
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
@@ -642,42 +645,93 @@ function verdictCheck() {
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 
-// eng gate [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then declared runs
-// that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its own identity.
-function gate() {
-  const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
+// eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
+// declared runs that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its
+// own identity. Stages: light checks run everywhere; heavy ones run in CI (CI set) or with --heavy, and are listed as
+// deferred otherwise. Each check runs under its budget (lib/budget.mjs), side by side while the budgets fit.
+async function gate() {
+  const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   const dir = checksDir(cfg), abs = path.join(ROOT, dir), entries = fs.existsSync(abs) ? fs.readdirSync(abs, { withFileTypes: true }).map(e => [e.name, e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name), { throwIfNoEntry: false })?.isFile()) ? 'file' : e.isDirectory() ? 'dir' : 'other']) : null;
-  const checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg), quote: quoteArg });
+  const checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg) });
   const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
   for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
+  const ci = !!process.env.CI && process.env.CI !== 'false', heavy = ci || a.includes('--heavy');
+  let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
+  const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s));
+  console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}`);
+  const done = await runChecks(bounded, how, t, keep);
+  const res = [];
   for (const s of steps) {
     const g = s.name;
     if (s.none) { res.push([g, 'pass', s.none, []]); continue; }
     if (s.fail) { res.push([g, 'FAIL', s.fail, []]); continue; }
-    const n = g.replace(/^ephemeral:/, ''), c = s.cmd ?? (wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g]);
+    if (deferred.includes(s)) { res.push([g, 'deferred', `heavy check, not run in this stage: CI runs it, or run eng gate --heavy (${budgetText(s.check.budget)})`, []]); continue; }
+    if (s.check) { res.push(done.get(s)); continue; }
+    const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
     const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
     const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
-    const left = leftovers(own); fs.rmSync(own, { recursive: true, force: true });
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
-    const lines = (r.stdout + r.stderr).trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
-    const why = r.status === 0 ? lines.at(-1) : lines.find(x => /AssertionError|Error:|FAIL |✗|×|\bfailed\b|eng: FAIL/.test(x)) ?? lines.at(-1);
-    // A failing eng subcommand's die() puts its detail on the lines after "eng: FAIL ...:"; print them, not just the header.
-    const at = lines.indexOf(why), more = r.status !== 0 && /eng: FAIL .*:$/.test(why ?? '') ? lines.slice(at + 1, at + 21) : [];
-    if (left.length && keep !== 'off') {
-      if (keep === 'fail' && r.status === 0) { res.push([g, 'FAIL', leftText(left), []]); continue; }
-      more.push(`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`);
-    }
-    res.push([g, r.status === 0 ? 'pass' : r.status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more]);
+    res.push(stepResult(g, r.status, r.stdout + r.stderr, own, keep));
   }
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
-  if (res.some(r => r[1] !== 'pass')) die('gate: not all required gates passed');
-  console.log('eng gate: PASS');
+  if (res.some(r => !['pass', 'deferred'].includes(r[1]))) die('gate: not all required gates passed');
+  console.log(`eng gate: PASS${deferred.length ? ` (light stage; ${deferred.length} heavy check(s) deferred to CI or eng gate --heavy: ${deferred.map(s => s.check.id).join(', ')})` : ''}`);
+}
+// A step's row: [name, status, the line that says why, more lines]. Removes the step's private TMPDIR and reports what it left.
+function stepResult(g, status, text, own, keep) {
+  const left = leftovers(own); fs.rmSync(own, { recursive: true, force: true });
+  const lines = text.trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
+  const why = status === 0 ? lines.at(-1) : lines.find(x => /AssertionError|Error:|FAIL |✗|×|\bfailed\b|eng: FAIL/.test(x)) ?? lines.at(-1);
+  // A failing eng subcommand's die() puts its detail on the lines after "eng: FAIL ...:"; print them, not just the header.
+  const at = lines.indexOf(why), more = status !== 0 && /eng: FAIL .*:$/.test(why ?? '') ? lines.slice(at + 1, at + 21) : [];
+  if (left.length && keep !== 'off') {
+    if (keep === 'fail' && status === 0) return [g, 'FAIL', leftText(left), []];
+    more.push(`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`);
+  }
+  return [g, status === 0 ? 'pass' : status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more];
+}
+// Runs the checks under their budgets, side by side while the budgets fit the memory free when the gate started and the
+// cores; a check that does not fit waits for a running one to finish. Each check runs flake_runs times, one after another.
+async function runChecks(list, how, t, keep) {
+  const machine = { memoryMb: freeMemoryMb(), cores: cores() }, running = new Set(), waited = new Set(), live = new Set(), out = new Map();
+  process.on('exit', () => { for (const k of live) k(); });
+  const runCheck = async s => {
+    const { id, path: p, runs, budget, declared } = s.check, own = fs.mkdtempSync(path.join(t.dir, `${slug(s.name)}-`));
+    let passed = 0, text = '', stop = null;
+    for (let i = 0; i < runs && !stop; i++) {
+      const b = runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how });
+      live.add(b.kill);
+      const r = await b.result; live.delete(b.kill);
+      text += r.stdout + r.stderr;
+      if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
+    }
+    if (stop) { fs.rmSync(own, { recursive: true, force: true }); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, []]; }
+    const summary = passed === runs ? `check ${id}: passed ${runs}/${runs}` : passed === 0 ? `eng: FAIL check ${id}: failed ${runs}/${runs}` : `eng: FAIL check ${id}: FLAKY, passed ${passed}/${runs}`;
+    return stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep);
+  };
+  await new Promise(resolve => {
+    let i = 0;
+    const pump = () => {
+      while (i < list.length) {
+        const s = list[i], d = admit(s.check.budget, [...running], machine);
+        if (d === 'wait') { if (!waited.has(s)) console.log(`  wait   ${s.name}: its budget (${budgetText(s.check.budget)}) does not fit next to the ${running.size} running (${machine.memoryMb} MB free at start, ${machine.cores} cores)`); waited.add(s); break; }
+        i++;
+        if (d === 'never') { out.set(s, [s.name, 'FAIL', `eng: FAIL check ${s.check.id}: not started: its budget (${budgetText(s.check.budget)}) is more than the ${machine.memoryMb} MB free here; free memory, lower the budget, or let CI run it`, []]); continue; }
+        console.log(`  start  ${s.name} (${s.check.weight}, ${s.check.declared ? 'declared' : 'default'} budget: ${budgetText(s.check.budget)})`);
+        running.add(s.check.budget);
+        runCheck(s).then(r => { out.set(s, r); running.delete(s.check.budget); pump(); });
+      }
+      if (i >= list.length && !running.size) resolve();
+    };
+    pump();
+  });
+  return out;
 }
 // ---------- disk rules (Matt, 30 Oct 2026; Core nd79fdwd1p4hc5nk60j7rmbn518h6tsv). lib/disk-rules.mjs has each rule's default, options and check. ----------
 // Node/Bun module compile cache defaults to TMPDIR/node-compile-cache and is keyed by absolute path, so each worktree
@@ -747,7 +801,7 @@ const COMMANDS = [
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
-  ['gate', 'gate [<step>...]', 'run every script in verification.checks_dir, then every verifier in gates.required; skipped or missing = failed. Named steps run only those (checks = the scripts)', gate],
+  ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy. Named steps run only those (checks = the scripts)', gate],
   ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];

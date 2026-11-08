@@ -1,0 +1,52 @@
+# Suggested tools for checks: suggestions, not gates. eng does not audit repos against this file.
+# Rule (Matt, 8 Nov 2026): a check's tool and its limits are decided up front, not patched afterwards. Formal checks
+# default to the repo's own runtime; a JVM model checker is suggested only for concurrency or distributed protocols.
+# Each entry states its cost (runtime it needs, typical memory and time) and when it earns that cost. weight and budget
+# are what its check script declares in its header (lib/budget.mjs):
+#   # weight: light|heavy
+#   # budget: memory=<size> workers=<n> timeout=<duration>
+# Budgets below are starting points measured on small models; size each to the repo's own model and record why.
+version: 1
+default_budget: { memory: 3G, workers: 2, timeout: 30m }   # lib/budget.mjs DEFAULT_BUDGET, for a check that declares none
+
+tools:
+  property-tests:
+    use: "Property-based tests in the repo's own test runner (fast-check for TypeScript, Hypothesis for Python, proptest for Rust)"
+    runtime: the repo's own (no extra install)
+    memory: "about what the unit tests use (100-500 MB)"
+    time: "seconds"
+    earns_its_cost_when: "the default formal check for non-stateful code: parsers, encoders, money arithmetic, data-structure invariants"
+    weight: light
+    budget: "memory=1G workers=2 timeout=5m"
+  statechart:
+    use: "pstack statechart skill: a TLA+ model of a flow, drawn as a Mermaid statechart (the stateful default since #34)"
+    runtime: "TLC on a JVM (installed by mise on first run); the model is small, so the run is short"
+    memory: "300 MB-1 GB with a bounded heap; unbounded, TLC takes a quarter of RAM (4.19 GB in the 8 Nov 2026 incident)"
+    time: "seconds to a minute for a product flow"
+    earns_its_cost_when: "a flow that moves between states (merge flow, rollout, booking); run it through eng run -- or a check, so the JVM gets -Xmx"
+    weight: light
+    budget: "memory=1G workers=1 timeout=3m"
+  tlc:
+    use: "TLC model checker on a hand-written TLA+ spec; standard/tools/tlc.sh is a pinned, checksummed, bounded runner"
+    runtime: "JVM 11+ and tla2tools.jar 1.7.4 (2.2 MB, SHA-256 pinned in tlc.sh)"
+    memory: "768 MB heap in tlc.sh (-Xmx768m); grows with the state space, so bound it"
+    time: "a minute or more; state-space explosion is the usual failure, which the timeout stops"
+    earns_its_cost_when: "concurrency or a distributed protocol: interleavings tests cannot enumerate (leases, retries, two writers, message loss)"
+    weight: heavy
+    budget: "memory=1G workers=1 timeout=3m"
+  apalache:
+    use: "Apalache symbolic model checker for TLA+ (SMT-backed, bounded model checking)"
+    runtime: "JVM 17+ and Z3, from the Apalache release archive (about 200 MB unpacked)"
+    memory: "1-4 GB; set the heap with JVM_ARGS=-Xmx<size>"
+    time: "minutes"
+    earns_its_cost_when: "a distributed protocol whose state space is too large for TLC to enumerate, or with integer or unbounded data"
+    weight: heavy
+    budget: "memory=4G workers=2 timeout=15m"
+  alloy:
+    use: "Alloy Analyzer (SAT-backed relational models)"
+    runtime: "JVM 17+ and the Alloy jar"
+    memory: "500 MB-2 GB; set -Xmx"
+    time: "seconds to minutes, growing with the scope"
+    earns_its_cost_when: "structural or permission models with many relations (access-control graphs, schema invariants) where small-scope counterexamples matter"
+    weight: heavy
+    budget: "memory=2G workers=1 timeout=10m"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The 8 Nov 2026 incident: TLC run with no -Xmx reached 4.19 GB RSS and the devbox stopped answering.
+java -cp tla2tools.jar tlc2.TLC -workers auto DealMoments.tla
