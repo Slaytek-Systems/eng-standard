@@ -23,6 +23,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -79,6 +80,8 @@ function configErrors(c) {
 
 const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
+const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
+const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
 function render(cfg) {
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
@@ -132,7 +135,7 @@ function sync() {
   const ours = fs.existsSync(cl) ? fs.readdirSync(cl).map(n => `.claude/skills/${n}`).filter(l => { try { return fs.readlinkSync(path.join(ROOT, l)).startsWith(`../../${cfg.agents.skills_dir}/`) && !fs.existsSync(path.join(ROOT, l)); } catch { return false; } }) : [];
   for (const l of new Set([...old.links, ...ours])) if (!links.has(l)) { fs.rmSync(path.join(ROOT, l), { force: true }); console.log(`  unlinked ${l}`); changed++; }
   for (const d of [cfg.agents.skills_dir]) { const walk = x => { if (!fs.existsSync(x)) return; for (const e of fs.readdirSync(x, { withFileTypes: true })) if (e.isDirectory()) { walk(path.join(x, e.name)); if (!fs.readdirSync(path.join(x, e.name)).length) fs.rmdirSync(path.join(x, e.name)); } }; walk(path.join(ROOT, d)); }
-  const lock = lockText(JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'))).version, Object.keys(files), links);
+  const lock = lockText(pkgVersion(), Object.keys(files), links);
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
@@ -207,7 +210,8 @@ function syncCheck() {
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(claudeLinks(cfg).map(([l]) => l)))) bad.push('.eng/lock.json: config changed since last sync');
-  if (bad.length) die(`sync --check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
+  const std = standardProblems();
+  if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: edit eng.config.yml, then run eng sync.' : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
 
@@ -683,10 +687,32 @@ function evidenceCheck(cfg) {
 }
 // ---------- doctor: is this repo on the hallway? The config declares every piece the repo needs, each agents rule names its
 // enforcer, the merge settings match merge.auto, and the built-in disk rules find nothing new. --launch also proves launch:. ----------
-function doctor() {
+// Installed vs rendered vs latest eng-standard. The latest comes from eng-standard main on GitHub, or ENG_STANDARD_SOURCE
+// (a checkout or a base URL). Behind is a warning, not a failure: an upgrade is a choice. Unknown is said, never passed.
+async function upgradeInfo() {
+  const src = process.env.ENG_STANDARD_SOURCE || RAW_MAIN, web = /^https?:\/\//.test(src);
+  const read = async f => {
+    if (!web) return fs.readFileSync(path.join(src, f), 'utf8');
+    const r = await fetch(new URL(f, src.endsWith('/') ? src : `${src}/`), { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+    return r.text();
+  };
+  const installed = pkgVersion(), rendered = parseLock(readOr('.eng/lock.json')).package ?? 'none';
+  let latest, changelog;
+  try { latest = JSON.parse(await read('package.json')).version; changelog = await read('CHANGELOG.md'); }
+  catch (e) { return { line: `  WARN eng-standard: installed ${installed}, rendered ${rendered}, latest UNKNOWN: could not read ${src} (${e.message}). Not a pass: retry, or set ENG_STANDARD_SOURCE to an eng-standard checkout`, state: 'latest UNKNOWN' }; }
+  const head = `eng-standard: installed ${installed}, rendered ${rendered} (.eng/lock.json), latest ${latest} (${src})`;
+  if (!isBehind(installed, latest)) return { line: `  ok   ${head}`, state: 'CURRENT' };
+  const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
+  return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
+}
+async function doctor() {
   if (a.includes('--launch')) launchCheck();
+  const up = await upgradeInfo();
+  console.log(up.line);
   const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean), merges = mergeDoctor(cfg);
-  const checks = [...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' }))];
+  const checks = [...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+    ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
@@ -696,7 +722,7 @@ function doctor() {
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (merges.some(c => !c.ok)) mergeSettings(cfg);
   if (bad) die(`doctor: ${bad} problem(s) above`);
-  console.log(`eng doctor: PASS (${checks.length} config checks, ${DISK_RULE_IDS.length + 1} disk rules)`);
+  console.log(`eng doctor: PASS (${checks.length} config checks, ${DISK_RULE_IDS.length + 1} disk rules; eng-standard ${up.state})`);
 }
 
 const [cmd, ...a] = process.argv.slice(2);
@@ -711,7 +737,7 @@ const COMMANDS = [
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [<step>...]', 'run every script in verification.checks_dir, then every verifier in gates.required; skipped or missing = failed. Named steps run only those (checks = the scripts)', gate],
   ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
-  ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules; --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
+  ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
 function runCmd() {
   const dd = a.indexOf('--'), opts = dd >= 0 ? a.slice(0, dd) : a;

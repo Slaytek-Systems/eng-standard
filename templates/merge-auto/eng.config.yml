@@ -6,7 +6,7 @@ version: 1
 project:
   name: eng-standard
   default_branch: main
-  protected_branches: [main]      # Never rebased, force-pushed or deleted. Feature branches may be rebased.
+  protected_branches: [main]      # Never rebased, force-pushed or deleted. Pushed history on any branch is never rewritten.
   commands:
     test: npm test
 

@@ -90,10 +90,14 @@ test('an old-format lock (path: sha256, config_hash) is read, then rewritten in 
   assert.equal(r.eng('sync', '--check').status, 0);
 });
 
-test('an old-format lock that matches the config passes sync --check before any sync', () => {
+test('an old-format lock that matches the config fails sync --check only on its version, until eng sync', () => {
   const r = repo();
   writeOldLock(r);
-  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
+  const d = r.eng('sync', '--check');
+  assert.equal(d.status, 1);
+  assert.deepEqual(d.stderr.trim().split('\n').slice(1).map(l => l.trim()), [`.eng/lock.json: rendered by eng-standard 0.11.0, installed is ${JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version}. Fix: run eng sync and commit what it writes (docs/lifecycle.md, Upgrade)`]);
+  assert.equal(r.eng('sync').status, 0);
+  const ok = r.eng('sync', '--check'); assert.equal(ok.status, 0, ok.stderr);
 });
 
 test('sync --check still fails when the config changes what eng sync manages, until eng sync runs', () => {

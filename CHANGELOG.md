@@ -2,6 +2,21 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.15.0 (8 Nov 2026)
+
+**The standard carries its own instructions** (Matt; replaces PR #43, fitted onto the 0.14.0 hallway with no new command). Any agent in a repo can learn from the repo how the standard stays current, how to upgrade it and how to remove it.
+
+- **Rendered AGENTS.md** gets a "This standard (eng-standard)" section (`lib/standard.mjs`): what it is, how it stays current, how to upgrade, set up and remove it, and how a joining agent works inside it.
+- **`eng sync --check`** also fails when the package.json pin of `@slayteksystems/eng-standard` floats (a branch, short SHA, range or bare git URL), and when `.eng/lock.json` was rendered by another eng version than the installed one. Each failure names its fix.
+- **`eng doctor`** prints the installed, rendered and latest eng-standard versions and the CHANGELOG entries in between. The latest comes from GitHub `main`, or `ENG_STANDARD_SOURCE`. Behind is a warning. When it cannot read the latest version it says `latest UNKNOWN` and why; it never reports that as current. It also fails a stale lock or a floating pin.
+- **Pushed history is never rewritten** (Matt, 3 Nov 2026). SHIPPING.md rule 1 and the rendered AGENTS.md say so: after a push, every follow-up is a new commit, and the base comes in by merge (`gh pr update-branch <n>`). The rendered `pre-push` hook refuses a non-fast-forward push on **every** branch (it used to guard only protected branches) and refuses moving or deleting a pushed tag. The Claude Code deny list covers `git push --force`, `-f` and `+` on every branch. Three pstack sentences that said to force-push are rewritten at install time (`vendor/pstack/REWRITES.tsv`); the vendored copy stays byte-identical.
+- **Release tags.** A `release-tag` job in `ci.yml` tags the `main` commit that changed `package.json`'s version as `vX.Y.Z` once `test` passes. It never moves a tag, and a revert that lowers the version gets none. Pin tags.
+- **`docs/lifecycle.md`** is the one guide: pin, keep current, upgrade, set up, joining agent, uninstall (documented steps, no command), report a problem. The package now ships `docs/` and `CHANGELOG.md`.
+- **Docs are checked like code.** `test/docs.test.mjs` fails when package, lock and CHANGELOG versions disagree; when `eng --help` or the README lists anything but the ten hallway commands; when a doc names an `eng` command that does not exist; on a broken relative link; on an unshipped doc; on the old repo owner. `test/no-force-push.test.mjs` fails on any instruction to force-push and drives the hook against a bare remote.
+- Fixes the test found: `docs/modern-stack.md` and `renovation/README.md` named removed commands as commands; `docs/self-merge.md` and `scripts/pr-gate.mjs` named the old repo owner.
+- **Draft, not wired in:** `docs/proposals/otel.md` (OpenTelemetry), pending Matt's decision.
+- **Upgrade:** after the pin move and `eng sync`, `AGENTS.md`, `SHIPPING.md`, `.githooks/pre-push`, `.githooks/pre-rebase`, `.claude/settings.json` and three pstack playbooks change. A repo with a floating pin fails `eng sync --check` until it pins a tag or full SHA.
+
 ## 0.14.0 (7 Nov 2026)
 
 **The CLI is the hallway** (Matt, 6 Nov 2026; Core decision nd756dc09wh4rt0d3bk74g5gv18hqpfe). The global `eng` CLI had grown to forty-plus commands that were several products under one name. This first cut keeps ten jobs: `init`, `sync [--check]`, `lint`, `run`, `verdict`, `e2e`, `rules prove`, `gate`, `merge gate|post` and `doctor`. More cuts follow.

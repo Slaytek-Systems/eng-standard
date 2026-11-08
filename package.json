@@ -1,6 +1,6 @@
 {
   "name": "@slayteksystems/eng-standard",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "",
   "scripts": {
     "test": "node --test test/*.test.mjs"
@@ -29,6 +29,8 @@
     "vendor",
     "fixtures",
     "renovation/README.md",
+    "docs",
+    "CHANGELOG.md",
     "README.md"
   ],
   "engines": {
