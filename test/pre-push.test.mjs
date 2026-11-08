@@ -279,3 +279,23 @@ test('eng doctor warns when a hooks.pre_push script is called without the hook a
   assert.match(out, /WARN hooks\.pre_push\[1\]: scripts\/pass\.sh gets none of the hook's arguments \(remote name, URL\); pass them on: scripts\/pass\.sh "\$@"/);
   assert.doesNotMatch(out, /WARN hooks\.pre_push\[[023]\]/, 'commands that pass the arguments, or are not repo scripts, get no warning');
 });
+
+// PR #56 verdict 2 (P1): `in=$(cat; echo .)` took echo's status, so a failed, partial or interrupted read of the ref
+// lines left eng's checks with nothing to refuse, and a protected delete went through. A failed capture now fails the push.
+test('a failed, partial or interrupted read of the ref lines fails the push before any check or command', () => {
+  const deleteMain = `refs/heads/main ${Z} refs/heads/main ${'1'.repeat(40)}\n`;
+  const cats = {
+    'exits 23 with no output': 'exit 23',
+    'prints one ref line, then exits 23': `printf '%s' '${deleteMain}'; exit 23`,
+    'is killed by SIGTERM after one line': `printf '%s' '${deleteMain}'; kill -TERM $$`,
+  };
+  for (const [name, body] of Object.entries(cats)) {
+    const d = tmp('eng-pp-cat-'), bin = path.join(d, 'bin'), rec = path.join(d, 'rec'), file = path.join(d, 'pre-push');
+    fs.mkdirSync(bin); fs.mkdirSync(rec);
+    fs.writeFileSync(path.join(bin, 'cat'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    fs.writeFileSync(file, hooks({ project: { default_branch: 'main' }, agents: { harnesses: [] }, hooks: { pre_push: [`touch "${rec}/ran"`] } })['.githooks/pre-push']);
+    const r = spawnSync('/bin/sh', [file, 'origin', 'u'], { input: deleteMain, cwd: d, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    assert.notEqual(r.status, 0, `cat ${name}: the push must fail`);
+    assert.ok(!fs.existsSync(path.join(rec, 'ran')), `cat ${name}: no repo command runs`);
+  }
+});
