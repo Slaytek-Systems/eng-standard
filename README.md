@@ -19,7 +19,7 @@ The CLI is the hallway (Matt, 6 Nov 2026; Core nd756dc09wh4rt0d3bk74g5gv18hqpfe)
 | Command | Does |
 |---|---|
 | `eng init [--owner @handle]` | one contextual init: seed `eng.config.yml` if missing, render everything, set `core.hooksPath .githooks`, print the branch ruleset advice. A repo that already ships also gets a CODEOWNERS line and baselines |
-| `eng sync [--check]` | render AGENTS.md, SHIPPING.md, hooks and skills from the config; `--check` fails if any generated file, symlink or lock differs, if `.eng/lock.json` was rendered by another eng version, or if the package.json pin floats |
+| `eng sync [--check]` | render AGENTS.md, SHIPPING.md, hooks and skills from the config; `--check` fails if any generated file, symlink or lock differs, if `.eng/lock.json` was rendered by another eng version or names none, or if the package.json pin floats |
 | `eng lint [--config-from <ref>]` | fast fit: built-in and repo regex rules and credential-looking filenames; baselined findings pass |
 | `eng run [--by <id>] [--ref r] -- <cmd>` | run a command in a private 0700 worktree of the exact commit (HEAD unless `--ref`), under `hygiene.scratch_root`, removed on exit. With `--by` the command, exit code, output tail and SHA are that verifier's evidence. `--keep` / `down <dir>` is the persistent form |
 | `eng run <name>` / `eng run --here -- <cmd>` | a declared run (`project.commands.<name>`, or `launch`) or one command, in this checkout, that must leave nothing behind: no container, network, volume, temp entry or process (`hygiene.run_rules.ephemeral_runs`). `eng gate` runs each declared run this way |

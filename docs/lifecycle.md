@@ -37,7 +37,7 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 
 | Check | Fails when | Where it runs |
 |---|---|---|
-| `eng sync --check` | a generated file, symlink or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one; the pin floats; the config has entries this release retired or lacks `git.rewrite_pushed`. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
+| `eng sync --check` | a generated file, symlink or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one or names no valid version; the pin floats; the config has entries this release retired or lacks `git.rewrite_pushed`. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
 | `eng doctor` | a config piece, an enforcer, the merge settings or a disk rule is wrong; the lock is stale or the pin floats. It also prints the `git.rewrite_pushed` mode and the installed, rendered and latest versions | on demand; the gate where listed |
 
 `eng doctor` reads the latest version and CHANGELOG from eng-standard `main` on GitHub, or from `ENG_STANDARD_SOURCE`
@@ -81,7 +81,8 @@ current.
    - `protected`. The default branch, `project.protected_branches` and tags are locked. A pushed feature branch may be
      rewritten only through the repo's guarded tool, for example Graphite's `gt restack` and lease-protected `gt submit`.
    - In both modes a pushed tag never moves, a protected branch is never deleted or rewritten, and the agent deny list
-     blocks a raw forced push.
+     blocks a raw forced push wherever the flag or `+` refspec sits on the line. In `protected` mode that deny list is
+     the only agent-side guard for feature branches: the pre-push hook cannot tell a raw forced push from `gt submit`.
 5. Never hand-edit a generated file. Edit `eng.config.yml` and run `eng sync`.
 
 ## Uninstall

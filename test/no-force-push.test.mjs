@@ -82,8 +82,7 @@ test('the rendered pre-push hook refuses rewriting a pushed feature branch or ta
   git('tag', '-f', 'v1', 'HEAD');
   assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves/);
   assert.match(git('push', '-q', 'origin', '--delete', 'main').stderr, /deleting protected branch main is blocked/);
-  const deny = JSON.parse(fs.readFileSync(path.join(w, '.claude/settings.json'), 'utf8')).permissions.deny;
-  for (const d of ['Bash(git push --force:*)', 'Bash(git push -f:*)', 'Bash(git push origin +:*)']) assert.ok(deny.includes(d), d);
+  for (const c of ['git push --force origin feat', 'git push -f origin feat', 'git push origin +feat']) assert.ok(denied(w, c), c);
 });
 
 // Claude Code's documented Bash rule matching (code.claude.com/docs/en/permissions, Wildcard patterns): `*` matches any

@@ -24,6 +24,7 @@ before(() => {
   const c = YAML.parse(fs.readFileSync(TPL, 'utf8')); c.project.name = 'scratch-repo'; c.gates.required = ['doctor']; delete c.constraints; delete c.agents.rules; c.laws.enabled = false;
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
   fs.writeFileSync(path.join(dir, 'README.md'), 'x\n');
+  assert.equal(eng('sync').status, 0, 'eng sync writes .eng/lock.json, which eng doctor needs');
   git('add -A'); git('commit -qm base');
 });
 after(() => fs.rmSync(root, { recursive: true, force: true }));
