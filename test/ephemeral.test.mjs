@@ -258,6 +258,17 @@ test('another owner\'s process with a non-UTF-8 name does not break the watch', 
   assert.ok(running(p.pid), 'the unrelated process is left alone');
 });
 
+// PR #52 verdict 2: the one-process signal helper read stat as text too, so a leftover with a non-UTF-8 name was never stopped.
+test('a leftover process with a non-UTF-8 name is still stopped', t => {
+  const p = spawn('python3', ['-c', "import ctypes, time; ctypes.CDLL(None).prctl(15, b'\\x80eng-left', 0, 0, 0); time.sleep(300)"], { stdio: 'ignore' });
+  t.after(() => { try { process.kill(p.pid, 'SIGKILL'); } catch {} });
+  for (let i = 0; i < 50 && !fs.readFileSync(`/proc/${p.pid}/stat`).includes(Buffer.from([0x80])); i++) execSync('sleep 0.05');
+  const start = fs.readFileSync(`/proc/${p.pid}/stat`).toString('latin1').split(') ').at(-1).split(' ')[19];
+  assert.equal(removeLeftover({ kind: 'process', id: p.pid, start }), true);
+  for (let i = 0; i < 50 && running(p.pid); i++) execSync('sleep 0.05');
+  assert.ok(!running(p.pid), 'stopped');
+});
+
 test('a leftover process is signalled only while it is the same process (pid and start time)', t => {
   const p = spawn('sleep', ['305'], { stdio: 'ignore' }); t.after(() => p.kill('SIGKILL'));
   const start = fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19];

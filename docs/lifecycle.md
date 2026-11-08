@@ -9,7 +9,7 @@ https://github.com/Slaytek-Systems/eng-standard/blob/main/docs/lifecycle.md.
 | You need | Read |
 |---|---|
 | The rules for this repo, day to day | the rendered `AGENTS.md` block, then `SHIPPING.md`, then `STACK.md` |
-| Every `eng` command | `eng --help`, then the [README](../README.md) table. There are ten |
+| Every `eng` command | `eng --help`, then the [README](../README.md) table. There are ten. `eng <command> --help` (or `-h`) prints one command's usage and runs nothing |
 | What changed between versions | [CHANGELOG.md](../CHANGELOG.md), also shipped in the package |
 | Every setting | `eng.config.yml`; the reference with a comment on each key is `templates/eng.config.yml` |
 | A repo that already ships | [renovation/README.md](../renovation/README.md) |
@@ -80,9 +80,11 @@ current.
      hook refuses a rebase that would rewrite pushed commits.
    - `protected`. The default branch, `project.protected_branches` and tags are locked. A pushed feature branch may be
      rewritten only through the repo's guarded tool, for example Graphite's `gt restack` and lease-protected `gt submit`.
-   - In both modes a pushed tag never moves, a protected branch is never deleted or rewritten, and the agent deny list
-     blocks a raw forced push wherever the flag or `+` refspec sits on the line. In `protected` mode that deny list is
+   - In both modes a pushed tag never moves, a protected branch is never deleted or rewritten, and the Claude Code deny
+     list blocks a raw forced push wherever the flag or `+` refspec sits on the line. In `protected` mode that deny list is
      the only agent-side guard for feature branches: the pre-push hook cannot tell a raw forced push from `gt submit`.
+     Only Claude Code gets a deny list (`.claude/settings.json`). Other harnesses in `agents.harnesses` (codex, cursor)
+     get the git hooks and the rendered text; the rendered rules and `eng doctor` name each one's gaps.
 5. Never hand-edit a generated file. Edit `eng.config.yml` and run `eng sync`.
 
 ## Uninstall

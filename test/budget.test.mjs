@@ -207,16 +207,17 @@ const hows = ['systemd', 'watchdog'];
 // ---------- the watchdog counts memory the way the kernel does (PR 51 verdict 1: summed RSS counted the node binary
 // and libraries once per process, so the watchdog killed a suite at 2154 MB that the 2 GB scope ran at about 1.3 GB). ----------
 // Twenty idle node processes: about 40 MB RSS each, almost all of it pages they share. The leader prints their summed RSS,
-// so the test shows the RSS sum was over the budget while it ran.
+// so the test shows the RSS sum was over the budget while it ran. Their own pages are about 16 MB each (PSS ~320 MB): the budget
+// sits well between the two (PR #53 verdict 3: a 320 MB budget left 1 MB of margin and failed under load).
 const SHARERS = `const { spawn } = require('child_process'), fs = require('fs');
 const kids = Array.from({ length: 20 }, () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4000)'], { stdio: 'ignore' }));
 setTimeout(() => { const kb = kids.reduce((s, k) => { try { return s + Number(fs.readFileSync('/proc/' + k.pid + '/stat', 'utf8').replace(/^.*\\) /, '').split(' ')[21]) * 4; } catch { return s; } }, 0); console.log('rss_sum_mb=' + Math.round(kb / 1024)); }, 2500);`;
 test('processes that share their pages stay under a budget their summed RSS exceeds (watchdog path)', { skip: process.platform !== 'linux' && 'PSS is Linux only; macOS sums ps RSS' }, () => {
-  const r = eng(['run', '--budget', 'memory=320M workers=1 timeout=60s', '--', process.execPath, '-e', SHARERS], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  const r = eng(['run', '--budget', 'memory=600M workers=1 timeout=60s', '--', process.execPath, '-e', SHARERS], { ENG_BUDGET_ENFORCER: 'watchdog' });
   assert.doesNotMatch(out(r), /stopped by its budget/);
   assert.equal(r.status, 0, out(r));
   const rss = Number(r.stdout.match(/rss_sum_mb=(\d+)/)?.[1]);
-  assert.ok(rss > 320, `the children's summed RSS (${rss} MB) is over the 320 MB budget, so only shared pages separate the two measures: ${out(r)}`);
+  assert.ok(rss > 600, `the children's summed RSS (${rss} MB) is over the 600 MB budget, so only shared pages separate the two measures: ${out(r)}`);
 });
 // Four processes, each 160 MB of its own memory: none is over 256 MB alone, the tree is.
 const SPREAD = `for i in 1 2 3 4; do node -e 'const a=[];let n=0;const t=setInterval(()=>{if(n<5){a.push(Buffer.alloc(32<<20,1));n++}else{clearInterval(t);setTimeout(()=>process.exit(0),3000)}},30)' & done; wait`;
