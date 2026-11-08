@@ -16,6 +16,8 @@
 //     budget           not stopped | stopped by its timeout (the command traps TERM and ends with the outcome above)
 //     nested gate      none | an inner `eng gate` that deferred a heavy check, its exit 3 swallowed (> /dev/null; then the outcome)
 //     plus eng itself signalled while the command traps TERM and exits 0 (one row).
+//     command identity  a run that exited 3, then: the same argv passing | an argv whose words join to the same text | another
+//                      command (3 rows; only the same argv supersedes the failure).
 //   Verdict (pure, recordRun -> runsFor -> the verdict record -> passProblem, self-merge and eng merge gate):
 //     one run          exit 0 | 1 | 3 | 124 | 137 | 143  x  SHA head | other  x  --by this | another  x  run key v2 | old (no v)
 //                      x  output neutral | claims success                                                  = 96 runs
@@ -203,4 +205,21 @@ test('a deferred run stops counting only when the same command passes in full; a
   v = await eng(['verdict', 'PASS', '--by', by]);
   assert.equal(v.status, 0, v.out);
   assert.match(v.stdout, /recorded PASS \(verification, 2 runs\)/);
+});
+
+// Recorder dimension: command identity. A failing run stops counting only when the same argv later passes. Two argvs whose
+// words join to the same text are different commands (PR 51 verdict 1: removing argument quoting left this file green).
+// The expected identity comes from the argv arrays themselves, never from the recorder's own key.
+test('the recorder product: a failing run is superseded only by the same argv, never by one whose words join to the same text', async () => {
+  const FAIL = ['sh', '-c', 'exit ${E-3}'];   // exits 3; with E=0 the same argv exits 0
+  const LATER = { 'same argv': FAIL, 'same joined text': ['sh', '-c', 'exit', '${E-3}'], 'another command': ['true'] };
+  for (const [i, [kind, later]] of Object.entries(LATER).entries()) {
+    const by = `e2e-identity-${i}`;
+    assert.equal((await eng(['run', '--by', by, '--', ...FAIL])).status, 3, kind);
+    const second = await eng(['run', '--by', by, '--', ...later], { env: { E: '0' } });
+    assert.equal(second.status, 0, `${kind}: the later run passes: ${second.out}`);
+    const v = await eng(['verdict', 'PASS', '--by', by]);
+    if (JSON.stringify(later) === JSON.stringify(FAIL)) assert.equal(v.status, 0, `${kind}: the same argv passing supersedes the failure: ${v.out}`);
+    else { assert.notEqual(v.status, 0, `${kind}: a different argv hid the failing run\n${v.out}`); assert.match(v.stderr, /exited 3 on/, kind); }
+  }
 });
