@@ -197,3 +197,129 @@ test('every tool in the suggested catalog states its cost, when it earns it, and
   for (const jvm of ['tlc', 'apalache', 'alloy']) { assert.equal(cat.tools[jvm].weight, 'heavy', `${jvm} is heavy`); assert.match(cat.tools[jvm].earns_its_cost_when, /concurrency|distributed|relations/); }
   assert.equal(cat.tools['property-tests'].weight, 'light');
 });
+
+// ---------- verdict findings on 02a7b0a (PR 50, GPT-family checker): a budget stop, a deferred check or a leftover process
+// never counts as a pass ----------
+const runLogFile = () => path.join(dir, '.git', 'eng', 'verdict-runs.jsonl');
+const runsBy = by => fs.existsSync(runLogFile()) ? fs.readFileSync(runLogFile(), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by) : [];
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const scopes = pattern => spawnSync('systemctl', ['--user', 'list-units', '--all', '--plain', '--no-legend', pattern], { encoding: 'utf8' }).stdout.trim();
+const dropScopes = pattern => { for (const l of scopes(pattern).split('\n').filter(Boolean)) { const u = l.split(/\s+/)[0]; spawnSync('systemctl', ['--user', 'kill', '--signal=SIGKILL', u]); spawnSync('systemctl', ['--user', 'stop', u]); spawnSync('systemctl', ['--user', 'reset-failed', u]); } };
+const hows = ['systemd', 'watchdog'];
+
+for (const how of hows) test(`eng run --by: a command that traps TERM and exits 0 after its timeout is recorded as a failure (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const by = `trap-${how}`;
+  const r = eng(['run', '--by', by, '--budget', 'memory=128M workers=1 timeout=1s', '--', 'bash', '-c', 'trap "exit 0" TERM; sleep 10 & wait'], { ENG_BUDGET_ENFORCER: how });
+  t.diagnostic(out(r));
+  assert.match(r.stderr, /stopped by its budget: timeout 1s/);
+  assert.notEqual(r.status, 0, out(r));
+  assert.doesNotMatch(r.stdout, /\(exit 0\) as verdict evidence/);
+  const rec = runsBy(by).at(-1);
+  assert.ok(rec && rec.exit !== 0, `the run log records a failure: ${JSON.stringify(rec)}`);
+});
+
+// A parent that starts a detached worker (its own session, stdio ignored), writes its pid and exits 0 at once. The worker
+// takes 32 MB every 30 ms up to 640 MB, holds 3s, then exits by itself: bounded even if enforcement fails.
+const WORKER = 'const a=[];let n=0;const t=setInterval(()=>{if(n<20){a.push(Buffer.alloc(32<<20,1));n++}else{clearInterval(t);setTimeout(()=>process.exit(0),3000)}},30)';
+const detachScript = () => {
+  const f = path.join(dir, '.git', 'detach.cjs');
+  fs.writeFileSync(f, `const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(WORKER)}],{detached:true,stdio:'ignore'});require('fs').writeFileSync(process.env.PIDF,String(c.pid));c.unref();\n`);
+  return f;
+};
+for (const how of hows) test(`a detached child over the budget fails the check after its parent exits 0 (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const pidf = path.join(dir, '.git', `orphan-${how}.pid`); fs.rmSync(pidf, { force: true });
+  checks({ orphan: `#!/usr/bin/env bash\n# budget: memory=256M workers=1 timeout=60s\nnode ${JSON.stringify(detachScript())}\n` });
+  try {
+    const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: how, PIDF: pidf });
+    t.diagnostic(out(r));
+    assert.equal(r.status, 1, out(r));
+    assert.match(r.stdout, /FAIL\s+check:orphan\s+eng: FAIL check orphan: stopped by its budget: memory 256 MB/);
+    const pid = Number(fs.readFileSync(pidf, 'utf8'));
+    assert.equal(alive(pid), false, 'the detached worker is gone when the gate returns');
+    if (how === 'systemd') assert.equal(scopes('eng-check-orphan-*'), '', 'no scope is left, failed or running');
+  } finally {
+    try { process.kill(Number(fs.readFileSync(pidf, 'utf8')), 'SIGKILL'); } catch {}
+    if (systemd) dropScopes('eng-check-orphan-*');
+  }
+});
+
+test('a light stage that deferred a heavy check is not verdict evidence: eng verdict PASS refuses it', () => {
+  checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=256M workers=1\nexit 1\n' });
+  const by = 'deferred-probe';
+  let r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'checks']);
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /deferred\s+check:model/);
+  const rec = runsBy(by).at(-1);
+  assert.deepEqual(rec.deferred, ['model'], `the run says what it deferred: ${JSON.stringify(rec)}`);
+  r = eng(['verdict', 'PASS', '--by', by]);
+  assert.notEqual(r.status, 0, out(r));
+  assert.match(out(r), /deferred heavy check\(s\) model/);
+  r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'checks', '--heavy']);
+  assert.notEqual(r.status, 0, 'run in full, the heavy check fails the gate');
+});
+
+for (const how of hows) test(`SIGINT to eng gate with an inherited ENG_TMP leaves no check process or scope (${how} path)`, async t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const pidf = path.join(dir, '.git', `sigint-${how}.pid`); fs.rmSync(pidf, { force: true });
+  checks({ wait: `#!/usr/bin/env bash\n# budget: memory=128M workers=1 timeout=60s\necho $$ > "$PIDF"\nexec sleep 30\n` });
+  const inherited = fs.mkdtempSync(path.join(dir, '.git', 'inherited-'));
+  const env = { ...process.env, ENG_BUDGET_ENFORCER: how, PIDF: pidf, ENG_TMP: inherited }; delete env.CI;
+  const { spawn } = await import('node:child_process');
+  const g = spawn(process.execPath, [ENG, 'gate', 'checks'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let text = ''; g.stdout.on('data', d => { text += d; }); g.stderr.on('data', d => { text += d; });
+  const exited = new Promise(r => g.on('exit', (code, signal) => r({ code, signal })));
+  try {
+    for (let i = 0; i < 200 && !(fs.existsSync(pidf) && fs.readFileSync(pidf, 'utf8').trim()); i++) await new Promise(r => setTimeout(r, 50));
+    const pid = Number(fs.readFileSync(pidf, 'utf8'));
+    assert.ok(alive(pid), 'the check is running');
+    g.kill('SIGINT');
+    const e = await exited;
+    t.diagnostic(text);
+    assert.equal(e.code, 130, `eng gate exits 128+2: ${JSON.stringify(e)}`);
+    assert.equal(alive(pid), false, 'the check process is gone');
+    if (how === 'systemd') assert.equal(scopes(`eng-check-wait-${g.pid}-*`), '', 'no scope is left');
+  } finally {
+    g.kill('SIGKILL');
+    try { process.kill(Number(fs.readFileSync(pidf, 'utf8')), 'SIGKILL'); } catch {}
+    if (systemd) dropScopes(`eng-check-wait-${g.pid}-*`);
+  }
+});
+
+test('eng lint accepts a JVM bound exported earlier in the same script, and still flags an unbounded call', () => {
+  const lint = body => { checks({ model: `#!/usr/bin/env bash\n# weight: heavy\n${body}\n` }); return eng(['lint']); };
+  for (const ok of ['export JAVA_TOOL_OPTIONS="-Xmx128m"\njava -version', 'JDK_JAVA_OPTIONS=-Xmx768m\njava -jar tla2tools.jar Spec.tla', 'export JAVA_OPTS=-Xmx768m\njava $JAVA_OPTS -jar tla2tools.jar', 'export JVM_ARGS="-Xmx1g"\napalache-mc check Spec.tla']) {
+    const r = lint(ok); assert.equal(r.status, 0, `${ok}\n${out(r)}`);
+  }
+  for (const bad of ['java -jar tla2tools.jar Spec.tla', 'java -version\nexport JAVA_TOOL_OPTIONS=-Xmx128m', 'export JAVA_OPTS=-Xmx768m\njava -jar tla2tools.jar', '# export JAVA_TOOL_OPTIONS=-Xmx128m\njava -version', 'export JAVA_TOOL_OPTIONS=-Dfoo=1\njava -version']) {
+    const r = lint(bad); assert.equal(r.status, 1, `${bad}\n${out(r)}`); assert.match(r.stderr, /\[heavy-tool-unbounded\]/);
+  }
+});
+
+test('checks run one after another unless verification.parallel is true; in parallel they still wait for their budgets to fit', () => {
+  const times = path.join(dir, '.git', 'times-seq'), cfgFile = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(cfgFile, 'utf8');
+  try {
+    checks({ a: timed('a', 300), b: timed('b', 300) });
+    fs.rmSync(times, { force: true });
+    let r = eng(['gate', 'checks', '--heavy'], { ENG_BUDGET_FREE_MB: '1000', TIMES: times });
+    assert.equal(r.status, 0, out(r));
+    let [a, b] = spans(times, ['a', 'b']);
+    assert.ok(b[0] >= a[1], `an upgraded config (no verification.parallel) runs b after a: ${JSON.stringify({ a, b })}`);
+    const c = YAML.parse(orig); c.verification.parallel = true; fs.writeFileSync(cfgFile, YAML.stringify(c)); git('commit -qam parallel');
+    fs.rmSync(times, { force: true });
+    r = eng(['gate', 'checks', '--heavy'], { ENG_BUDGET_FREE_MB: '1000', TIMES: times });
+    assert.equal(r.status, 0, out(r));
+    [a, b] = spans(times, ['a', 'b']);
+    assert.ok(b[0] < a[1], `parallel: true runs two that fit side by side: ${JSON.stringify({ a, b })}`);
+    checks({ a: timed('a', 600), b: timed('b', 600) });
+    fs.rmSync(times, { force: true });
+    r = eng(['gate', 'checks', '--heavy'], { ENG_BUDGET_FREE_MB: '1000', TIMES: times });
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stdout, /wait\s+check:b: its budget/);
+    [a, b] = spans(times, ['a', 'b']);
+    assert.ok(b[0] >= a[1], `parallel: true still waits when the budgets do not fit: ${JSON.stringify({ a, b })}`);
+    c.verification.parallel = 'yes'; fs.writeFileSync(cfgFile, YAML.stringify(c));
+    r = eng(['gate', 'checks']); assert.equal(r.status, 1, out(r)); assert.match(out(r), /verification\.parallel must be true or false/);
+  } finally { fs.writeFileSync(cfgFile, orig); git('commit -qam unparallel --allow-empty'); }
+});
