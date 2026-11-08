@@ -409,12 +409,12 @@ test('a deferring gate in another process tree does not mark a gate that is runn
 // directory holding a sentinel; the disk-full trap fails each marker write with ENOSPC, as the verdict's probe did. ----------
 const SHARED = /^\/(tmp\/eng-gates-\d+|run\/user\/\d+\/eng-gates)(\/|$)/;
 function sharedDirTrap(name, symlink) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `eng-r5-${name}-`)), victim = path.join(root, 'victim'), log = path.join(root, 'touched.log');
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), `eng-r5-${name}-`)), victim = path.join(root, 'victim'), log = path.join(root, 'touched.log');
   fs.mkdirSync(victim, { mode: 0o700 }); fs.writeFileSync(path.join(victim, 'important-data'), 'synthetic sentinel');
   fs.symlinkSync(victim, path.join(root, 'eng-gates'));
   const preload = path.join(root, 'preload.mjs');
   fs.writeFileSync(preload, `import fs from 'node:fs';
-const uid = process.getuid(), symlink = ${symlink}, fallback = '/tmp/eng-gates-' + uid, to = ${JSON.stringify(path.join(root, 'eng-gates'))};
+const uid = process.getuid(), symlink = ${symlink}, fallback = ${JSON.stringify(path.join(path.sep, 'tmp', 'eng-gates-'))} + uid, to = ${JSON.stringify(path.join(root, 'eng-gates'))};
 const append = fs.appendFileSync.bind(fs), log = ${JSON.stringify(log)};
 const full = () => Object.assign(new Error('injected ENOSPC'), { code: 'ENOSPC' });
 for (const op of ['statSync', 'lstatSync', 'mkdirSync', 'readdirSync', 'rmSync', 'writeFileSync', 'readFileSync', 'openSync', 'appendFileSync', 'existsSync']) {
