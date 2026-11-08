@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, checkErrors, checkSteps } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps, deferredProblem } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
@@ -263,7 +263,12 @@ function lintFiles(rule, files, base) {
   for (const f of files) {
     const name = f.replace(/\.fixture$/, '');
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
-    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => { if (re.test(line)) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) }); });
+    // rule.bounds (built-in rules only): a bound set on an earlier line of the same file covers the later lines it names.
+    const bounds = (rule.bounds || []).map(b => ({ set: new RegExp(b.set), then: new RegExp(b.then) })), on = [];
+    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => {
+      if (re.test(line) && !on.some(b => b.then.test(line))) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
+      for (const b of bounds) if (!on.includes(b) && b.set.test(line)) on.push(b);
+    });
   }
   return hits;
 }
@@ -587,10 +592,12 @@ function verdictRecord(result) {
     if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one run per check: eng run --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
     const bad = runs.find(r => r.exit !== 0);
     if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix it and re-run that same command until it passes`);
+    const def = deferredProblem(runs);
+    if (def) die(`verdict: ${def}`);
   }
   // Bound to head, merge-base, patch-id, base tip and head tree (the diff fingerprint receipts use). Optional reviewer fields feed receipt adapters.
   const rec = { sha: H, base: sh(`git merge-base ${baseRef(cfg)} HEAD`), base_tip: sh(`git rev-parse ${baseRef(cfg)}`), tree: sh('git rev-parse HEAD^{tree}'), patch_id: patchId(cfg), result, by, method,
-    ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at }) => ({ cmd, exit, output, sha, at })) } : {}),
+    ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at, deferred }) => ({ cmd, exit, output, sha, at, ...(deferred ? { deferred } : {}) })) } : {}),
     ...Object.fromEntries([['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
   sh(`git notes --ref ${VNOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${H}`);
   console.log(`eng verdict: recorded ${result} (${method}${runs.length ? `, ${runs.length} run${runs.length === 1 ? '' : 's'}` : ''}) by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
@@ -648,7 +655,7 @@ function verdictCheck() {
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
 // declared runs that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its
 // own identity. Stages: light checks run everywhere; heavy ones run in CI (CI set) or with --heavy, and are listed as
-// deferred otherwise. Each check runs under its budget (lib/budget.mjs), side by side while the budgets fit.
+// deferred otherwise. Each check runs under its budget (lib/budget.mjs), in order (side by side with verification.parallel).
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
@@ -661,9 +668,14 @@ async function gate() {
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
   const ci = !!process.env.CI && process.env.CI !== 'false', heavy = ci || a.includes('--heavy');
   let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
-  const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s));
-  console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}`);
-  const done = await runChecks(bounded, how, t, keep);
+  const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
+  console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
+  // An incomplete stage never certifies full verification: under eng run --by of this worktree, the deferred checks go in
+  // the run's record, and eng verdict refuses that run as PASS evidence. The worktree test keeps a gate a test suite runs
+  // on a fixture repo from marking the suite's own run.
+  const deferLog = process.env.ENG_RUN_DEFERRED;
+  if (deferred.length && deferLog && realOr(path.join(path.dirname(deferLog), 'wt')) === realOr(ROOT)) fs.appendFileSync(deferLog, deferred.map(s => `${s.check.id}\n`).join(''));
+  const done = await runChecks(bounded, how, t, keep, parallel);
   const res = [];
   for (const s of steps) {
     const g = s.name;
@@ -696,18 +708,20 @@ function stepResult(g, status, text, own, keep) {
   }
   return [g, status === 0 ? 'pass' : status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more];
 }
-// Runs the checks under their budgets, side by side while the budgets fit the memory free when the gate started and the
-// cores; a check that does not fit waits for a running one to finish. Each check runs flake_runs times, one after another.
-async function runChecks(list, how, t, keep) {
-  const machine = { memoryMb: freeMemoryMb(), cores: cores() }, running = new Set(), waited = new Set(), live = new Set(), out = new Map();
-  process.on('exit', () => { for (const k of live) k(); });
+// Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
+// the memory free when the gate started and the cores, and a check that does not fit waits for a running one to finish.
+// Each check runs flake_runs times, one after another.
+async function runChecks(list, how, t, keep, parallel) {
+  const machine = { memoryMb: freeMemoryMb(), cores: cores() }, running = new Set(), waited = new Set(), out = new Map();
+  // A signal ends the gate through process.exit, whoever owns ENG_TMP: lib/budget.mjs's exit hook then kills and awaits
+  // every running check, its scope and its detached workers.
+  const onSig = [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]].map(([s, n]) => [s, () => { console.error(`eng gate: interrupted by ${s}; stopping the running checks`); process.exit(128 + n); }]);
+  for (const [s, f] of onSig) process.on(s, f);
   const runCheck = async s => {
     const { id, path: p, runs, budget, declared } = s.check, own = fs.mkdtempSync(path.join(t.dir, `${slug(s.name)}-`));
     let passed = 0, text = '', stop = null;
     for (let i = 0; i < runs && !stop; i++) {
-      const b = runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how });
-      live.add(b.kill);
-      const r = await b.result; live.delete(b.kill);
+      const r = await runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how }).result;
       text += r.stdout + r.stderr;
       if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
     }
@@ -718,7 +732,7 @@ async function runChecks(list, how, t, keep) {
   await new Promise(resolve => {
     let i = 0;
     const pump = () => {
-      while (i < list.length) {
+      while (i < list.length && (parallel || !running.size)) {
         const s = list[i], d = admit(s.check.budget, [...running], machine);
         if (d === 'wait') { if (!waited.has(s)) console.log(`  wait   ${s.name}: its budget (${budgetText(s.check.budget)}) does not fit next to the ${running.size} running (${machine.memoryMb} MB free at start, ${machine.cores} cores)`); waited.add(s); break; }
         i++;
@@ -731,11 +745,13 @@ async function runChecks(list, how, t, keep) {
     };
     pump();
   });
+  for (const [s, f] of onSig) process.off(s, f);
   return out;
 }
 // ---------- disk rules (Matt, 30 Oct 2026; Core nd79fdwd1p4hc5nk60j7rmbn518h6tsv). lib/disk-rules.mjs has each rule's default, options and check. ----------
 // Node/Bun module compile cache defaults to TMPDIR/node-compile-cache and is keyed by absolute path, so each worktree
 // writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
+const realOr = p => { try { return fs.realpathSync(p); } catch { return p; } };
 const privateTmpEnv = (env, dir) => ({ ...env, ENG_TMP: dir, TMPDIR: dir, TMP: dir, TEMP: dir, NODE_DISABLE_COMPILE_CACHE: '1' });
 const leftText = left => `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'} in its private TMPDIR: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ', ...' : ''} (tests_leave_nothing: remove what the test creates in an after hook or finally)`;
 // Prints each finding at its rule's mode; returns how many fail.

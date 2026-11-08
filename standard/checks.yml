@@ -7,7 +7,7 @@
 #   # budget: memory=<size> workers=<n> timeout=<duration>
 # Budgets below are starting points measured on small models; size each to the repo's own model and record why.
 version: 1
-default_budget: { memory: 3G, workers: 2, timeout: 30m }   # lib/budget.mjs DEFAULT_BUDGET, for a check that declares none
+default_budget: { memory: 2G, workers: 2, timeout: 30m }   # lib/budget.mjs DEFAULT_BUDGET, for a check that declares none
 
 tools:
   property-tests:

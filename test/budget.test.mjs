@@ -86,10 +86,10 @@ test('a check that runs past its timeout is stopped and fails, naming the budget
 });
 
 test('a check with no budget runs under the default, and its tools get the matching flags', () => {
-  checks({ plain: '#!/usr/bin/env bash\ngot="mem=$ENG_BUDGET_MEMORY_MB workers=$ENG_BUDGET_WORKERS java=$JAVA_TOOL_OPTIONS"\n[ "$got" = "mem=3072 workers=2 java=-Xmx2304m -XX:ActiveProcessorCount=2" ] || { echo "eng: FAIL check saw $got"; exit 1; }\n' });
+  checks({ plain: '#!/usr/bin/env bash\ngot="mem=$ENG_BUDGET_MEMORY_MB workers=$ENG_BUDGET_WORKERS java=$JAVA_TOOL_OPTIONS"\n[ "$got" = "mem=2048 workers=2 java=-Xmx1536m -XX:ActiveProcessorCount=2" ] || { echo "eng: FAIL check saw $got"; exit 1; }\n' });
   const r = eng(['gate', 'checks']);
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /start\s+check:plain \(light, default budget: memory 3072 MB, 2 workers, timeout 1800s\)/);
+  assert.match(r.stdout, /start\s+check:plain \(light, default budget: memory 2048 MB, 2 workers, timeout 1800s\)/);
   assert.match(r.stdout, /pass\s+check:plain check plain: passed 1\/1/);
 });
 
@@ -114,23 +114,6 @@ test('a heavy check runs in CI or with --heavy, and is listed as deferred, not p
 
 const spans = (file, ids) => { const l = fs.readFileSync(file, 'utf8').trim().split('\n').map(x => x.split(' ')); return ids.map(id => [Number(l.find(x => x[0] === id && x[1] === 'start')[2]), Number(l.find(x => x[0] === id && x[1] === 'end')[2])]); };
 const timed = (id, mem) => `#!/usr/bin/env bash\n# weight: heavy\n# budget: memory=${mem}M workers=1 timeout=60s\necho "${id} start $(date +%s%N)" >> "$TIMES"; sleep 1; echo "${id} end $(date +%s%N)" >> "$TIMES"\n`;
-test('two heavy checks whose budgets together exceed free memory run one after the other; two that fit run side by side', () => {
-  const times = path.join(dir, '.git', 'times');
-  checks({ a: timed('a', 600), b: timed('b', 600) });
-  fs.rmSync(times, { force: true });
-  let r = eng(['gate', 'checks', '--heavy'], { ENG_BUDGET_FREE_MB: '1000', TIMES: times });
-  assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /wait\s+check:b: its budget \(memory 600 MB, 1 worker, timeout 60s\) does not fit next to the 1 running \(1000 MB free at start/);
-  let [a, b] = spans(times, ['a', 'b']);
-  assert.ok(b[0] >= a[1], `b started after a ended: ${JSON.stringify({ a, b })}`);
-  checks({ a: timed('a', 300), b: timed('b', 300) });
-  fs.rmSync(times, { force: true });
-  r = eng(['gate', 'checks', '--heavy'], { ENG_BUDGET_FREE_MB: '1000', TIMES: times });
-  assert.equal(r.status, 0, out(r)); assert.doesNotMatch(r.stdout, /wait\s+check/);
-  [a, b] = spans(times, ['a', 'b']);
-  assert.ok(b[0] < a[1], `b started while a ran: ${JSON.stringify({ a, b })}`);
-});
-
 test('a check whose budget is more than the free memory is not started, and fails saying so', () => {
   checks({ big: '#!/bin/sh\n# budget: memory=4G\nexit 0\n' });
   const r = eng(['gate', 'checks'], { ENG_BUDGET_FREE_MB: '1000' });
@@ -144,9 +127,9 @@ for (const how of ['systemd', 'watchdog']) test(`eng run -- java with no bounds 
   const r = eng(['run', '--', 'java', '-jar', 'tla2tools.jar'], { PATH: `${bin}:${process.env.PATH}`, ENG_BUDGET_ENFORCER: how });
   t.diagnostic(out(r));
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /budget: memory 3072 MB, 2 workers, timeout 1800s \(default; set one with --budget\)/);
-  assert.match(r.stdout, /java saw JAVA_TOOL_OPTIONS=-Xmx2304m -XX:ActiveProcessorCount=2/);
-  if (how === 'systemd') assert.match(r.stdout, /java cgroup memory\.max=3221225472/, 'the kernel limit is the budget');
+  assert.match(r.stdout, /budget: memory 2048 MB, 2 workers, timeout 1800s \(default; set one with --budget\)/);
+  assert.match(r.stdout, /java saw JAVA_TOOL_OPTIONS=-Xmx1536m -XX:ActiveProcessorCount=2/);
+  if (how === 'systemd') assert.match(r.stdout, /java cgroup memory\.max=2147483648/, 'the kernel limit is the budget');
 });
 
 for (const how of ['systemd', 'watchdog']) test(`eng run -- stops a command over its --budget and names it (${how} path)`, t => {
@@ -198,7 +181,7 @@ test('every tool in the suggested catalog states its cost, when it earns it, and
   assert.equal(cat.tools['property-tests'].weight, 'light');
 });
 
-// ---------- verdict findings on 02a7b0a (PR 50, GPT-family checker): a budget stop, a deferred check or a leftover process
+// ---------- verdict findings on 02a7b0a (PR 50, independent checker): a budget stop, a deferred check or a leftover process
 // never counts as a pass ----------
 const runLogFile = () => path.join(dir, '.git', 'eng', 'verdict-runs.jsonl');
 const runsBy = by => fs.existsSync(runLogFile()) ? fs.readFileSync(runLogFile(), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by) : [];
@@ -322,4 +305,11 @@ test('checks run one after another unless verification.parallel is true; in para
     c.verification.parallel = 'yes'; fs.writeFileSync(cfgFile, YAML.stringify(c));
     r = eng(['gate', 'checks']); assert.equal(r.status, 1, out(r)); assert.match(out(r), /verification\.parallel must be true or false/);
   } finally { fs.writeFileSync(cfgFile, orig); git('commit -qam unparallel --allow-empty'); }
+});
+
+test('eng verdict check does not count a recorded PASS whose run deferred heavy checks', async () => {
+  const { passProblem } = await import('../lib/verification.mjs');
+  const run = { cmd: 'eng gate checks', exit: 0, output: 'eng gate: PASS', sha: 'abc' };
+  assert.equal(passProblem({ method: 'verification', sha: 'abc', runs: [run] }, ['lib/x.mjs']), null, 'a full run counts');
+  assert.match(passProblem({ method: 'verification', sha: 'abc', runs: [{ ...run, deferred: ['model'] }] }, ['lib/x.mjs']), /deferred heavy check\(s\) model: it is not a full verification/);
 });
