@@ -246,6 +246,18 @@ test('a descendant whose environment cannot be read (PR_SET_DUMPABLE=0) is stopp
   assert.ok(!running(Number(mark('undump'))), 'stopped');
 });
 
+// PR #52 verdict 1: an unrelated process whose name is not UTF-8 crashed the watcher, so every watched run failed.
+test('another owner\'s process with a non-UTF-8 name does not break the watch', t => {
+  const p = spawn('python3', ['-c', "import ctypes, time; ctypes.CDLL(None).prctl(15, b'\\x80eng-bytes', 0, 0, 0); time.sleep(300)"], { stdio: 'ignore', detached: true });
+  t.after(() => { try { process.kill(p.pid, 'SIGKILL'); } catch {} });
+  for (let i = 0; i < 50 && !fs.readFileSync(`/proc/${p.pid}/stat`).includes(Buffer.from([0x80])); i++) execSync('sleep 0.05');
+  assert.ok(fs.readFileSync(`/proc/${p.pid}/stat`).includes(Buffer.from([0x80])), 'the unrelated process carries a non-UTF-8 name');
+  const r = eng('run', '--here', '--', 'true');
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /eng run: PASS/);
+  assert.ok(running(p.pid), 'the unrelated process is left alone');
+});
+
 test('a leftover process is signalled only while it is the same process (pid and start time)', t => {
   const p = spawn('sleep', ['305'], { stdio: 'ignore' }); t.after(() => p.kill('SIGKILL'));
   const start = fs.readFileSync(`/proc/${p.pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19];
