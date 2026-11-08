@@ -147,7 +147,7 @@ let dir, ghd, calls;
 const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
 const pidOf = range => execSync(`git diff --binary ${range} | git patch-id --stable`, { cwd: dir, encoding: 'utf8' }).split(' ')[0];
 const put = (k, v) => fs.writeFileSync(path.join(ghd, k.replace(/[^a-z0-9]+/gi, '_')), JSON.stringify(v));
-const eng = (args, extra = {}) => spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: `${path.join(dir, '.bin')}:${process.env.PATH}`, GH_DIR: ghd, GH_CALLS: calls, GITHUB_REPOSITORY: 'o/r', GITHUB_EVENT_PATH: '', GITHUB_STEP_SUMMARY: '', GITHUB_SHA: '', ENG_PR: '', ENG_RESTART_WEBHOOK: '', ...extra } });
+const eng = (args, extra = {}) => spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: `${path.join(dir, '.bin')}:${process.env.PATH}`, GH_DIR: ghd, GH_CALLS: calls, GITHUB_REPOSITORY: 'o/r', GITHUB_EVENT_PATH: '', GITHUB_STEP_SUMMARY: '', GITHUB_SHA: '', GITHUB_RUN_ID: '', ENG_PR: '', ENG_RESTART_WEBHOOK: '', ...extra } });
 // The mode is main's config, committed there, so a PR fixture never carries the config change itself.
 const setMode = mode => {
   git('checkout -q --detach origin/main'); const p = path.join(dir, 'eng.config.yml'), t = fs.readFileSync(p, 'utf8'), n = t.replace(/mode: (strict|queue)/, `mode: ${mode}`);
@@ -173,6 +173,11 @@ if [[ -n "$p" && -f "$GH_DIR/$k" ]]; then cat "$GH_DIR/$k"; else echo '{}'; fi
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+// eng merge post inside its workflow (run 2) on a tip that run 1 already checked: only the pass over open PRs runs.
+const tend = (args = [], extra = {}) => {
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${git('rev-parse HEAD')}&per_page=20`, { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'success' }, { id: 2, status: 'in_progress' }] });
+  return eng(['merge', 'post', ...args], { GITHUB_RUN_ID: '2', ...extra });
+};
 function prWith(file, { behind = false } = {}) {
   git('checkout -q -B feat origin/main'); fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true }); fs.writeFileSync(path.join(dir, file), `change ${file}\n`);
   git('add -A'); git(`commit -qm "change ${file}" -m "Agent: builder-1"`);
@@ -252,7 +257,7 @@ const wf = dir => fs.readdirSync(path.join(REPO, dir)).filter(f => f.endsWith('.
 
 test('every file the reference gate workflows run or import needs two distinct verifiers (round 7 and 8 P1s)', () => {
   const files = runClosure(wf('templates/merge-auto'));
-  for (const f of ['bin/eng.mjs', 'lib/merge-cli.mjs', 'lib/merge-queue.mjs', 'lib/self-merge.mjs', 'lib/renovate-cli.mjs', 'lib/render.mjs', 'lib/flake.mjs', 'lib/stack-audit.mjs']) assert.ok(files.includes(f), `${f} is in the gate's run closure`);
+  for (const f of ['bin/eng.mjs', 'lib/merge-cli.mjs', 'lib/merge-queue.mjs', 'lib/self-merge.mjs', 'lib/run.mjs', 'lib/render.mjs', 'lib/flake.mjs', 'lib/stack-audit.mjs']) assert.ok(files.includes(f), `${f} is in the gate's run closure`);
   for (const f of files) assert.equal(gateDecision({ bind: head(), files: [f], verdicts: [V()], q }).need, 'verifiers', `${f}: one verifier must not be enough`);
 });
 
@@ -321,7 +326,7 @@ test('eng merge gate: a non-ASCII, tab or newline filename under a gate path sti
   }
 });
 
-test('eng merge gate + watch: an auto-revert that main moved past is behind, gets updated and re-dispatched, then passes (round-4 P1)', () => {
+test('eng merge gate + post: an auto-revert that main moved past is behind, gets updated and re-dispatched, then passes (round-4 P1)', () => {
   setMode('strict');
   git('checkout -q --detach origin/main'); fs.writeFileSync(path.join(dir, 'shipped-bad.txt'), 'bad\n'); git('add -A'); git('commit -qm "ship bad"');
   const bad = git('rev-parse HEAD'), branch = `auto-revert/${bad.slice(0, 12)}`; git('update-ref refs/remotes/origin/main HEAD');
@@ -335,11 +340,11 @@ test('eng merge gate + watch: an auto-revert that main moved past is behind, get
   assert.equal(r.status, 1); assert.match(r.stdout, /auto-revert is behind the base: update the branch/); assert.doesNotMatch(r.stdout, /not its exact inverse/);
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[pr(head)]]);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'failure', updated_at: now, created_at: now }] });
-  assert.match(eng(['merge', 'watch', '--dry-run']).stdout, /#15: behind main with auto-merge on: would update the branch/);
-  // GitHub's update-branch: a merge from main onto the revert branch. A GITHUB_TOKEN push starts no workflows, so watch dispatches them.
+  assert.match(tend(['--dry-run']).stdout, /#15: behind main with auto-merge on: would update the branch/);
+  // GitHub's update-branch: a merge from main onto the revert branch. A GITHUB_TOKEN push starts no workflows, so post dispatches them.
   git(`checkout -q ${branch}`); git('merge -q --no-edit origin/main'); const updated = git('rev-parse HEAD');
   put('repos/o/r/pulls/15', pr(updated)); fs.writeFileSync(calls, '');
-  r = eng(['merge', 'watch']);
+  r = tend();
   assert.match(r.stdout, /#15: dispatched ci\.yml for the updated head/); assert.match(r.stdout, /#15: dispatched gate\.yml for the updated head/);
   assert.match(fs.readFileSync(calls, 'utf8'), /pulls\/15\/update-branch/);
   r = eng(['merge', 'gate', '--pr', '15']);
@@ -352,7 +357,7 @@ test('eng merge gate + watch: an auto-revert that main moved past is behind, get
 test('eng doctor runs to its verdict on a config with no stack (eng-standard itself; round-4 note)', () => {
   git('checkout -q --detach origin/main');
   const r = eng(['doctor']), all = r.stdout + r.stderr;
-  assert.doesNotMatch(all, /TypeError|Cannot read properties/); assert.match(all, /eng doctor: PASS|doctor: \d+ disk-hygiene problem/);
+  assert.doesNotMatch(all, /TypeError|Cannot read properties/); assert.match(all, /eng doctor: PASS|doctor: \d+ problem/);
 });
 
 test('eng merge gate: an auto-revert passes only from the bot, on its branch, for a shipped commit; dispatch carries the PR (round-1 P1s)', () => {
@@ -403,7 +408,7 @@ test('eng merge gate: a whitespace-only "inverse" that changes behaviour is not 
   assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /not its exact inverse/);
 });
 
-test('eng merge watch --dry-run: stuck flag, restart on FAIL, update-branch for a behind auto-merge PR', () => {
+test('eng merge post --dry-run: stuck flag, restart on FAIL, update-branch for a behind auto-merge PR; a tip with no finished run is checked', () => {
   git('checkout -q -B feat2 origin/main'); fs.writeFileSync(path.join(dir, 'w.md'), 'w\n'); git('add -A'); git('commit -qm w -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), old = new Date(Date.now() - 45 * 60e3).toISOString();
   const pr8 = { number: 8, draft: false, head: { sha: head, ref: 'feat2' }, base: { ref: 'main' }, labels: [], updated_at: old, body: 'Owner: mcp:owner-thread', html_url: 'https://x/8', user: { login: 'builder' } };
@@ -412,26 +417,30 @@ test('eng merge watch --dry-run: stuck flag, restart on FAIL, update-branch for 
   comments([V({ patch_id: 'x', sha: head, result: 'FAIL', evidence: 'nd7e' })], 8);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'failure', updated_at: old, created_at: old }] });
   fs.writeFileSync(calls, '');
-  let r = eng(['merge', 'watch', '--dry-run']);
+  let r = tend(['--dry-run']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /post-merge check on [0-9a-f]{8}: already ran \(merge-post\.yml run 1, success\); not run again/);
   assert.match(r.stdout, /#8 [0-9a-f]{8}: STUCK \(required check failure on head, no activity for 4\d min\); gate needs fix/);
   assert.match(r.stdout, /#8: RESTART owner mcp:owner-thread: verdict FAIL by verifier-1/);
   assert.doesNotMatch(fs.readFileSync(calls, 'utf8'), /-X (POST|PUT)/, 'dry run posts nothing');
   git('checkout -q --detach origin/main'); fs.writeFileSync(path.join(dir, 'moved.md'), 'm\n'); git('add -A'); git('commit -qm moved'); git('update-ref refs/remotes/origin/main HEAD');
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[{ ...pr8, auto_merge: { merge_method: 'squash' } }]]);
   comments([V({ patch_id: 'x', sha: head })], 8); // with a PASS, a behind branch is the only thing left: update it (a FAIL restarts the owner instead)
-  r = eng(['merge', 'watch', '--dry-run']);
+  r = tend(['--dry-run']);
   assert.match(r.stdout, /#8: behind main with auto-merge on: would update the branch/);
-  put('repos/o/r/commits/main', { sha: 'd'.repeat(40), commit: { committer: { date: old } } });
-  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${'d'.repeat(40)}&per_page=1`, { workflow_runs: [] });
-  r = eng(['merge', 'watch', '--dry-run']);
-  assert.match(r.stdout, /main dddddddd has no merge-post.yml run: would dispatch it/, 'a bot-armed merge still gets its post-merge check');
-  put('repos/o/r/pulls/8', { ...pr8, head: { ...pr8.head, sha: 'e'.repeat(40) } }); // GitHub has applied the update-branch
-  r = eng(['merge', 'watch'], { FAKE_GH_FAIL: 'actions/workflows/merge-post.yml/dispatches' });
-  assert.equal(r.status, 1, 'a failed recovery dispatch turns the watch job red (round-2 P1)'); assert.match(r.stdout, /FAIL could not give main its merge-post.yml run/);
+  // A cancelled run proves nothing: the check runs again.
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${git('rev-parse HEAD')}&per_page=20`, { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'cancelled' }, { id: 2, status: 'in_progress' }] });
+  r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, /post-merge check on [0-9a-f]{8}: bash scripts\/shipped-artifact-check\.sh/, 'a cancelled run does not count as checked');
+  // A bot-armed merge fires no push run: the scheduled run finds no finished run for the tip and checks it, then still tends PRs.
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${git('rev-parse HEAD')}&per_page=20`, { workflow_runs: [{ id: 2, status: 'in_progress' }] });
+  r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.equal(r.status, 1, 'the check fails here: the post-merge script is not in this repo');
+  assert.match(r.stdout, /post-merge check on [0-9a-f]{8}: bash scripts\/shipped-artifact-check\.sh/); assert.match(r.stdout, /would open an auto-revert PR/);
+  assert.match(r.stdout, /#8: behind main with auto-merge on: would update the branch/, 'a red check does not stop the pass over open PRs');
 });
 
-test('eng merge watch --dry-run: re-arms auto-merge once the gate passes; the hold label disarms it', () => {
+test('eng merge post --dry-run: re-arms auto-merge once the gate passes; the hold label disarms it', () => {
   git('checkout -q -B feat5 origin/main'); fs.writeFileSync(path.join(dir, 'a5.md'), 'a\n'); git('add -A'); git('commit -qm a5 -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), now = new Date().toISOString();
   const base = { number: 11, draft: false, head: { sha: head, ref: 'feat5' }, base: { ref: 'main' }, labels: [], updated_at: now, body: '', html_url: 'https://x/11', user: { login: 'b' } };
@@ -439,14 +448,14 @@ test('eng merge watch --dry-run: re-arms auto-merge once the gate passes; the ho
   comments([V({ patch_id: 'x', sha: head })], 11);
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'success', updated_at: now, created_at: now }] });
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[base]]);
-  let r = eng(['merge', 'watch', '--dry-run']);
+  let r = tend(['--dry-run']);
   assert.match(r.stdout, /#11: gate PASS, auto-merge off: would re-arm it/);
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[{ ...base, labels: [{ name: 'hold' }], auto_merge: { merge_method: 'squash' } }]]);
-  r = eng(['merge', 'watch', '--dry-run']);
+  r = tend(['--dry-run']);
   assert.match(r.stdout, /#11: hold: would turn auto-merge off/); assert.doesNotMatch(r.stdout, /would re-arm/);
 });
 
-test('eng merge watch: a failed restart delivery is retried, and noted once (round-1 P2)', () => {
+test('eng merge post: a failed restart delivery is retried, and noted once (round-1 P2)', () => {
   git('checkout -q -B feat4 origin/main'); fs.writeFileSync(path.join(dir, 'r.md'), 'r\n'); git('add -A'); git('commit -qm r -m "Agent: builder-9"');
   const head = git('rev-parse HEAD'), now = new Date().toISOString();
   put('repos/o/r/pulls?state=open&base=main&per_page=100', [[{ number: 10, draft: false, head: { sha: head, ref: 'feat4' }, base: { ref: 'main' }, labels: [], updated_at: now, body: '', html_url: 'https://x/10', user: { login: 'b' } }]]);
@@ -454,13 +463,13 @@ test('eng merge watch: a failed restart delivery is retried, and noted once (rou
   put(`repos/o/r/commits/${head}/status`, { statuses: [{ context: 'eng-merge-gate', state: 'failure', updated_at: now, created_at: now }] });
   const failV = V({ patch_id: 'x', sha: head, result: 'FAIL' }), key = `fail:verifier-1:2026-10-24T00:00:00.000Z`;
   comments([failV], 10); fs.writeFileSync(calls, '');
-  eng(['merge', 'watch'], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '22' });
+  tend([], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '22' });
   put('repos/o/r/issues/10/comments?per_page=100', [[{ user: { login: 'shared' }, author_association: 'OWNER', body: verdictBody(failV), created_at: '2026-10-24T00:00:00Z' }, { body: `<!-- eng-restart/v1 key=${key} -->\nWebhook: failed (curl exit 22); retried next run.` }]]);
-  eng(['merge', 'watch'], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '22' });
+  tend([], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '22' });
   let log = fs.readFileSync(calls, 'utf8');
   assert.equal(log.split('\n').filter(l => l === 'curl').length, 2, 'a failed delivery is attempted again');
   assert.equal(log.split('\n').filter(l => /issues\/10\/comments --input/.test(l)).length, 1, 'the failure is noted once, not every run');
-  eng(['merge', 'watch'], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '0' });
+  tend([], { ENG_RESTART_WEBHOOK: 'https://hook', FAKE_CURL_EXIT: '0' });
   log = fs.readFileSync(calls, 'utf8');
   assert.equal(log.split('\n').filter(l => /issues\/10\/comments --input/.test(l)).length, 2, 'an acknowledged delivery is recorded');
 });
@@ -482,3 +491,15 @@ test('eng merge post --dry-run and eng verdict --pr', () => {
   assert.match(log, new RegExp(`statuses/${git('rev-parse HEAD')} -f state=success -f context=verdict`));
 });
 const out = r => r.stdout + r.stderr;
+
+test('eng merge post: a tip whose check failed and whose revert is pushed stays red on later runs, and never opens a second revert', t => {
+  git('checkout -q --detach origin/main');
+  const sha = git('rev-parse HEAD'), origin = path.join(dir, '.gh', 'origin.git');
+  execSync(`git init -q --bare ${origin}`); git(`remote add origin ${origin}`); t.after(() => git('remote remove origin'));
+  git(`push -q origin HEAD:refs/heads/auto-revert/${sha.slice(0, 12)}`);
+  put(`repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${sha}&per_page=20`, { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'failure' }, { id: 2, status: 'in_progress' }] });
+  let r = eng(['merge', 'post', '--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /already ran \(merge-post\.yml run 1, failure, auto-revert\/[0-9a-f]{12} pushed\); not run again\. It failed/);
+  r = eng(['merge', 'post', '--dry-run']);
+  assert.equal(r.status, 1); assert.match(r.stdout, /auto-revert\/[0-9a-f]{12} is already pushed; not opening a second revert/);
+});

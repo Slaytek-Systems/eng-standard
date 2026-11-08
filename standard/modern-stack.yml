@@ -1,5 +1,5 @@
 # Modern Stack v1: fleet-wide version floors. Owner: Matt. Agents draft changes; Matt approves.
-# `eng stack-audit` compares a repo's declared deps, packageManager and CI Bun/Node pins against this file.
+# Suggested version floors for the fleet. Advice, not a gate: eng does not audit repos against this file.
 # Reasoning lives in Core (core.why); docs/modern-stack.md is the short human view.
 version: 1
 name: Modern Stack v1
@@ -30,7 +30,7 @@ layers:
   backend:
     tool: "Convex on Convex Cloud; @convex-dev/* components on their current 0.x lines; v.function() validates function handles"
     floors: { convex: 1.49.0 }
-    node: 22   # Convex 1.49 dropped Node 20. eng stack-check fails a Convex repo that declares a lower Node (engines, .nvmrc, CI, convex.json).
+    node: 22   # Convex 1.49 dropped Node 20.
     alternative: "self-hosted Convex on Railway when residency or the client requires it; PlanetScale when SQL earns its keep"
   auth:
     tool: "Better Auth ~1.6 + @convex-dev/better-auth 0.12 (held below Better Auth 1.7 by the adapter's peer range)"

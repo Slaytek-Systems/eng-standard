@@ -32,20 +32,20 @@ test('eng init makes statechart the formal check for stateful flows, in AGENTS.m
   assert.ok(fs.existsSync(path.join(dir, '.agents/skills/statechart/SKILL.md')));
 });
 
-test('the installed statechart runner is executable; drift-check fails when it is not and sync restores it', () => {
+test('the installed statechart runner is executable; sync --check fails when it is not and sync restores it', () => {
   const p = path.join(dir, RUNNER);
   assert.ok(fs.statSync(p).mode & 0o100, 'runner executable after init');
-  assert.equal(eng('drift-check').status, 0);
+  assert.equal(eng('sync', '--check').status, 0);
   fs.chmodSync(p, 0o644);
-  const d = eng('drift-check');
+  const d = eng('sync', '--check');
   assert.equal(d.status, 1); assert.match(d.stderr, new RegExp(`${RUNNER}: not executable`));
   assert.equal(eng('sync').status, 0);
   assert.ok(fs.statSync(p).mode & 0o100, 'runner executable after sync');
-  assert.equal(eng('drift-check').status, 0);
+  assert.equal(eng('sync', '--check').status, 0);
 });
 
 test('a config that does not install statechart is rejected', () => {
-  const r = withConfig(replace('    - pstack/*', '    - pstack/poteto-mode\n    - pstack/create-formal-verification-skill\n    #'), () => eng('drift-check'));
+  const r = withConfig(replace('    - pstack/*', '    - pstack/poteto-mode\n    - pstack/create-formal-verification-skill\n    #'), () => eng('sync', '--check'));
   assert.equal(r.status, 1);
   assert.match(r.stderr, /formal\.stateful is statechart, which agents\.skills does not install/);
   assert.doesNotMatch(r.stderr, /formal\.other/);
@@ -53,7 +53,7 @@ test('a config that does not install statechart is rejected', () => {
 
 test('replacing the stateful default needs formal.why, and AGENTS.md then shows the choice and the reason', () => {
   const swap = replace('  stateful: statechart ', '  stateful: create-formal-verification-skill ');
-  const bad = withConfig(swap, () => eng('drift-check'));
+  const bad = withConfig(swap, () => eng('sync', '--check'));
   assert.equal(bad.status, 1); assert.match(bad.stderr, /formal\.stateful replaces the standard's default \(statechart\): say why in formal\.why/);
   const ok = withConfig(s => swap(s).replace('  # why: "..."', '  why: "every flow here is a pure parser"'), () => [eng('sync'), fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')]);
   assert.equal(ok[0].status, 0, ok[0].stderr);
@@ -63,7 +63,7 @@ test('replacing the stateful default needs formal.why, and AGENTS.md then shows 
 });
 
 test('formal settings are validated', () => {
-  const r = withConfig(replace('  other: create-formal-verification-skill', '  othr: create-formal-verification-skill'), () => eng('drift-check'));
+  const r = withConfig(replace('  other: create-formal-verification-skill', '  othr: create-formal-verification-skill'), () => eng('sync', '--check'));
   assert.equal(r.status, 1); assert.match(r.stderr, /formal\.othr is not a setting/);
   assert.deepEqual(formalErrors(undefined, null), [], 'omitted formal uses the defaults');
   assert.deepEqual(formalErrors({}, ['statechart', 'create-formal-verification-skill']), []);

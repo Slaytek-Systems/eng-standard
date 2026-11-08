@@ -23,7 +23,7 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 2. SvelteKit 3 is piloted on Equitus, then Syncsoon. Convex + Better Auth repos wait until the adapter supports Better Auth 1.7.
 3. Svelte template linting is not covered: Oxlint plus svelte-check warnings, no ESLint. Matt accepted losing it on 15 Oct 2026.
 4. Equitus's host is undecided. Compare real Vercel + Supabase costs against a Railway estimate first.
-5. Floors live here. A monthly `eng stack-audit` files Core follow-ups. Core keeps the reasoning. The monthly schedule was approved by Matt on 15 Oct and is scheduled as a T3 task (id recorded in Core/ledger).
+5. Floors live here. Core keeps the reasoning. Until 0.14.0 a monthly `eng stack-audit` filed Core follow-ups; the 6 Nov 2026 CLI cut dropped that command, so the floors are advice, not a check.
 
 ## Recorded exceptions
 
@@ -32,18 +32,9 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 - **slaytek-site**: Astro.
 - **Equitus**: host pending (see decision 4).
 
-## Audit
+## Lint
 
-```sh
-eng stack-audit                                  # this repo, at origin/main (else main, else HEAD)
-eng stack-audit motus=../motus-app kalsigns=../kalsigns-platform --ref origin/main
-eng stack-audit <repos> --json                   # findings as JSON
-eng stack-audit <repos> --core                   # Core work.followup-create inputs, one per drift; printed, never sent
-```
-
-The audit is read-only and makes no network calls. A floor applies only when a repo declares that package. Exit 1 means drift. Each `--core` item has a stable `dedupe_key`; skip any item whose key already has an open follow-up. Its `idempotency_key` carries the run month in Australia/Sydney.
-
-Two Convex rules run in each repo's own gate, not in the audit. `eng stack-check` fails a repo that declares `convex` and pins Node below the backend layer's `node` (22) in `engines.node`, `.nvmrc`, `.node-version`, a CI `node-version` or `convex.json` `node.nodeVersion`. It warns when such a repo pins no Node at all. Once a repo is on convex 1.49, `eng lint` rule `convex-function-handle-validator` fails a `fnHandle`- or `functionHandle`-named field validated with `v.string()`, and an `as FunctionHandle<...>` cast, under `convex/`. Use `v.function()` instead. A brownfield repo baselines its existing hits with `eng renovate baseline --kind lint`.
+Once a repo is on convex 1.49, `eng lint` rule `convex-function-handle-validator` fails a `fnHandle`- or `functionHandle`-named field validated with `v.string()`, and an `as FunctionHandle<...>` cast, under `convex/`. Use `v.function()` instead. A repo that adopts the standard while shipping baselines its existing hits through `eng init`.
 
 ## Not verified
 

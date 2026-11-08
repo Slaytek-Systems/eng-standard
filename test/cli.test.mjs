@@ -25,25 +25,25 @@ before(() => {
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('e2e-required: docs-only diff is not required, exit 10 with --exit-code', () => {
+test('e2e --required: docs-only diff is not required, exit 10 with --exit-code', () => {
   fs.writeFileSync(path.join(dir, 'README.md'), 'y\n'); git('commit -qam docs');
-  const r = eng('e2e-required', '--exit-code');
+  const r = eng('e2e', '--required', '--exit-code');
   assert.equal(r.status, 10, r.stdout + r.stderr);
   assert.match(r.stdout, /NOT REQUIRED \(only docs/);
 });
 
-test('e2e-required: app change is required; uncommitted files count', () => {
+test('e2e --required: app change is required; uncommitted files count', () => {
   fs.mkdirSync(path.join(dir, 'src')); fs.writeFileSync(path.join(dir, 'src/a.ts'), 'export {}\n');
-  const r = eng('e2e-required', '--exit-code');
+  const r = eng('e2e', '--required', '--exit-code');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /REQUIRED \(touches app/);
   fs.rmSync(path.join(dir, 'src'), { recursive: true });
 });
 
-test('e2e-required: --files, --labels, --event, --json', () => {
-  assert.equal(JSON.parse(eng('e2e-required', '--files', 'docs/a.md', '--json').stdout).required, false);
-  assert.equal(JSON.parse(eng('e2e-required', '--files', 'docs/a.md', '--labels', 'risk:high', '--json').stdout).required, true);
-  assert.equal(JSON.parse(eng('e2e-required', '--files', 'docs/a.md', '--event', 'main', '--json').stdout).required, true);
+test('e2e --required: --files, --labels, --event, --json', () => {
+  assert.equal(JSON.parse(eng('e2e', '--required', '--files', 'docs/a.md', '--json').stdout).required, false);
+  assert.equal(JSON.parse(eng('e2e', '--required', '--files', 'docs/a.md', '--labels', 'risk:high', '--json').stdout).required, true);
+  assert.equal(JSON.parse(eng('e2e', '--required', '--files', 'docs/a.md', '--event', 'main', '--json').stdout).required, true);
 });
 
 test('e2e --if-required passes as NOT REQUIRED on a docs-only diff', () => {
@@ -61,24 +61,26 @@ test('e2e --if-required on main still runs the real e2e (fails here: no pins)', 
 test('invalid policy is rejected', () => {
   const p = path.join(dir, 'eng.config.yml'), s = fs.readFileSync(p, 'utf8');
   fs.writeFileSync(p, s.replace('on_merge: full', 'on_merge: off'));
-  const r = eng('e2e-required');
+  const r = eng('e2e', '--required');
   fs.writeFileSync(p, s);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /on_merge must be full/);
 });
 
-test('rendered pipeline, SHIPPING.md and AGENTS.md carry the policy; drift-check passes', () => {
+test('rendered pipeline, SHIPPING.md and AGENTS.md carry the policy; sync --check passes', () => {
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const pipe = fs.readFileSync(path.join(dir, '.eng/ci/pipeline.yml'), 'utf8');
   assert.match(pipe, /npx eng e2e --if-required/);
+  assert.match(pipe, /label: "required checks \(skipped = failed\)"\n    command: "for k in checks drift lint rules typecheck test launch verdict e2e; do o=\$\$\(buildkite-agent step get outcome/, 'a skipped step fails the build');
+  assert.doesNotMatch(pipe, /ci-verdict/);
   assert.match(pipe, /# e2e: PRs run it only when/);
   const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   assert.match(ship, /E2E is path-based on PRs/);
   assert.match(ship, /red e2e on `main` means the shipping manager reverts/);
   assert.match(ship, /motus #285/);
-  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /eng e2e-required/);
+  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /eng e2e --required/);
   assert.ok(!fs.existsSync(path.join(dir, '.eng/ci/e2e-nightly.yml')));
-  assert.equal(eng('drift-check').status, 0);
+  assert.equal(eng('sync', '--check').status, 0);
 });
 
 test('nightly enabled renders the nightly pipeline', () => {
@@ -91,14 +93,37 @@ test('nightly enabled renders the nightly pipeline', () => {
   fs.writeFileSync(p, s); eng('sync');
 });
 
-test('--help lists e2e-required', () => {
-  const r = eng('--help'); assert.equal(r.status, 0); assert.match(r.stdout, /e2e-required/);
+test('--help lists the hallway and nothing the 0.14.0 cut dropped', () => {
+  const r = eng('--help'); assert.equal(r.status, 0);
+  const cmds = [...r.stdout.matchAll(/^  eng ([a-z0-9]+)/gm)].map(m => m[1]);
+  assert.deepEqual(cmds, ['init', 'sync', 'lint', 'run', 'verdict', 'e2e', 'rules', 'gate', 'merge', 'doctor']);
+  assert.match(r.stdout, /e2e \[--if-required \| --required/);
+  for (const gone of ['drift-check', 'e2e-required', 'renovate', 'launch', 'ephemeral', 'leave-nothing', 'verdict round', 'isolation', 'run-service', 'connect', 'stack-check', 'stack-audit', 'fallow', 'conform', 'ci-verdict', 'fetch', 'downloads', 'find-laws', 'laws', 'mistake', 'retro', 'ship next', 'clean', 'merge watch', 'merge settings', 'verify create', 'evidence check'])
+    assert.doesNotMatch(r.stdout, new RegExp(`eng ${gone}\\b`), gone);
 });
 
-test('after eng sync, eng lint and drift-check both pass (vendored test files are not repo-owned)', () => {
+test('eng doctor --launch proves the launch contract, and fails when the repo has none (was launch-check)', () => {
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8');
+  try {
+    fs.writeFileSync(p, orig.replace(/^launch:[\s\S]*?(?=^\S)/m, ''));
+    const r = eng('doctor', '--launch');
+    assert.equal(r.status, 1); assert.match(r.stderr, /repo has no isolated launch/);
+  } finally { fs.writeFileSync(p, orig); }
+});
+
+test('a dropped command is not a command: it prints the help and exits 1', () => {
+  for (const c of ['drift-check', 'renovate', 'launch', 'ephemeral', 'retro', 'clean', 'isolation', 'stop', 'status']) {
+    const r = eng(c); assert.equal(r.status, 1, c); assert.match(r.stdout, /eng init \[--owner/, c);
+  }
+});
+
+test('after eng sync, eng lint and sync --check both pass (vendored test files are not repo-owned)', () => {
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const l = eng('lint'); assert.equal(l.status, 0, l.stderr + l.stdout);
-  assert.equal(eng('drift-check').status, 0);
+  assert.equal(eng('sync', '--check').status, 0);
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true }); fs.writeFileSync(path.join(dir, 'src/password.ts'), 'export const minLength = 12;\n');
+  const named = eng('lint'); fs.rmSync(path.join(dir, 'src'), { recursive: true });
+  assert.equal(named.status, 0, `a repo with no secret-filename baseline is not checked for credential-looking names: ${named.stdout}${named.stderr}`);
   // a repo-owned test file with a bare tmpdir is still flagged
   fs.writeFileSync(path.join(dir, 'own.test.mjs'), "const d = os.tmpdir();\n");
   const bad = eng('lint'); fs.rmSync(path.join(dir, 'own.test.mjs'));
@@ -155,7 +180,7 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
     assert.match(doc, /ec67f831/);
   }
   assert.match(ship, /two recovery threads ended with main still red/);
-  assert.match(agents, /eng ship next` prints the live merged state and main checks/);
+  assert.doesNotMatch(agents, /eng ship next/);
   // Fixed rule 19: briefs live in Core (approved by Matt, 19 Oct 2026)
   for (const doc of [ship, agents]) {
     assert.match(doc, /19\. \*\*Briefs live in Core\.\*\* Any brief one agent hands another \(a builder, reviewer or verifier thread\) is written to Core first, as a note in the repo's Core space tagged `brief`/);
@@ -175,7 +200,7 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
     assert.match(doc, /Decisions for Matt and client-facing communication stay with the lead/);
     assert.match(doc, /project leads switch on Wed 21 Oct 2026/);
   }
-  assert.equal(eng('drift-check').status, 0);
+  assert.equal(eng('sync', '--check').status, 0);
 });
 
 test('spawn table names playbooks that exist in vendored poteto-mode', () => {

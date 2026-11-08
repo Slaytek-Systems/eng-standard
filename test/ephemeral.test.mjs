@@ -37,7 +37,7 @@ before(() => {
   execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir });
   const c = YAML.parse(fs.readFileSync(TPL, 'utf8'));
   c.project.name = 'eph'; c.project.commands.test = 'true'; c.gates.required = ['test']; delete c.launch; delete c.constraints;
-  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
+  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c)); fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });  // eng sync keeps it tracked
   execSync('git add -A && git commit -qm base', { cwd: dir });
 });
 // Cleans up even when the check under test is broken and left things behind.
@@ -56,16 +56,16 @@ after(() => {
 });
 
 test('a run that cleans up after itself passes, and its run folder is gone', () => {
-  const r = eng('ephemeral', '--', `d=$(mktemp -d); echo x > "$d/f"; rm -r "$d"; ${SERVER} & s=$!; sleep 0.3; kill $s; wait $s || true`);
+  const r = eng('run', '--here', '--', `d=$(mktemp -d); echo x > "$d/f"; rm -r "$d"; ${SERVER} & s=$!; sleep 0.3; kill $s; wait $s || true`);
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /eng ephemeral: PASS/);
+  assert.match(r.stdout, /eng run: PASS/);
   assert.deepEqual(rounds(), []);
-  const f = eng('ephemeral', '--', 'exit 3');
+  const f = eng('run', '--here', '--', 'exit 3');
   assert.equal(f.status, 3, 'the command\'s own failure is the check\'s exit code');
 });
 
 test('temp left in TMPDIR or in a nested eng round fails, and is removed with the run folder', () => {
-  const r = eng('ephemeral', '--', 'mkdir "$TMPDIR/kept"; mkdir "$ENG_TMP_BASE/eng-eph-nested-round"');
+  const r = eng('run', '--here', '--', 'mkdir "$TMPDIR/kept"; mkdir "$ENG_TMP_BASE/eng-eph-nested-round"');
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /LEFT temp kept /);
   assert.match(r.stdout, /LEFT temp scratch\/eng-eph-nested-round /);
@@ -78,7 +78,7 @@ test('a bare /tmp write lands in the run\'s private /tmp, fails, and never reach
   const probe = path.join(root, 'probe'); fs.mkdirSync(probe);
   const bwrap = spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', probe, realTmp, '--', 'true']).status === 0;
   if (!bwrap || xdg.startsWith(realTmp + '/')) return t.skip(`needs a usable bwrap and a run folder outside /tmp (bwrap ${bwrap ? 'ok' : 'unusable'}; nested bwrap is refused, so this runs under plain npm test with ENG_TMP outside /tmp)`);
-  const r = eng('ephemeral', '--', `touch /tmp/${tag}`);
+  const r = eng('run', '--here', '--', `touch /tmp/${tag}`);
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /private \/tmp/);
   assert.match(r.stdout, new RegExp(`LEFT temp ${tag} `));
@@ -86,18 +86,18 @@ test('a bare /tmp write lands in the run\'s private /tmp, fails, and never reach
 });
 
 test('a server left running fails and is stopped; one marked with persist_env keeps running', t => {
-  let r = eng('ephemeral', '--', `${SERVER} & echo $! > ${marks}/left`);
+  let r = eng('run', '--here', '--', `${SERVER} & echo $! > ${marks}/left`);
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('left')} \\(node -e .*\\): stopped`));
   assert.ok(!running(Number(mark('left'))), 'the leftover server was stopped');
-  r = eng('ephemeral', '--', `SLAYTEK_PERSIST=true ${SERVER} & echo $! > ${marks}/kept`);
+  r = eng('run', '--here', '--', `SLAYTEK_PERSIST=true ${SERVER} & echo $! > ${marks}/kept`);
   const kept = Number(mark('kept')); t.after(() => { try { process.kill(kept, 'SIGKILL'); } catch {} });
   assert.equal(r.status, 0, out(r));
   assert.ok(running(kept), 'the marked server is still running');
 });
 
 test('a child that drops the run id from its environment and leaves its session is still found and stopped', () => {
-  const r = eng('ephemeral', '--', `env -u ENG_EPHEMERAL_RUN setsid ${SERVER} & echo $! > ${marks}/bare`);
+  const r = eng('run', '--here', '--', `env -u ENG_EPHEMERAL_RUN setsid ${SERVER} & echo $! > ${marks}/bare`);
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /processes \(descendants and run id\)/);
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('bare')} `));
@@ -111,7 +111,7 @@ test('a child forked after the command ends, or by a process while it is being s
   const fork = n => `p = subprocess.Popen(['setsid', 'sleep', '301'], env={}); open('${marks}/${n}', 'w').write(str(p.pid))`;
   const late = `env -u ENG_EPHEMERAL_RUN python3 -c "import subprocess, time; time.sleep(0.7); ${fork('late')}" >/dev/null 2>&1 &`;
   const onTerm = `env -u ENG_EPHEMERAL_RUN python3 -c "import signal, subprocess, time; signal.signal(15, lambda *a: (exec(\\"${fork('onterm')}\\"), exit(0))); time.sleep(300)" >/dev/null 2>&1 &`;
-  const r = eng('ephemeral', '--', `${late} ${onTerm}`);
+  const r = eng('run', '--here', '--', `${late} ${onTerm}`);
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /LEFT process \d+ \(python3 -c .*\): stopped/);
   assert.ok(!running(Number(mark('late'))), 'the late fork was stopped');
@@ -124,19 +124,19 @@ test('without python3: mode fail refuses the run; mode warn runs it and still st
   const noPy = { ...env, PATH: bin };
   t.after(() => { setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.project.commands.test = 'true'; }); kill('nopy'); });
   setCfg(c => { c.project.commands.test = `setsid sleep 304 >/dev/null 2>&1 & echo $! > ${marks}/nopy`; });
-  let r = spawnSync(process.execPath, [ENG, 'ephemeral', 'check'], { cwd: dir, encoding: 'utf8', env: noPy });
+  let r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: noPy });
   assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /run test not started, because it could not be watched: processes: python3/);
   assert.ok(!fs.existsSync(path.join(marks, 'nopy')), 'the refused run never started');
   setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; });
-  r = spawnSync(process.execPath, [ENG, 'ephemeral', 'check'], { cwd: dir, encoding: 'utf8', env: noPy });
+  r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: noPy });
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /was not fully watched: processes: python3/);
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('nopy')} \\(sleep 304\\): stopped`)); assert.ok(!running(Number(mark('nopy'))), 'stopped through the run id');
 });
 
 test('containers, networks and volumes left behind fail and are removed, a container with the volumes docker made for it; --rm passes', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
-  let r = eng('ephemeral', '--', 'docker run --rm -v /data alpine:latest true');
+  let r = eng('run', '--here', '--', 'docker run --rm -v /data alpine:latest true');
   assert.equal(r.status, 0, out(r));
-  r = eng('ephemeral', '--', [
+  r = eng('run', '--here', '--', [
     `docker run -d --name ${tag}-c -v /data alpine:latest sleep 300 >/dev/null`,
     `docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-c > ${marks}/own`,
     `c=$(docker run -d -v /data alpine:latest sleep 300); docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' $c > ${marks}/anon; docker rm -f $c >/dev/null`,
@@ -164,7 +164,7 @@ test('another owner\'s anonymous volume a run container inherits (made before or
   dk('create', '--name', `${tag}-d1`, '-v', '/data', 'alpine:latest', 'true'); // created, never run: the devbox removes exited containers
   const before = dk('inspect', '-f', '{{range .Mounts}}{{.Name}}{{end}}', `${tag}-d1`).stdout.trim();
   assert.match(before, /^\w{64}$/); fs.writeFileSync(path.join(marks, 'before'), before);
-  const r = eng('ephemeral', '--', [
+  const r = eng('run', '--here', '--', [
     `DOCKER_HOST=${outside} docker create --name ${tag}-d2 -v /data alpine:latest true >/dev/null`,
     `DOCKER_HOST=${outside} docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-d2 > ${marks}/during`,
     `docker run -d --name ${tag}-b1 --volumes-from ${tag}-d1 alpine:latest sleep 300 >/dev/null`,
@@ -183,7 +183,7 @@ test('another owner\'s anonymous volume a run container inherits (made before or
 
 test('a run whose docker it cannot watch is refused before it starts', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
   const deep = path.join(root, 'x'.repeat(90));
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-z alpine:latest sleep 300`], { cwd: dir, encoding: 'utf8', env: { ...env, XDG_CACHE_HOME: deep, XDG_RUNTIME_DIR: '' } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker run -d --name ${tag}-z alpine:latest sleep 300`], { cwd: dir, encoding: 'utf8', env: { ...env, XDG_CACHE_HOME: deep, XDG_RUNTIME_DIR: '' } });
   assert.equal(r.status, 1, out(r));
   assert.match(r.stderr, /run command not started, because it could not be watched: docker: the run's labelling socket did not start/);
   assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-z`).stdout.trim(), '', 'the command never ran');
@@ -196,7 +196,7 @@ test('a docker daemon that is there but does not answer refuses the run; a missi
   const up = http.createServer((req, res) => { res.writeHead(500); res.end('{"message":"broken"}'); });
   await new Promise(r => up.listen(sick, r));
   t.after(() => { up.close(); fs.rmSync(sick, { force: true }); });
-  const run = h => new Promise(ok => { const c = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo ran > ${marks}/sick`], { cwd: dir, env: { ...env, DOCKER_HOST: h } }); let o = ''; c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { o += d; }); c.on('close', status => ok({ status, o })); });
+  const run = h => new Promise(ok => { const c = spawn(process.execPath, [ENG, 'run', '--here', '--', `echo ran > ${marks}/sick`], { cwd: dir, env: { ...env, DOCKER_HOST: h } }); let o = ''; c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { o += d; }); c.on('close', status => ok({ status, o })); });
   let r = await run(`unix://${sick}`);
   assert.equal(r.status, 1, r.o); assert.match(r.o, /not started, because it could not be watched: docker: the run's labelling socket did not start/);
   assert.ok(!fs.existsSync(path.join(marks, 'sick')), 'the command never ran');
@@ -206,7 +206,7 @@ test('a docker daemon that is there but does not answer refuses the run; a missi
 });
 
 test('the run\'s docker socket survives a malformed create request', { skip: (!docker || !execSync('command -v curl || true', { encoding: 'utf8' }).trim()) && 'needs docker and curl' }, () => {
-  const r = eng('ephemeral', '--', `curl -s --unix-socket "\${DOCKER_HOST#unix://}" -X POST -H 'Content-Type: application/json' -d null http://d/containers/create >/dev/null; docker version --format ok`);
+  const r = eng('run', '--here', '--', `curl -s --unix-socket "\${DOCKER_HOST#unix://}" -X POST -H 'Content-Type: application/json' -d null http://d/containers/create >/dev/null; docker version --format ok`);
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /^ok$/m);
 });
@@ -215,7 +215,7 @@ for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 
   const bin = path.join(root, `no${fails}`); fs.mkdirSync(bin, { recursive: true });
   // ps fails only for the check's own inventory query (its run-label filter), so the run itself still works.
   fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\ncase "$1 $*" in events*|"ps "*label=eng.ephemeral.run*|"volume volume ls"*) [ "$1" = ${fails} ] && exit 1 ;; esac\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-e${fails} -v /data alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${bin}:${env.PATH}` } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker run -d --name ${tag}-e${fails} -v /data alpine:latest sleep 300 >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${bin}:${env.PATH}` } });
   assert.equal(r.status, 1, out(r));
   assert.match(r.stderr, new RegExp(`run command was not fully watched: docker: ${says}`));
   if (fails === 'events') {
@@ -225,14 +225,14 @@ for (const [fails, says] of [['events', 'its events could not be read'], ['ps', 
 });
 
 test('a run whose docker socket dies part way fails as not fully watched', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
-  const r = eng('ephemeral', '--', 'pkill -f -- "${DOCKER_HOST#unix://}"; sleep 0.3; true');
+  const r = eng('run', '--here', '--', 'pkill -f -- "${DOCKER_HOST#unix://}"; sleep 0.3; true');
   assert.equal(r.status, 1, out(r));
   assert.match(r.stderr, /run command was not fully watched: docker: the run's labelling socket died during the run/);
 });
 
 test('a network replaced by another owner under the same name while the run shuts down is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
   const swap = `DOCKER_HOST=${outside} docker network rm ${tag}-rn; DOCKER_HOST=${outside} docker network create --label owner=outside ${tag}-rn; touch ${marks}/swapped`;
-  const r = eng('ephemeral', '--', `docker network create ${tag}-rn >/dev/null; env -u ENG_EPHEMERAL_RUN bash -c 'trap "${swap} >/dev/null 2>&1; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
+  const r = eng('run', '--here', '--', `docker network create ${tag}-rn >/dev/null; env -u ENG_EPHEMERAL_RUN bash -c 'trap "${swap} >/dev/null 2>&1; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
   assert.equal(r.status, 1, out(r));
   assert.ok(fs.existsSync(path.join(marks, 'swapped')), 'the swap finished inside the reaper\'s TERM grace');
   assert.equal(dk('network', 'inspect', '-f', '{{index .Labels "owner"}}', `${tag}-rn`).stdout.trim(), 'outside', 'the replacement network is untouched');
@@ -241,7 +241,7 @@ test('a network replaced by another owner under the same name while the run shut
 
 test('a descendant whose environment cannot be read (PR_SET_DUMPABLE=0) is stopped, not taken as marked permanent', t => {
   t.after(() => kill('undump'));
-  const r = eng('ephemeral', '--', `SLAYTEK_PERSIST=nope python3 -c "import ctypes, os, time; open('${marks}/undump', 'w').write(str(os.getpid())); ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(300)" >/dev/null 2>&1 &`);
+  const r = eng('run', '--here', '--', `SLAYTEK_PERSIST=nope python3 -c "import ctypes, os, time; open('${marks}/undump', 'w').write(str(os.getpid())); ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(300)" >/dev/null 2>&1 &`);
   assert.equal(r.status, 1, out(r));
   assert.ok(!running(Number(mark('undump'))), 'stopped');
 });
@@ -257,7 +257,7 @@ test('a leftover process is signalled only while it is the same process (pid and
 
 test('a label value holding a comma can neither fake nor hide the permanent marker', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   t.after(() => dk('rm', '-f', '-v', `${tag}-real`));
-  const r = eng('ephemeral', '--', [
+  const r = eng('run', '--here', '--', [
     `docker run -d --name ${tag}-real --label slaytek.persist=true --label 'zzz=a,slaytek.persist=false' -v /data alpine:latest sh -c 'echo kept > /data/s; sleep 300' >/dev/null`,
     `docker run -d --name ${tag}-fake --label 'zzz=a,slaytek.persist=true' alpine:latest sleep 300 >/dev/null`,
   ].join('; '));
@@ -270,13 +270,13 @@ test('a label value holding a comma can neither fake nor hide the permanent mark
 
 test('a container marked with persist_label stays, with its volume', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   t.after(() => dk('rm', '-f', '-v', `${tag}-p`));
-  const r = eng('ephemeral', '--', `docker run -d --name ${tag}-p --label slaytek.persist=true -v /data alpine:latest sleep 300 >/dev/null`);
+  const r = eng('run', '--here', '--', `docker run -d --name ${tag}-p --label slaytek.persist=true -v /data alpine:latest sleep 300 >/dev/null`);
   assert.equal(r.status, 0, out(r));
   assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-p`).stdout.trim(), 'true');
 });
 
 test('docker by an absolute path is labelled; a volume made outside the run is reported, never removed; a container made around the run\'s socket is only noted', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
-  const r = eng('ephemeral', '--', [
+  const r = eng('run', '--here', '--', [
     `${dockerAt} run -d --name ${tag}-k alpine:latest sleep 300 >/dev/null`,
     `DOCKER_HOST=${outside} docker volume create ${tag}-out >/dev/null; docker run --rm -v ${tag}-out:/d alpine:latest true`,
     `DOCKER_HOST=${outside} docker run -d --name ${tag}-u alpine:latest sleep 300 >/dev/null`,
@@ -293,13 +293,13 @@ test('docker by an absolute path is labelled; a volume made outside the run is r
 test('mode warn reports and removes but passes; mode off still runs the tests and keeps their exit code, unwatched, and eng doctor fails it', () => {
   // tests_leave_nothing keeps its own mode for temp leftovers (see the mixed-modes test): warn here too.
   setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/w"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
-  let r = eng('ephemeral', 'check');
+  let r = eng('run', 'test');
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /LEFT temp w /); assert.match(r.stdout, /eng ephemeral: WARN run test left 1 thing/);
+  assert.match(r.stdout, /LEFT temp w /); assert.match(r.stdout, /eng run: WARN run test left 1 thing/);
   assert.match(eng('doctor').stdout, /ok {3}hygiene\.run_rules\.ephemeral_runs is on/);
   setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = `echo ran >> ${marks}/off; exit 7`; });
-  r = eng('ephemeral', 'check');
-  assert.equal(r.status, 7, out(r)); assert.match(r.stdout, /eng ephemeral: off/); assert.match(r.stderr, /a run exited 7/); assert.doesNotMatch(r.stdout, /LEFT/);
+  r = eng('run', 'test');
+  assert.equal(r.status, 7, out(r)); assert.match(r.stdout, /eng run: off/); assert.match(r.stderr, /a run exited 7/); assert.doesNotMatch(r.stdout, /LEFT/);
   assert.equal(mark('off'), 'ran', 'the test ran exactly once');
   r = eng('doctor');
   assert.equal(r.status, 1); assert.match(r.stdout, /FAIL hygiene\.run_rules\.ephemeral_runs is on/);
@@ -307,15 +307,35 @@ test('mode warn reports and removes but passes; mode off still runs the tests an
   assert.deepEqual(rounds(), []);
 });
 
-test('mixed modes: ephemeral_runs warn still fails a temp leftover while tests_leave_nothing is fail, in eng ephemeral and eng gate', t => {
+test('eng run --here keeps argv boundaries: several arguments are one command, not shell text', () => {
+  let r = eng('run', '--here', '--', 'bash', '-c', 'exit 7');
+  assert.equal(r.status, 7, out(r));
+  r = eng('run', '--here', '--', 'sh', '-c', 'test "$1" = "a b"', 'x', 'a b');
+  assert.equal(r.status, 0, out(r));
+  r = eng('run', '--here', '--', 'exit 3');
+  assert.equal(r.status, 3, 'one argument is a shell command line');
+});
+
+test('ephemeral_runs off still checks tests_leave_nothing: a temp leftover fails in fail mode', t => {
+  t.after(() => setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; }));
+  setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/leak"'; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
+  let r = eng('run', 'test');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /left 1 entry in its private TMPDIR: leak \(tests_leave_nothing/);
+  setCfg(c => { c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
+  r = eng('run', 'test');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /WARN left 1 entry/);
+  assert.deepEqual(rounds(), [], 'the private TMPDIR goes with its round');
+});
+
+test('mixed modes: ephemeral_runs warn still fails a temp leftover while tests_leave_nothing is fail, in eng run and eng gate', t => {
   t.after(() => setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; }));
   setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/m"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
-  let r = eng('ephemeral', 'check');
+  let r = eng('run', 'test');
   assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /fails hygiene\.disk_rules\.tests_leave_nothing \(mode fail\)/);
   r = eng('gate');
   assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL\s+test\s/);
   setCfg(c => { c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
-  r = eng('ephemeral', 'check');
+  r = eng('run', 'test');
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /WARN run test left 1 thing/);
 });
 
@@ -334,7 +354,7 @@ test('config: unknown rules or options, bad values and undeclared runs are rejec
   try {
     for (const [f, re] of cases) {
       fs.writeFileSync(p, orig); setCfg(f);
-      const r = eng('ephemeral', 'check');
+      const r = eng('run', 'test');
       assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /config invalid/); assert.match(r.stderr, re);
     }
   } finally { fs.writeFileSync(p, orig); }
@@ -361,7 +381,7 @@ test('eng gate runs a declared step once, through the check, and adds declared r
 // fit in 107 bytes. In the scratch root itself the run dir costs the root plus the id, whatever the round folder is called.
 test('the launch run gets ENG_RUN_DIR named ENG_RUN_ID, outside the repo, in the scratch root, and removed after', () => {
   setCfg(c => { c.launch = { up: `test -d "$ENG_RUN_DIR" && printf '%s\\n%s\\n' "$ENG_RUN_ID" "$ENG_RUN_DIR" > ${marks}/launch`, doctor: 'true', down: 'true' }; });
-  const r = eng('ephemeral', 'run', 'launch');
+  const r = eng('run', 'launch');
   setCfg(c => { delete c.launch; });
   assert.equal(r.status, 0, out(r));
   const [id, runDir] = mark('launch').split('\n'), scratch = path.join(xdg, 'eng', 'eph', 'scratch');
@@ -450,7 +470,7 @@ const enforce = t => { setCfg(c => { c.isolation = { mode: 'fail' }; }); t.after
 
 test('isolation enforced: a run with no private /tmp is refused before it starts; in warn mode it still runs', t => {
   const base = path.join('/tmp', `${tag}-base`); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-  const run = () => spawnSync(process.execPath, [ENG, 'ephemeral', '--', `echo ran >> ${marks}/notmp`], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+  const run = () => spawnSync(process.execPath, [ENG, 'run', '--here', '--', `echo ran >> ${marks}/notmp`], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
   let r = run();
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /TMPDIR only: no usable bwrap/);
   enforce(t);
@@ -464,7 +484,7 @@ test('isolation enforced: ~/.convex and the cache home are read-only, home state
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   const home = path.join(root, 'home'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
   const shm = `/dev/shm/${tag}`; t.after(() => fs.rmSync(shm, { force: true }));
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
   let r = run('touch ~/.convex/state');
   assert.equal(r.status, 0, out(r)); fs.rmSync(path.join(home, '.convex', 'state'));
   enforce(t);
@@ -485,33 +505,18 @@ test('isolation enforced: ~/.convex and the cache home are read-only, home state
 
 test('a container with a restart policy is permanent and stays, as devbox-ops docker-ephemeral keeps it', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   t.after(() => dk('rm', '-f', '-v', `${tag}-rp`));
-  const r = eng('ephemeral', '--', `docker run -d --name ${tag}-rp --restart unless-stopped alpine:latest sleep 300 >/dev/null`);
+  const r = eng('run', '--here', '--', `docker run -d --name ${tag}-rp --restart unless-stopped alpine:latest sleep 300 >/dev/null`);
   assert.equal(r.status, 0, out(r));
   assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-rp`).stdout.trim(), 'true');
 });
 
-test('eng clean --containers --apply keeps permanent containers and the volumes they use, and removes the rest', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  const repo = 'eng.repo=eph', names = ['plain', 'label', 'restart'].map(n => `${tag}-cl-${n}`), vols = ['used', 'loose', 'marked'].map(n => `${tag}-cl-${n}`);
-  t.after(() => { for (const n of names) dk('rm', '-f', n); for (const v of vols) dk('volume', 'rm', v); });
-  dk('volume', 'create', '--label', repo, vols[0]); dk('volume', 'create', '--label', repo, vols[1]); dk('volume', 'create', '--label', repo, '--label', 'slaytek.persist=true', vols[2]);
-  dk('run', '-d', '--name', names[0], '--label', repo, 'alpine:latest', 'sleep', '300');
-  dk('run', '-d', '--name', names[1], '--label', repo, '--label', 'slaytek.persist=true', 'alpine:latest', 'sleep', '300');
-  dk('run', '-d', '--name', names[2], '--label', repo, '--restart', 'unless-stopped', '-v', `${vols[0]}:/d`, 'alpine:latest', 'sleep', '300');
-  const r = eng('clean', '--containers', '--apply');
-  assert.equal(r.status, 0, out(r));
-  const exists = (kind, n) => dk(kind, 'inspect', n).status === 0;
-  assert.deepEqual(names.map(n => exists('container', n)), [false, true, true], 'only the plain container is removed');
-  assert.deepEqual(vols.map(v => exists('volume', v)), [true, false, true], 'the volume a permanent container uses and the marked volume stay');
-  assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${names[2]} \\(permanent: restart policy unless-stopped\\)`));
-});
-
-test('isolation enforced: ephemeral_runs mode off still watches the run, in eng ephemeral check and eng gate', t => {
+test('isolation enforced: ephemeral_runs mode off still watches the run, in eng run test and eng gate', t => {
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   const home = path.join(root, 'home-off'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
   t.after(() => setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.project.commands.test = 'true'; }));
   setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = 'touch ~/.convex/off'; });
   enforce(t);
-  for (const cmd of [['ephemeral', 'check'], ['gate']]) {
+  for (const cmd of [['run', 'test'], ['gate']]) {
     const r = spawnSync(process.execPath, [ENG, ...cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
     assert.notEqual(r.status, 0, out(r));
     assert.ok(!fs.existsSync(path.join(home, '.convex', 'off')), `${cmd.join(' ')}: the shared Convex state was never written`);
@@ -520,37 +525,13 @@ test('isolation enforced: ephemeral_runs mode off still watches the run, in eng 
 
 
 
-test('eng clean --containers --apply keeps a repo volume that a container it does not remove still uses', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  const v = `${tag}-cl-shared`, c = `${tag}-cl-other`;
-  t.after(() => { dk('rm', '-f', c); dk('volume', 'rm', v); });
-  dk('volume', 'create', '--label', 'eng.repo=eph', v);
-  dk('run', '-d', '--name', c, '--restart', 'unless-stopped', '-v', `${v}:/d`, 'alpine:latest', 'sleep', '300');
-  const r = eng('clean', '--containers', '--apply');
-  assert.equal(r.status, 0, out(r));
-  assert.equal(dk('volume', 'inspect', v).status, 0);
-  assert.match(r.stdout, new RegExp(`keep +volume ${v} \\(permanent: used by container \\w{12}, which this does not remove\\)`));
-});
-
-
-test('eng clean --containers --apply keeps a marked anonymous volume of a container it removes', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  const c = `${tag}-cl-anon`; let vol = null;
-  t.after(() => { dk('rm', '-f', c); if (vol) dk('volume', 'rm', vol); });
-  dk('run', '-d', '--name', c, '--label', 'eng.repo=eph', '--mount', 'type=volume,target=/d,volume-label=slaytek.persist=true', 'alpine:latest', 'sleep', '300');
-  vol = dk('inspect', '-f', '{{range .Mounts}}{{.Name}}{{end}}', c).stdout.trim();
-  const r = eng('clean', '--containers', '--apply');
-  assert.equal(r.status, 0, out(r));
-  assert.equal(dk('inspect', c).status, 1, 'the unmarked container is removed');
-  assert.equal(dk('volume', 'inspect', vol).status, 0, 'its marked anonymous volume stays');
-  assert.match(r.stdout, new RegExp(`keep +volume ${vol} \\(permanent: slaytek\\.persist=true\\)`));
-});
-
 test('isolation enforced: older servers\' sockets are hidden, so a tmux server that was already running can start nothing and write nothing', t => {
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   if (spawnSync('tmux', ['-V']).status !== 0) return t.skip('needs tmux');
   const sock = path.join(root, 'tmux.sock'), tmux = (...a) => spawnSync('tmux', ['-S', sock, ...a], { encoding: 'utf8' });
   const home = path.join(root, 'home-mux'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true }); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
   tmux('new-session', '-d', '-s', 'base', 'sleep 600'); t.after(() => tmux('kill-server'));
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
   let r = run(`tmux -S ${sock} new-session -d -s w 'sleep 605'`);
   assert.equal(r.status, 0, out(r)); tmux('kill-session', '-t', 'w');
   enforce(t);
@@ -567,7 +548,7 @@ test('isolation enforced: the raw docker socket is hidden; a container another r
   t.after(() => dk('rm', '-f', `${tag}-direct`, `${tag}-side`));
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   enforce(t);
-  let r = eng('ephemeral', '--', `docker -H ${outside} run -d --name ${tag}-direct alpine:latest sleep 300 >/dev/null`);
+  let r = eng('run', '--here', '--', `docker -H ${outside} run -d --name ${tag}-direct alpine:latest sleep 300 >/dev/null`);
   assert.equal(r.status, 1, out(r));
   assert.equal(dk('ps', '-aq', '--filter', `name=${tag}-direct`).stdout.trim(), '', 'the run could not reach the raw socket');
   r = await sideContainer(env);
@@ -590,7 +571,7 @@ test('isolation enforced: an unlabelled container whose inspect fails makes the 
 // Runs `sleep 2` under the check while this test makes a container on the daemon directly: another route, or another session.
 function sideContainer(runEnv) {
   return new Promise(resolve => {
-    const p = spawn(process.execPath, [ENG, 'ephemeral', '--', 'sleep 2'], { cwd: dir, env: runEnv });
+    const p = spawn(process.execPath, [ENG, 'run', '--here', '--', 'sleep 2'], { cwd: dir, env: runEnv });
     let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d);
     setTimeout(() => dk('run', '-d', '--name', `${tag}-side`, 'alpine:latest', 'sleep', '300'), 1000);
     p.on('close', status => resolve({ status, out: o }));
@@ -604,7 +585,7 @@ test('isolation enforced: the run\'s docker socket refuses writable binds of pro
   dk('volume', 'create', '--opt', 'type=none', '--opt', 'o=bind', '--opt', `device=${home}/.cache`, vol);
   enforce(t);
   // A fake HOME has no docker context: name the daemon the test made the volume on.
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
   for (const mount of ['-v "$HOME/.convex:/s"', '--mount type=bind,source="$HOME/.convex",target=/s', '-v "$HOME:/s"', `-v ${vol}:/s`,
     '--mount type=volume,target=/s,volume-driver=local,volume-opt=type=none,volume-opt=device="$HOME/.cache",volume-opt=o=bind']) {
     const r = run(`docker run --rm ${mount} alpine:latest sh -c 'touch /s/${tag} /s/.cache/${tag} 2>/dev/null; true'`);
@@ -619,7 +600,7 @@ test('isolation enforced: a ~/.convex holding a symlink is refused, since a writ
   const home = path.join(root, 'home-link'), elsewhere = path.join(root, 'elsewhere'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true }); fs.mkdirSync(elsewhere, { recursive: true });
   fs.symlinkSync(elsewhere, path.join(home, '.convex', 'linked'));
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `touch "$HOME/.convex/linked/${tag}"`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `touch "$HOME/.convex/linked/${tag}"`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home } });
   assert.equal(r.status, 1, out(r));
   assert.match(r.stderr, /not started, because it could not be watched: .*\.convex: holds symlinks/);
   assert.ok(!fs.existsSync(path.join(elsewhere, tag)));
@@ -627,7 +608,7 @@ test('isolation enforced: a ~/.convex holding a symlink is refused, since a writ
 
 test('a run container removed as a leftover keeps its anonymous volume when that volume is marked', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   let vol = null; t.after(() => { dk('rm', '-f', `${tag}-av`); if (vol) dk('volume', 'rm', vol); });
-  const r = eng('ephemeral', '--', `docker run -d --name ${tag}-av --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av > ${marks}/av`);
+  const r = eng('run', '--here', '--', `docker run -d --name ${tag}-av --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av > ${marks}/av`);
   vol = mark('av');
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-av\\): removed`));
@@ -640,7 +621,7 @@ test('isolation enforced: another docker daemon\'s socket (the rootful one) is h
   if (!fs.existsSync(rootful) || spawnSync('docker', ['-H', `unix://${rootful}`, 'version'], { timeout: 10e3 }).status !== 0) return t.skip('needs a reachable daemon at /var/run/docker.sock');
   if (outside === `unix://${rootful}`) return t.skip('the rootful daemon is the run\'s own upstream here');
   enforce(t);
-  const r = eng('ephemeral', '--', `docker -H unix://${rootful} version >/dev/null`);
+  const r = eng('run', '--here', '--', `docker -H unix://${rootful} version >/dev/null`);
   assert.notEqual(r.status, 0, out(r));
 });
 
@@ -649,7 +630,7 @@ test('isolation enforced: ~/.convex growing past the snapshot limit during the r
   const home = path.join(root, 'home-big'); fs.mkdirSync(path.join(home, '.convex'), { recursive: true });
   enforce(t);
   const r = await new Promise(resolve => {
-    const p = spawn(process.execPath, [ENG, 'ephemeral', '--', 'sleep 2'], { cwd: dir, env: { ...env, HOME: home } });
+    const p = spawn(process.execPath, [ENG, 'run', '--here', '--', 'sleep 2'], { cwd: dir, env: { ...env, HOME: home } });
     let o = ''; p.stdout.on('data', d => o += d); p.stderr.on('data', d => o += d);
     setTimeout(() => { for (let i = 0; i <= 20000; i++) fs.writeFileSync(path.join(home, '.convex', `f${i}`), ''); }, 1000);
     p.on('close', status => resolve({ status, out: o }));
@@ -662,7 +643,7 @@ test('a run container removed as a leftover keeps its anonymous volumes when the
   let vol = null; t.after(() => { dk('rm', '-f', `${tag}-av2`); if (vol) dk('volume', 'rm', vol); });
   const shim = path.join(root, 'volume-shim'); fs.mkdirSync(shim, { recursive: true });
   fs.writeFileSync(path.join(shim, 'docker'), `#!/bin/sh\n[ "$1" = volume ] && [ "$2" = inspect ] && [ -z "$ENG_EPHEMERAL_RUN" ] && exit 1\nexec ${dockerAt} "$@"\n`, { mode: 0o755 });
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run -d --name ${tag}-av2 --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av2 > ${marks}/av2`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${shim}:${env.PATH}` } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker run -d --name ${tag}-av2 --mount type=volume,target=/d,volume-label=slaytek.persist=true alpine:latest sleep 300 >/dev/null; docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' ${tag}-av2 > ${marks}/av2`], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: `${shim}:${env.PATH}` } });
   vol = mark('av2');
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, new RegExp(`LEFT container \\w{12} \\(alpine:latest ${tag}-av2\\): removed`));
@@ -675,7 +656,7 @@ test('isolation enforced: the run may not exec into, start, copy into or remove 
   const c = `${tag}-older`; t.after(() => dk('rm', '-f', c));
   dk('run', '-d', '--name', c, '-v', `${home}/.cache:/c`, 'alpine:latest', 'sleep', '300');
   enforce(t);
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
   for (const cmd of [`docker exec ${c} touch /c/${tag}`, `docker cp ${marks} ${c}:/c/`, `docker restart ${c}`, `docker rm -f ${c}`, 'docker container prune -f']) {
     const r = run(cmd);
     assert.notEqual(r.status, 0, `${cmd}: ${out(r)}`); assert.match(out(r), /may not change (container .*, which the run did not make|a prune)/, cmd);
@@ -691,7 +672,7 @@ test('isolation enforced: the run\'s upstream docker socket is hidden too, when 
   const rootful = '/var/run/docker.sock';
   if (!fs.existsSync(rootful) || spawnSync('docker', ['-H', `unix://${rootful}`, 'version'], { timeout: 10e3 }).status !== 0) return t.skip('needs a reachable daemon at /var/run/docker.sock');
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker -H unix://${rootful} version >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: `unix://${rootful}` } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker -H unix://${rootful} version >/dev/null`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: `unix://${rootful}` } });
   assert.notEqual(r.status, 0, out(r));
   assert.match(r.stdout, /labelling docker socket/, 'the run still had its own socket');
 });
@@ -701,7 +682,7 @@ test('isolation enforced: a bind source that does not exist yet is resolved thro
   const home = path.join(root, 'home-alias'); fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
   fs.symlinkSync(path.join(home, '.cache'), path.join(home, 'cache-alias'));
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker run --rm -v "$HOME/cache-alias/new:/s" alpine:latest touch /s/${tag}`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker run --rm -v "$HOME/cache-alias/new:/s" alpine:latest touch /s/${tag}`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /is read-only for this run \(protected home state\)/);
   assert.ok(!fs.existsSync(path.join(home, '.cache', 'new')), 'docker created nothing under the protected cache');
 });
@@ -720,7 +701,7 @@ test('isolation enforced: starting an exec made before the run, in a container t
 const r = http.request({ socketPath: u, method: 'POST', path: '/exec/${execId}/start', headers: { 'content-type': 'application/json' } }, res => { res.resume(); res.on('end', () => process.exit(res.statusCode < 300 ? 0 : 1)); });
 r.end(JSON.stringify({ Detach: true }));`);
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `node ${marks}/start-exec.cjs`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `node ${marks}/start-exec.cjs`], { cwd: dir, encoding: 'utf8', env: { ...env, HOME: home, DOCKER_HOST: outside } });
   await new Promise(res => setTimeout(res, 500));
   assert.notEqual(r.status, 0, out(r));
   assert.ok(!fs.existsSync(path.join(home, '.cache', tag)), 'the older container wrote nothing');
@@ -731,7 +712,7 @@ test('isolation enforced: on a fresh runner the pinned download cache is created
   const cache = path.join(xdg, 'eng', 'downloads');
   fs.rmSync(cache, { recursive: true, force: true }); t.after(() => fs.rmSync(cache, { recursive: true, force: true }));
   enforce(t);
-  const r = eng('ephemeral', '--', `mkdir -p "${cache}/fetched" && touch "${cache}/fetched/${tag}"`);
+  const r = eng('run', '--here', '--', `mkdir -p "${cache}/fetched" && touch "${cache}/fetched/${tag}"`);
   assert.equal(r.status, 0, out(r));
   assert.ok(fs.existsSync(path.join(cache, 'fetched', tag)), 'the write reached the shared download cache');
 });
@@ -742,7 +723,7 @@ test('isolation enforced: the run may not connect to or disconnect from a networ
   t.after(() => { dk('rm', '-f', c, `${tag}-mine-c`); dk('network', 'rm', net); });
   dk('network', 'create', net); dk('run', '-d', '--name', c, '--network', net, 'alpine:latest', 'sleep', '300');
   enforce(t);
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   let r = run(`docker network disconnect ${net} ${c}`);
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change (network|container) .*, which the run did not make/);
   assert.match(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other session\'s container stays on its network');
@@ -785,7 +766,7 @@ test('isolation enforced: a cache the repo points outside eng/<repo> (hygiene.ca
   t.after(() => { fs.rmSync(path.join(xdg, 'elsewhere'), { recursive: true, force: true }); setCfg(c => { delete c.hygiene.caches; }); });
   setCfg(c => { c.hygiene.caches = { vite: vite }; });
   enforce(t);
-  const r = eng('ephemeral', '--', `touch "$ENG_VITE_CACHE_DIR/${tag}"`);
+  const r = eng('run', '--here', '--', `touch "$ENG_VITE_CACHE_DIR/${tag}"`);
   assert.equal(r.status, 0, out(r));
   assert.ok(fs.existsSync(path.join(vite, tag)), 'the write reached the configured cache');
 });
@@ -796,7 +777,7 @@ test('isolation enforced: the run may not connect a container it did not make to
   t.after(() => { dk('rm', '-f', c); dk('network', 'rm', net); });
   dk('run', '-d', '--name', c, '--restart', 'unless-stopped', 'alpine:latest', 'sleep', '300');
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `docker network create ${net} >/dev/null; docker network connect ${net} ${c}; s=$?; docker network rm ${net} >/dev/null; exit $s`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `docker network create ${net} >/dev/null; docker network connect ${net} ${c}; s=$?; docker network rm ${net} >/dev/null; exit $s`], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /may not change container .*, which the run did not make/);
   assert.doesNotMatch(dk('inspect', '-f', '{{json .NetworkSettings.Networks}}', c).stdout, new RegExp(net), 'the other project\'s container never joined the run\'s network');
 });
@@ -805,7 +786,7 @@ test('isolation enforced: a container may not mount a server socket outside the 
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   enforce(t);
   const raw = outside.replace(/^unix:\/\//, '');
-  const run = cmd => spawnSync(process.execPath, [ENG, 'ephemeral', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  const run = cmd => spawnSync(process.execPath, [ENG, 'run', '--here', '--', cmd], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   for (const mount of [`-v ${raw}:/v.sock`, `-v ${raw}:/v.sock:ro`, `--mount type=bind,source=${raw},target=/v.sock,readonly`, `-v ${path.dirname(raw)}:/r:ro`]) {
     const r = run(`docker run --rm ${mount} alpine:latest true`);
     assert.notEqual(r.status, 0, `${mount}: ${out(r)}`); assert.match(out(r), /reaches a server socket outside the run/, mount);
@@ -821,19 +802,6 @@ test('a repo with its own persist_label still keeps containers and volumes marke
   const ev = ID => ({ Type: 'container', Action: 'create', Actor: { ID, Attributes: { [key]: 'true' } } });
   const { left } = findLeftovers({ run: { id: 'r9' }, persist, events: ['shared', 'own', 'plain'].map(ev), live, volumesBefore: new Set(), temp: [], procs: [] });
   assert.deepEqual(left.map(f => f.id), ['plain']);
-});
-
-test('eng clean --containers --apply with a custom persist_label still keeps a container marked slaytek.persist=true', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
-  const shared = `${tag}-cl-shared-mark`, plain = `${tag}-cl-plain2`;
-  t.after(() => { dk('rm', '-f', shared, plain); setCfg(c => { c.hygiene.run_rules.ephemeral_runs.persist_label = 'slaytek.persist=true'; }); });
-  setCfg(c => { c.hygiene.run_rules.ephemeral_runs.persist_label = 'example.keep=true'; });
-  dk('run', '-d', '--name', shared, '--label', 'eng.repo=eph', '--label', 'slaytek.persist=true', 'alpine:latest', 'sleep', '300');
-  dk('run', '-d', '--name', plain, '--label', 'eng.repo=eph', 'alpine:latest', 'sleep', '300');
-  const r = eng('clean', '--containers', '--apply');
-  assert.equal(r.status, 0, out(r));
-  assert.equal(dk('inspect', '-f', '{{.State.Running}}', shared).stdout.trim(), 'true', 'the devbox-wide marker still counts');
-  assert.equal(dk('inspect', plain).status, 1, 'the unmarked container is removed');
-  assert.match(r.stdout, new RegExp(`keep +container \\w{12} ${shared} \\(permanent: slaytek\\.persist=true\\)`));
 });
 
 test('isolation enforced: the run\'s docker socket reads requests as docker does: encoded paths, other-case fields and repeated keys cannot slip past its checks', async t => {
@@ -960,9 +928,9 @@ test('isolation enforced: a container may not share the host\'s namespaces, run 
 test('isolation enforced: docker run --pid=host --cap-add SYS_PTRACE is refused by the run\'s socket', { skip: !docker && 'no reachable docker with alpine:latest' }, t => {
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
   enforce(t);
-  const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'docker run --rm --pid=host --cap-add SYS_PTRACE alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', 'docker run --rm --pid=host --cap-add SYS_PTRACE alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   assert.notEqual(r.status, 0, out(r)); assert.match(out(r), /which reaches the host without a bind/);
-  const ok = spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'docker run --rm alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
+  const ok = spawnSync(process.execPath, [ENG, 'run', '--here', '--', 'docker run --rm alpine:latest true'], { cwd: dir, encoding: 'utf8', env: { ...env, DOCKER_HOST: outside } });
   assert.equal(ok.status, 0, `an ordinary foreground run (attach) still works: ${out(ok)}`);
 });
 
@@ -1016,7 +984,7 @@ const waitFor = async (f, ms = 15e3) => { for (const end = Date.now() + ms; Date
 
 test('ENG_SOCK_DIR: the run\'s own 0700 folder in $HOME/.cache/eng/s, short enough for any socket, removed after', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
-  const r = eng('ephemeral', '--', `printf '%s\\n' "$ENG_SOCK_DIR" "$ENG_RUN_ID" "$(stat -c '%a %u' "$ENG_SOCK_DIR")" > ${marks}/sock && node -e "const s = require('net').createServer().listen(process.env.ENG_SOCK_DIR + '/.s.PGSQL.5432', () => s.close())"`);
+  const r = eng('run', '--here', '--', `printf '%s\\n' "$ENG_SOCK_DIR" "$ENG_RUN_ID" "$(stat -c '%a %u' "$ENG_SOCK_DIR")" > ${marks}/sock && node -e "const s = require('net').createServer().listen(process.env.ENG_SOCK_DIR + '/.s.PGSQL.5432', () => s.close())"`);
   assert.equal(r.status, 0, out(r));
   const [d, id, st] = mark('sock').split('\n');
   assert.equal(path.dirname(d), sockParent);
@@ -1043,14 +1011,14 @@ test('ENG_SOCK_DIR: under 60 bytes whatever the run id, or not set at all; never
 test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker daemon sees the run\'s own at the same path', async t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   if (!sandboxed()) return t.skip(NEEDS_SANDBOX);
-  const a = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo run > "$ENG_SOCK_DIR/f" && echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
+  const a = spawn(process.execPath, [ENG, 'run', '--here', '--', `echo run > "$ENG_SOCK_DIR/f" && echo "$ENG_SOCK_DIR" > ${marks}/a.tmp && mv ${marks}/a.tmp ${marks}/a; for i in $(seq 300); do test -e ${marks}/b-done && break; sleep 0.05; done`], { cwd: dir, env, stdio: 'ignore' });
   const done = new Promise(r => a.on('exit', r));
   t.after(() => a.kill('SIGKILL'));
   assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'a'))), 'run A started');
   const other = mark('a');
   assert.equal(fs.readFileSync(path.join(other, 'f'), 'utf8'), 'run\n', 'what the run writes there is on the host at the same path');
   const write = docker ? `docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/f' && cat "$ENG_SOCK_DIR/f" >> ${marks}/b; ` : '';
-  const r = eng('ephemeral', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; chmod 600 "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
+  const r = eng('run', '--here', '--', `{ echo "$ENG_SOCK_DIR"; ls -A "$(dirname "$ENG_SOCK_DIR")"; test -e '${other}' && echo SEEN; chmod 600 "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null; echo x > "$ENG_SOCK_DIR/${SOCK_OWNER}" 2>/dev/null && echo OWNER-WRITTEN; true; } > ${marks}/b; ${write}touch ${marks}/b-done`);
   assert.equal(r.status, 0, out(r));
   assert.equal(await done, 0, 'run A passed');
   const [own, ...rest] = mark('b').split('\n');
@@ -1061,16 +1029,16 @@ test('ENG_SOCK_DIR: another run\'s folder is hidden from the run; the docker dae
   else assert.deepEqual(rest.slice(1), []);
 });
 
-test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the next run; a SIGTERM run removes its own', async t => {
+test('ENG_SOCK_DIR: a killed run\'s folder is removed by the next run; a SIGTERM run removes its own', async t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   const e = { ...env, HOME: shortHome(t), ENG_SOCK_DIR: '' }, engIn = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: e });
-  const start = n => { const p = spawn(process.execPath, [ENG, 'ephemeral', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env: e, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
+  const start = n => { const p = spawn(process.execPath, [ENG, 'run', '--here', '--', `echo "$ENG_SOCK_DIR" > ${marks}/${n}.tmp && mv ${marks}/${n}.tmp ${marks}/${n}; sleep 20`], { cwd: dir, env: e, stdio: 'ignore', detached: true }); return [p, new Promise(r => p.on('exit', (c, s) => r(s ?? c)))]; };
   const [term, termDone] = start('term');
   assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'term'))));
   process.kill(-term.pid, 'SIGTERM');  // the whole group, as Ctrl-C or a CI cancel does: eng acts once its run's step returns
   assert.ok(['SIGTERM', 143].includes(await termDone));
   assert.ok(!fs.existsSync(mark('term')), 'removed on SIGTERM');
-  for (const round of ['clean', 'next run']) {
+  for (const round of ['next run']) {
     const [p, gone] = start('crash');
     assert.ok(await waitFor(() => fs.existsSync(path.join(marks, 'crash'))));
     const d = mark('crash'), id = fs.readFileSync(path.join(d, SOCK_OWNER), 'utf8').trim(); fs.rmSync(path.join(marks, 'crash'));
@@ -1078,11 +1046,7 @@ test('ENG_SOCK_DIR: a killed run\'s folder is removed by eng clean, and by the n
     const kids = tree(p.pid); p.kill('SIGKILL'); await gone; for (const k of kids) { try { process.kill(k, 'SIGKILL'); } catch {} } killRun(id);
     assert.ok(fs.existsSync(d), 'SIGKILL leaves the folder');
     assert.equal(path.dirname(d), path.join(e.HOME, '.cache', 'eng', 's'));
-    if (round === 'clean') {
-      const dry = engIn('clean');
-      assert.match(dry.stdout, new RegExp(`would remove\\s+${d}`)); assert.ok(fs.existsSync(d), 'dry run keeps it');
-      engIn('clean', '--apply');
-    } else assert.equal(engIn('ephemeral', '--', 'true').status, 0);
+    assert.equal(engIn('run', '--here', '--', 'true').status, 0);
     assert.ok(!fs.existsSync(d), `${round} removes it`);
   }
 });
@@ -1110,7 +1074,7 @@ const reach = o => new Promise(r => { const s = net.connect(o); const done = v =
   if (process.env.DOCKER_HOST) out.docker = cp.spawnSync('docker', ['version', '--format', '{{.Server.Version}}']).status;
   fs.writeFileSync(process.argv[2], JSON.stringify(out));
 })();`);
-  const run = (n, e = env) => spawnSync(process.execPath, [ENG, 'ephemeral', '--', `node ${probe} ${marks}/${n}`], { cwd: dir, encoding: 'utf8', env: e });
+  const run = (n, e = env) => spawnSync(process.execPath, [ENG, 'run', '--here', '--', `node ${probe} ${marks}/${n}`], { cwd: dir, encoding: 'utf8', env: e });
   let r = run('net-host', { ...env, ENG_NETWORK_ISOLATED: '1' });
   assert.equal(r.status, 0, out(r));
   const before = JSON.parse(mark('net-host'));
@@ -1128,8 +1092,8 @@ test('isolation.network private: a run that would get no network namespace is re
   const base = path.join('/tmp', `${tag}-netbase`); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
   setCfg(c => { c.isolation = { mode: 'warn', network: 'private' }; c.project.commands.test = `echo ran >> ${marks}/nonet`; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; });
-  for (const args of [['--', `echo ran >> ${marks}/nonet`], ['check']]) {
-    const r = spawnSync(process.execPath, [ENG, 'ephemeral', ...args], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
+  for (const args of [['--here', '--', `echo ran >> ${marks}/nonet`], ['test']]) {
+    const r = spawnSync(process.execPath, [ENG, 'run', ...args], { cwd: dir, encoding: 'utf8', env: { ...env, ENG_TMP_BASE: base } });
     assert.equal(r.status, 1, out(r));
     assert.match(r.stderr, /not started, because it could not be watched: network: isolation\.network is private, and the run gets no network namespace/);
   }
@@ -1144,12 +1108,12 @@ test('isolation enforced: ENG_SOCK_DIR stays writable though the cache home is r
   enforce(t);
   const got = path.join(dir, `.enf-${tag}`); t.after(() => fs.rmSync(got, { force: true }));  // the checkout stays writable; marks/ is in the read-only cache home
   const write = docker ? `; docker run --rm -v "$ENG_SOCK_DIR:/s" alpine:latest sh -c 'echo daemon > /s/c' && cat "$ENG_SOCK_DIR/c" >> ${got}` : '';
-  const r = eng('ephemeral', '--', `{ echo own > "$ENG_SOCK_DIR/f" && cat "$ENG_SOCK_DIR/f"; touch "$(dirname "$(dirname "$ENG_SOCK_DIR")")/eng-s-probe" 2>/dev/null && echo CACHE-WRITTEN; true; } > ${got}${write}`);
+  const r = eng('run', '--here', '--', `{ echo own > "$ENG_SOCK_DIR/f" && cat "$ENG_SOCK_DIR/f"; touch "$(dirname "$(dirname "$ENG_SOCK_DIR")")/eng-s-probe" 2>/dev/null && echo CACHE-WRITTEN; true; } > ${got}${write}`);
   assert.equal(r.status, 0, out(r));
   assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['own', ...(docker ? ['daemon'] : [])], 'the folder is writable, the cache home around it is not');
 });
 
-test('ENG_SOCK_DIR: a symlink anywhere on the socket root is refused; clean and the sweep never delete through it', t => {
+test('ENG_SOCK_DIR: a symlink anywhere on the socket root is refused; the sweep never deletes through it', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   const dead = 'eng-eph-zz-999999999-0', outside = fs.mkdtempSync(path.join(root, 'outside-'));
   const victim = path.join(outside, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`); fs.writeFileSync(path.join(victim, 'keep'), 'x');
@@ -1164,9 +1128,8 @@ test('ENG_SOCK_DIR: a symlink anywhere on the socket root is refused; clean and 
     const e = { ...env, HOME: h, ENG_SOCK_DIR: '' };
     assert.equal(openSockDir(e, `eng-eph-zz-${process.pid}-1`), null, `${link.join('/')} is a symlink: no folder`);
     assert.deepEqual(staleSockDirs(0, { env: e }), [], 'nothing listed through it');
-    const r = spawnSync(process.execPath, [ENG, 'ephemeral', '--', `test -z "$ENG_SOCK_DIR"`], { cwd: dir, encoding: 'utf8', env: e });
+    const r = spawnSync(process.execPath, [ENG, 'run', '--here', '--', `test -z "$ENG_SOCK_DIR"`], { cwd: dir, encoding: 'utf8', env: e });
     assert.equal(r.status, 0, out(r));
-    spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: e });
     assert.equal(fs.readFileSync(path.join(victim, 'keep'), 'utf8'), 'x', `${link.join('/')}: nothing outside the root was deleted`);
   }
 });
@@ -1192,30 +1155,26 @@ test('ENG_SOCK_DIR: an inherited value counts only as a parent run\'s real folde
   const dead = 'eng-eph-zz-999999999-0', victim = path.join(forged, sockName(dead)); fs.mkdirSync(victim); fs.writeFileSync(path.join(victim, SOCK_OWNER), `${dead}\n`);
   const viaForged = { ...base, ENG_SOCK_DIR: forged };
   assert.ok(staleSockDirs(0, { env: viaForged }).every(x => !x.path.startsWith(forged + path.sep)));
-  spawnSync(process.execPath, [ENG, 'clean', '--apply', '--older-than', '0'], { cwd: dir, encoding: 'utf8', env: viaForged });
-  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: viaForged }).status, 0);
-  assert.ok(fs.existsSync(victim), 'eng clean and the start sweep never reach outside the socket root');
+  assert.equal(spawnSync(process.execPath, [ENG, 'run', '--here', '--', 'true'], { cwd: dir, encoding: 'utf8', env: viaForged }).status, 0);
+  assert.ok(fs.existsSync(victim), 'the start sweep never reaches outside the socket root');
 });
 
-test('unwatched runs (ephemeral_runs off, host network) never pass on an inherited ENG_NETWORK_ISOLATED or ENG_SOCK_DIR, in eng ephemeral and eng gate', t => {
+test('unwatched runs (ephemeral_runs off, host network) never pass on an inherited ENG_NETWORK_ISOLATED or ENG_SOCK_DIR, in eng run and eng gate', t => {
   const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'); t.after(() => fs.writeFileSync(p, orig));
   const got = path.join(marks, 'unwatched');
   setCfg(c => { c.isolation = { mode: 'warn' }; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = `printf '%s|%s\\n' "\${ENG_NETWORK_ISOLATED-unset}" "\${ENG_SOCK_DIR-unset}" >> ${got}`; });
   const claim = { ...env, ENG_NETWORK_ISOLATED: '1', ENG_SOCK_DIR: fs.mkdtempSync(path.join(root, 'claimed-')) };
-  for (const args of [['ephemeral', 'check'], ['gate']]) spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: claim });
+  for (const args of [['run', 'test'], ['gate']]) spawnSync(process.execPath, [ENG, ...args], { cwd: dir, encoding: 'utf8', env: claim });
   assert.deepEqual(fs.readFileSync(got, 'utf8').trim().split('\n'), ['unset|unset', 'unset|unset'], 'both ran, neither saw the claims');
 });
 
-test('ENG_SOCK_DIR: inside a run, eng clean and the next nested run remove a killed nested run\'s folder from the parent\'s, and keep the parent', t => {
+test('ENG_SOCK_DIR: inside a run, the next nested run removes a killed nested run\'s folder from the parent\'s, and keeps the parent', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
   const parent = openSockDir({ ...env, ENG_SOCK_DIR: '' }, `eng-eph-zz-${process.pid}-5`); t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
   const inParent = { ...env, ENG_SOCK_DIR: parent };
   const deadChild = n => { const id = `eng-eph-zz-99999999${n}-0`, d = path.join(parent, sockName(id)); fs.mkdirSync(d); fs.writeFileSync(path.join(d, SOCK_OWNER), `${id}\n`); return d; };
-  const a = deadChild(1);
-  spawnSync(process.execPath, [ENG, 'clean', '--apply'], { cwd: dir, encoding: 'utf8', env: inParent });
-  assert.ok(!fs.existsSync(a), 'eng clean inside the run removes it');
   const b = deadChild(2);
-  assert.equal(spawnSync(process.execPath, [ENG, 'ephemeral', '--', 'true'], { cwd: dir, encoding: 'utf8', env: inParent }).status, 0);
+  assert.equal(spawnSync(process.execPath, [ENG, 'run', '--here', '--', 'true'], { cwd: dir, encoding: 'utf8', env: inParent }).status, 0);
   assert.ok(!fs.existsSync(b), 'the next nested run removes it');
   assert.ok(fs.existsSync(path.join(parent, SOCK_OWNER)), 'the live parent stays');
 });

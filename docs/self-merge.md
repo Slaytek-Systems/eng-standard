@@ -90,7 +90,7 @@ forge (lock A, a later change).
 - The builder may certify its own risk:low PR for self-merge: no gate compares the verifier with the authors.
 - The gate trusts the recorded run evidence. It checks each run's command, integer exit code, output and SHA, that the
   SHA is the exact head, and that every exit code is 0 for a PASS. It does not re-run the commands at merge time.
-  `eng verdict` attaches only runs that `eng verdict round` captured, but a hand-written comment from an account with
+  `eng verdict` attaches only runs that `eng run --by` captured, but a hand-written comment from an account with
   write access would pass the same field checks.
 - risk:high counts distinct `--by` names (`v.key ?? v.by`). One GitHub login that posts under two `--by` names counts
   as two verifiers. Verifiers are tools or lanes, not people.
@@ -109,7 +109,7 @@ Any thread may run it, the builder included: what counts is what ran on the exac
 # inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
 git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
-node bin/eng.mjs verdict round --by <id> -- npm test          # one round per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs run --by <id> -- npm test                    # one run per check: tests, the CLI on a scratch repo, property tests
 node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
 # docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```

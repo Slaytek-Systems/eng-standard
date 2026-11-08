@@ -139,14 +139,14 @@ test('eng verdict --pr: no verdict posts failure; the builder\'s own verificatio
     const r = eng('verdict', 'PASS', '--by', 'builder-1', k, 'x');
     assert.equal(r.status, 1); assert.match(r.stderr, new RegExp(`${k} was removed; a verdict counts by what ran on the commit`), k);
   }
-  let r = eng('verdict', 'round', '--by', 'builder-1', '--', 'sh', '-c', 'echo docs render');
+  let r = eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'echo docs render');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   r = eng('verdict', 'PASS', '--by', 'builder-1', '--pr', '7');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /posted success \(context verdict\)/);
   const log = fs.readFileSync(calls, 'utf8'), body = log.slice(log.lastIndexOf('issues/7/comments -f body=') + 26), [v] = parseVerdicts([{ body }]);
   assert.deepEqual([v.sha, v.result, v.by, v.method], [H, 'PASS', 'builder-1', 'verification'], 'the PR comment carries the exact head, the verifier and the method; the builder (Agent: builder-1) may verify');
-  assert.deepEqual(v.runs.map(x => [x.cmd, x.exit, x.output.trim(), x.sha]), [['sh -c echo docs render', 0, 'docs render', H]], 'and the run it made on that head');
+  assert.deepEqual(v.runs.map(x => [x.cmd, x.exit, x.output.trim(), x.sha]), [["sh -c 'echo docs render'", 0, 'docs render', H]], 'and the run it made on that head');
   assert.doesNotMatch(body, /family|provider|model/, 'the record carries no model or provider');
   assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=success -f context=verdict -f description=verdict: PASS \\(PASS verification by builder-1 on`));
   r = eng('verdict', 'status');

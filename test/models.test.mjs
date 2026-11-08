@@ -76,7 +76,7 @@ test('eng sync on the starter: AGENTS.md and SHIPPING.md name no model, and ever
   for (const role of pstackRoles()) assert.ok(lines.some(l => new RegExp(`^${role}: inherit-parent(, inherit-parent)*$`).test(l)), `starter sets ${role} to inherit-parent; add the role under models.pstack in templates/eng.config.yml`);
   assert.ok(lines.includes('arena runners: inherit-parent, inherit-parent'), 'a panel keeps two seats');
   assert.ok(lines.includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
-  const d = eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+  const d = eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
 });
 
 test('models.pstack renders as written, and removing it removes .eng/pstack-models.md', () => {

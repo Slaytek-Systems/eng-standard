@@ -53,7 +53,7 @@ test('a failed check, a revert or a rollback demotes automatically; the harshest
 test('eng rejects an invalid trust block in eng.config.yml', () => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-trust-'));
   try {
-    const run = () => spawnSync(process.execPath, [path.resolve('bin/eng.mjs'), 'e2e-required'], { cwd: dir, encoding: 'utf8' });
+    const run = () => spawnSync(process.execPath, [path.resolve('bin/eng.mjs'), 'e2e', '--required'], { cwd: dir, encoding: 'utf8' });
     fs.writeFileSync(path.join(dir, 'eng.config.yml'), uncommented().replace('level: draft-only', 'level: yolo'));
     const r = run();
     assert.notEqual(r.status, 0);

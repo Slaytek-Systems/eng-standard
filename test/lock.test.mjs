@@ -28,7 +28,7 @@ function repo() {
   return { dir, git, eng, file, read, edit };
 }
 
-test('two branches that each edit a managed file merge without a lock conflict, and drift-check passes after', () => {
+test('two branches that each edit a managed file merge without a lock conflict, and sync --check passes after', () => {
   const r = repo();
   r.git('checkout -qb a');
   r.edit('AGENTS.md', s => s.replace('# AGENTS.md\n', '# AGENTS.md\n\nTeam A owns the deploy notes.\n'));
@@ -39,7 +39,7 @@ test('two branches that each edit a managed file merge without a lock conflict, 
   const m = spawnSync('git', ['merge', '--no-edit', 'a'], { cwd: r.dir, encoding: 'utf8' });
   assert.equal(m.status, 0, `merge conflicted:\n${m.stdout}${m.stderr}`);
   assert.match(r.read('AGENTS.md'), /Team A owns the deploy notes[\s\S]*Team B owns the runbook/);
-  const d = r.eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
   const lock = r.read('.eng/lock.json');
   assert.equal(r.eng('sync').stdout.trim(), 'eng sync: no changes');
   assert.equal(r.read('.eng/lock.json'), lock);
@@ -77,7 +77,7 @@ test('an old-format lock (path: sha256, config_hash) is read, then rewritten in 
   const r = repo();
   const paths = writeOldLock(r, ['docs/OLD-RENDER.md']);
   fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/OLD-RENDER.md'), 'rendered by an older config\n');
-  const d = r.eng('drift-check');
+  const d = r.eng('sync', '--check');
   assert.notEqual(d.status, 0, 'a path the old lock manages but the config no longer renders is drift');
   assert.match(d.stderr, /\.eng\/lock\.json: config changed since last sync/);
   const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
@@ -87,45 +87,45 @@ test('an old-format lock (path: sha256, config_hash) is read, then rewritten in 
   const lock = JSON.parse(r.read('.eng/lock.json'));
   assert.deepEqual(lock.files, paths);
   assert.ok(!('config_hash' in lock));
-  assert.equal(r.eng('drift-check').status, 0);
+  assert.equal(r.eng('sync', '--check').status, 0);
 });
 
-test('an old-format lock that matches the config passes drift-check before any sync', () => {
+test('an old-format lock that matches the config passes sync --check before any sync', () => {
   const r = repo();
   writeOldLock(r);
-  const d = r.eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
 });
 
-test('drift-check still fails when the config changes what eng sync manages, until eng sync runs', () => {
+test('sync --check still fails when the config changes what eng sync manages, until eng sync runs', () => {
   const r = repo();
   r.edit('eng.config.yml', s => s.replace('nightly: { enabled: false', 'nightly: { enabled: true'));
-  const d = r.eng('drift-check');
+  const d = r.eng('sync', '--check');
   assert.notEqual(d.status, 0);
   assert.match(d.stderr, /\.eng\/ci\/e2e-nightly\.yml: missing/);
   assert.match(d.stderr, /\.eng\/lock\.json: config changed since last sync/);
   assert.equal(r.eng('sync').status, 0);
-  assert.equal(r.eng('drift-check').status, 0);
+  assert.equal(r.eng('sync', '--check').status, 0);
   r.edit('eng.config.yml', s => s.replace('nightly: { enabled: true', 'nightly: { enabled: false'));
-  const stale = r.eng('drift-check');
+  const stale = r.eng('sync', '--check');
   assert.notEqual(stale.status, 0, 'a rendered file the config dropped is drift until eng sync prunes it');
   assert.match(stale.stderr, /\.eng\/lock\.json: config changed since last sync/);
   assert.equal(r.eng('sync').status, 0);
   assert.ok(!fs.existsSync(r.file('.eng/ci/e2e-nightly.yml')));
-  assert.equal(r.eng('drift-check').status, 0);
+  assert.equal(r.eng('sync', '--check').status, 0);
 });
 
-test('a skill listed twice (pstack/* and pstack/how) is one managed link, and drift-check passes after sync', () => {
+test('a skill listed twice (pstack/* and pstack/how) is one managed link, and sync --check passes after sync', () => {
   const r = repo();
   r.edit('eng.config.yml', s => s.replace(/^( +)- pstack\/\*.*$/m, '$&\n$1- pstack/how'));
   assert.match(r.read('eng.config.yml'), /^ +- pstack\/how$/m);
   assert.equal(r.eng('sync').status, 0);
-  const d = r.eng('drift-check'); assert.equal(d.status, 0, d.stderr);
+  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
 });
 
-test('drift-check fails with no lock', () => {
+test('sync --check fails with no lock', () => {
   const r = repo();
   fs.rmSync(r.file('.eng/lock.json'));
-  const d = r.eng('drift-check');
+  const d = r.eng('sync', '--check');
   assert.notEqual(d.status, 0);
   assert.match(d.stderr, /\.eng\/lock\.json: config changed since last sync/);
 });

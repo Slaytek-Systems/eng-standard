@@ -2,28 +2,26 @@
 // eng: config-first Slaytek Systems engineering standard. One file (eng.config.yml) drives everything.
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, shippingMd, shipLogStep } from '../lib/render.mjs';
+import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { retired, migrate, FIX } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, staleTmpDirs, staleSockDirs, parseWorktrees, classifyWorktree, TMP_RULE, tmpBase, slug, openRound, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, classifyEvidence, expandPath, cacheEnv, mistakesLog, LEGACY_MISTAKES } from '../lib/hygiene.mjs';
-import { audit, corePayloads, sydneyMonth, SKIP_DIRS, lowestDeps, nodePins, convexNodeFindings, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
-import { validateRenovation, compareBaseline, lintFindings, baselinePath } from '../lib/renovate.mjs';
-import { renovate, launch } from '../lib/renovate-cli.mjs';
-import { merge, postVerdict, mergeDoctor } from '../lib/merge-cli.mjs';
+import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
+import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
+import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
+import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
+import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
-import { validateIsolation } from '../lib/isolation.mjs';
-import { isolation } from '../lib/isolation-cli.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, permanent, markedBy, alwaysWatched } from '../lib/ephemeral.mjs';
-import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers, fetchPinned, snapshot, downloadFindings } from '../lib/disk-rules.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
+import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,12 +30,10 @@ const ROOT = process.cwd();
 // gate step, a nested eng) inherits them, since none of it can back the claim; a parent run's folder is kept only to nest in.
 const PARENT_SOCK_DIR = process.env.ENG_SOCK_DIR;
 delete process.env.ENG_SOCK_DIR; delete process.env.ENG_NETWORK_ISOLATED;
-const NOTES = 'eng-verify';
 const sh = (c, o = {}) => execSync(c, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...o }).trim();
 let RUN_ENV; // set by withTmp: every child of eng gate / eng e2e gets ENG_TMP and TMPDIR pointing at the per-run dir
 const run = (c, cwd = ROOT) => spawnSync('bash', ['-c', c], { cwd, encoding: 'utf8', ...(RUN_ENV ? { env: RUN_ENV } : {}) });
 function withTmp(cfg) { const t = engTmp(cfg); RUN_ENV = t.env; if (t.owned) console.log(`  ENG_TMP=${t.dir} (removed on exit)`); return t; }
-const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 
 function loadConfig() {
@@ -57,6 +53,7 @@ function configErrors(c) {
   if (!c.merge?.owner || !c.merge?.command) errs.push('merge.owner and merge.command are required (no global merge rule)');
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
   if (c.gates?.skipped_is_failed !== true) errs.push('gates.skipped_is_failed must be true');
+  for (const m of retired(c)) if (m.index !== undefined) errs.push(`${m.what} is not an eng gate any more: ${m.why}. Fix: ${FIX}`);
   for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
   for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
   const pre = c.hooks?.pre_commit;
@@ -68,11 +65,12 @@ function configErrors(c) {
   errs.push(...validateFlake(c.e2e));
   errs.push(...validateRenovation(c.renovation));
   errs.push(...validateAuto(c.merge));
-  errs.push(...validateIsolation(c.isolation));
+  errs.push(...isolationErrors(c.isolation));
   errs.push(...trustErrors(c.trust));
   errs.push(...diskRuleErrors(c.hygiene));
   errs.push(...runRuleErrors(c));
   errs.push(...reviewOnlyErrors(c.verification));
+  errs.push(...checkErrors(c.verification));
   errs.push(...formalErrors(c.formal, Array.isArray(c.agents?.skills) ? expandSkills(c).map(s => s.split('/')[1]) : null));
   errs.push(...modelErrors(c.models));
   errs.push(...neverErrors(c));
@@ -83,7 +81,7 @@ const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 
 function render(cfg) {
-  const files = renderAll(cfg, readOr('AGENTS.md'));
+  const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
   try { if (fs.readlinkSync(path.join(ROOT, 'CLAUDE.md')) === 'AGENTS.md') delete files['CLAUDE.md']; } catch {}
   return files;
@@ -97,10 +95,22 @@ function claudeLinks(cfg) {
     ...subagents.map(f => [`.claude/agents/${f}`, `../../${agentsDir}/${f}`])];
 }
 
+// Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
+function migrateConfig() {
+  const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
+  if (cur === null) return 0;
+  const { text, changes } = migrate(cur);
+  if (!changes.length) return 0;
+  fs.writeFileSync(p, text);
+  for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
+  return changes.length;
+}
+
 function sync() {
+  const migrated = migrateConfig();
   const cfg = loadConfig();
   const files = render(cfg), exec = executables(cfg);
-  let changed = 0;
+  let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
     if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
@@ -127,24 +137,63 @@ function sync() {
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
 
+// eng init: one command for any repo. With no eng.config.yml it seeds one: the starter config for an empty repo, or, for
+// a repo that already ships, a config built from what is there plus a renovation block. A repo that already ships also
+// gets a CODEOWNERS line and baselines, so the findings it has today pass and only new ones fail. Re-running is safe:
+// an existing config is kept, and a baseline is written only when it is missing.
 function init() {
+  const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml'));
-    console.log('  seeded eng.config.yml (edit it, then run eng sync)');
+    if (!shipping) { fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml')); console.log('  seeded eng.config.yml (edit it, then run eng sync)'); }
+    else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
   const cfg = loadConfig();
-  fs.mkdirSync(path.join(ROOT, cfg.verification.checks_dir), { recursive: true });
+  fs.mkdirSync(path.join(ROOT, checksDir(cfg)), { recursive: true });
   sync();
+  if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
   console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
   console.log(`Branch ruleset advice (apply by hand; eng never edits rulesets):\n${rulesetAdvice(cfg)}\n`);
   mergeQueueWarn(cfg);
-  if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng launch-check.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
+  if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng doctor --launch.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
   console.log('eng init: done. Next: run create-verification-skill to make the repo verify-<app> skill, then start tasks with poteto-mode.');
 }
+const repoName = () => { try { return JSON.parse(readOr('package.json', '{}')).name?.replace(/^@[^/]+\//, '') || null; } catch { return null; } };
+const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/remotes/origin/HEAD').replace(/^origin\//, ''); } catch {} try { sh('git rev-parse --verify -q main'); return 'main'; } catch { return sh('git rev-parse --abbrev-ref HEAD'); } };
+function seedShipping(owner) {
+  const doc = YAML.parseDocument(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
+  const pj = JSON.parse(readOr('package.json', 'null')), pm = sh('git ls-files').split('\n').some(f => /^bun\.lockb?$/.test(f)) ? 'bun' : 'npm', base = defaultBranch();
+  doc.setIn(['project', 'name'], repoName() || path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir')))));
+  doc.setIn(['project', 'default_branch'], base);
+  doc.setIn(['project', 'protected_branches'], [base]);
+  doc.setIn(['project', 'commands'], doc.createNode({ test: pj?.scripts?.test ? `${pm} run test` : "echo 'set project.commands.test in eng.config.yml' && exit 1" }));
+  for (const k of ['launch', 'laws', 'audits', 'constraints', 'flags', 'db']) doc.delete(k);
+  doc.deleteIn(['agents', 'rules']); doc.deleteIn(['project', 'ui_paths']);
+  doc.setIn(['gates', 'required'], doc.createNode(['lint', 'test']));
+  doc.setIn(['renovation'], doc.createNode({ version: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version, policy_owner: owner }));
+  const text = String(doc), errs = configErrors(YAML.parse(text));
+  if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
+  fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
+  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
+  if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
+    fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
+  }
+}
+// Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
+function saveBaseline(kind, cfg) {
+  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')));
+  const pack = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
+  const b = makeBaseline(kind, found, { owner: cfg.renovation.policy_owner, reason: 'pre-existing when the repo adopted the standard', pack, prev: null });
+  fs.mkdirSync(path.join(ROOT, 'renovation/baselines'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, baselinePath(kind)), JSON.stringify(b, null, 2) + '\n');
+  console.log(`  wrote ${baselinePath(kind)} (${b.entries.length} pre-existing finding(s))`);
+}
 
-function driftCheck() {
+function syncCheck() {
+  const due = retired(YAML.parse(readOr('eng.config.yml', '{}')));
+  if (due.length) die(`sync --check: eng.config.yml has ${due.length} retired entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.map(m => `${m.what}: ${m.why}`).join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
   const files = render(cfg);
   const bad = [];
@@ -158,17 +207,10 @@ function driftCheck() {
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(claudeLinks(cfg).map(([l]) => l)))) bad.push('.eng/lock.json: config changed since last sync');
-  if (bad.length) die(`drift-check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
-  console.log(`eng drift-check: PASS (${Object.keys(files).length} generated files match config)`);
+  if (bad.length) die(`sync --check:\n  ${bad.join('\n  ')}\n  Fix: edit eng.config.yml, then run eng sync.`);
+  console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
 
-// ---------- stack ----------
-const LANG = { '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript', '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'javascript',
-  '.rs': 'rust', '.py': 'python', '.go': 'go', '.rb': 'ruby', '.java': 'java', '.kt': 'kotlin', '.swift': 'swift', '.php': 'php', '.cs': 'csharp', '.bend': 'bend', '.c': 'c', '.cpp': 'cpp' };
-const FRAMEWORKS = ['react', 'next', 'vue', 'nuxt', 'svelte', '@sveltejs/kit', 'solid-js', 'astro', 'express', 'hono', 'fastify', 'koa', '@nestjs/core',
-  'prisma', '@prisma/client', 'drizzle-orm', 'mongoose', '@supabase/supabase-js', 'firebase', 'convex', 'effect', '@confect/server', 'vite', 'vite-plus',
-  'vitest', 'jest', 'mocha', 'webpack', 'esbuild', 'eslint', 'prettier', 'oxlint', 'biome', '@biomejs/biome', 'zod', 'lodash', 'rxjs', 'tailwindcss'];
-const LOCKS = { 'bun.lock': 'bun', 'bun.lockb': 'bun', 'package-lock.json': 'npm', 'pnpm-lock.yaml': 'pnpm', 'yarn.lock': 'yarn', 'Cargo.lock': 'cargo' };
 
 // Merge queue needs CI that runs on merge_group. Warn only (CI may live outside .github, e.g. Buildkite).
 function mergeQueueWarn(cfg) {
@@ -179,127 +221,7 @@ function mergeQueueWarn(cfg) {
   if (!wf.some(f => new RegExp(`\\b${trig}\\b`).test(fs.readFileSync(path.join(dir, f), 'utf8')))) console.warn(`  WARN merge queue: no workflow in .github/workflows triggers on ${trig}; queued PRs will never get checks. Add \`on: ${trig}:\`.`);
 }
 
-// ---------- ship next: read-only. Prints live main/merged state from GitHub, then the next PR for the serial shipping-manager loop (SHIPPING.md) and the exact commands.
-function shipLiveState(cfg) {
-  const base = cfg.project.default_branch;
-  // Always from live GitHub; never memory or a prior failed command (fixed rule 17).
-  let sha = 'unknown', checks = [];
-  try { sha = sh(`gh api repos/{owner}/{repo}/commits/${base} -q .sha`); } catch (e) { console.log(`  live ${base}: could not read tip (${(e.stderr || e.message || e).toString().trim().split('\n')[0]})`); }
-  try {
-    checks = JSON.parse(sh(`gh api repos/{owner}/{repo}/commits/${base}/check-runs -q '[.check_runs[]|{name:.name,conclusion:(.conclusion//"pending")}]'`) || '[]');
-  } catch (e) { console.log(`  live ${base} checks: could not read (${(e.stderr || e.message || e).toString().trim().split('\n')[0]})`); }
-  const tip = sha === 'unknown' ? 'unknown' : sha.slice(0, 8);
-  if (sha !== 'unknown' || checks.length) {
-    const summary = checks.length
-      ? checks.map(c => `${c.name} ${c.conclusion || 'pending'}`).join('; ')
-      : 'no check-runs';
-    const allGreen = checks.length > 0 && checks.every(c => ['success', 'neutral', 'skipped'].includes(String(c.conclusion || '').toLowerCase()));
-    console.log(`  live ${base}: ${tip} | ${allGreen ? 'GREEN' : checks.length ? 'NOT GREEN' : 'checks unknown'} | ${summary}`);
-  }
-  let merged = [];
-  try { merged = JSON.parse(sh('gh pr list --state merged --json number,title,mergedAt,mergeCommit,url --limit 5') || '[]'); } catch (e) {
-    console.log(`  live merged: could not read (${(e.stderr || e.message || e).toString().trim().split('\n')[0]})`);
-  }
-  if (merged.length) {
-    console.log('  live recently merged:');
-    for (const p of merged) {
-      const msha = p.mergeCommit?.oid || p.mergeCommit?.sha || null;
-      console.log(`    #${p.number} ${p.title} → merge SHA ${msha ? msha.slice(0, 8) : 'NONE (read failed)'} (${p.mergedAt || '?'}) ${p.url || ''}`);
-    }
-  } else {
-    console.log('  live recently merged: (none)');
-  }
-}
-function shipNext() {
-  const cfg = loadConfig(), L = cfg.ship?.high_risk?.label || 'risk:high';
-  console.log('eng ship next: live state from GitHub');
-  shipLiveState(cfg);
-  const prs = JSON.parse(sh('gh pr list --state open --json number,title,isDraft,createdAt,headRefOid,labels,reviewDecision,statusCheckRollup,url --limit 100') || '[]')
-    .filter(p => !p.isDraft).sort((x, y) => x.createdAt.localeCompare(y.createdAt));
-  if (!prs.length) return console.log('eng ship next: no open ready PRs.');
-  const green = p => (p.statusCheckRollup || []).length > 0 && p.statusCheckRollup.every(c => ['SUCCESS', 'NEUTRAL'].includes(c.conclusion || c.state));
-  for (const p of prs) {
-    const hi = p.labels.some(l => l.name === L);
-    if (hi && p.reviewDecision !== 'APPROVED') { console.log(`  skip #${p.number}: ${L}, waiting for Matt's approval (send him: one-line summary, evidence, ${p.url})`); continue; }
-    if (!green(p)) { console.log(`  skip #${p.number}: gate not green on ${p.headRefOid.slice(0, 8)}`); continue; }
-    return console.log(`eng ship next: #${p.number} ${p.title}${hi ? ` (${L}, approved)` : ''}
-  ${p.url}
-  1. gh pr checkout ${p.number} && eng verdict check          # PASS verdict for this patch-id, else back to the verifier
-  2. gh pr update-branch ${p.number}
-  3. gh pr checks ${p.number} --watch                          # gate on the new head; then: gh pr checkout ${p.number} && git pull && eng verdict check
-  4. gh pr merge ${p.number} --squash --delete-branch --match-head-commit $(gh pr view ${p.number} --json headRefOid -q .headRefOid)
-  5. gh api repos/{owner}/{repo}/commits/${cfg.project.default_branch}/check-runs -q '.check_runs[]|.name+" "+(.conclusion//"pending")'   # main green? else revert now and return #${p.number} to its author
-  6. ${shipLogStep(cfg)}`);
-  }
-  console.log('eng ship next: nothing shippable right now.');
-}
-
-function stackCheck() {
-  const cfg = loadConfig(), s = cfg.stack;
-  const exc = (kind, name) => (s.exceptions || []).some(e => e.kind === kind && e.name === name);
-  const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
-  const bad = [];
-  const langs = new Set(files.map(f => LANG[path.extname(f)]).filter(Boolean));
-  for (const l of langs) if (!s.languages.allowed.includes(l) && !exc('language', l)) bad.push(`language ${l} (e.g. ${files.find(f => LANG[path.extname(f)] === l)})`);
-  for (const f of files.filter(f => path.basename(f) === 'package.json' && !f.includes('node_modules'))) {
-    const pj = JSON.parse(fs.readFileSync(path.join(ROOT, f), 'utf8'));
-    for (const d of Object.keys({ ...pj.dependencies, ...pj.devDependencies }))
-      if (FRAMEWORKS.includes(d) && !s.frameworks.allowed.includes(d) && !exc('framework', d)) bad.push(`framework ${d} (${f})`);
-  }
-  const pm = String(s.defaults.package_manager.use).trim().split(/\s+/)[0].toLowerCase(); // first word names the PM ("bun via vp install ...")
-  for (const f of files) { const k = LOCKS[path.basename(f)]; if (k && k !== pm && !exc('package_manager', k)) bad.push(`lockfile ${f} (${k}); package manager is ${pm}`); }
-  const fail = [];
-  if (bad.length) fail.push(`off-stack additions:\n  ${bad.join('\n  ')}\n  Fix: remove it, or add stack.exceptions: [{kind, name, reason}] to eng.config.yml (Matt approves).`);
-  // Convex 1.49 dropped Node 20: a Convex repo may not declare a Node below the standard's backend node floor.
-  const std = YAML.parse(fs.readFileSync(path.join(PKG, 'standard/modern-stack.yml'), 'utf8')), deps = lowestDeps(treeManifests(files));
-  const pins = nodePins(files, f => readOr(f, '')), low = convexNodeFindings(std, deps, pins), floor = std.layers.backend.node;
-  if (low.length) fail.push(`Convex repo declares Node below ${floor} (Convex 1.49 dropped Node 20):\n  ${low.map(p => `${p.where} "${p.spec}": ${p.fix}`).join('\n  ')}`);
-  if (fail.length) die(`stack-check: ${fail.join('\nstack-check: ')}`);
-  if (deps.convex !== undefined && !pins.length) console.log(`  WARN Convex repo declares no Node version: add "engines": { "node": ">=${floor}" } to package.json`);
-  mergeQueueWarn(cfg);
-  console.log(`eng stack-check: PASS (languages: ${[...langs].join(', ')})`);
-}
-// Working-tree package.json files, read the way stack-audit reads them at a ref.
 const treeManifests = files => files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return JSON.parse(readOr(f, '{}')); } catch { return {}; } });
-
-// ---------- stack-audit: read-only. Declared deps, packageManager and CI pins at a git ref vs standard/modern-stack.yml floors.
-function repoFacts(name, dir, ref) {
-  const git = (...g) => { const r = spawnSync('git', ['-C', dir, ...g], { encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
-  ref ||= ['origin/main', 'origin/master', 'main', 'HEAD'].find(r => git('rev-parse', '--verify', '-q', `${r}^{commit}`));
-  if (!ref || !git('rev-parse', '--verify', '-q', `${ref}^{commit}`)) die(`stack-audit: ${dir}: no readable ref${ref ? ` ${ref}` : ''}`);
-  const files = git('ls-tree', '-r', '--name-only', ref).split('\n').filter(Boolean), show = f => git('show', `${ref}:${f}`) ?? '';
-  const manifests = files.filter(f => path.basename(f) === 'package.json' && !SKIP_DIRS.test(f)).map(f => { try { return [f, JSON.parse(show(f))]; } catch { return [f, {}]; } });
-  const packageManager = manifests.find(([f]) => f === 'package.json')?.[1].packageManager || null;
-  const ci = files.filter(f => /^(\.github\/workflows|\.buildkite)\/.*\.ya?ml$/.test(f)).map(show).join('\n');
-  const pins = re => [...new Set([...ci.matchAll(re)].map(m => m[1]))].sort();
-  const ciNode = [...new Set(nodePins(files, show).filter(p => p.kind === 'ci' || p.kind === 'version-file').map(p => p.spec))];
-  return { name, ref, deps: lowestDeps(manifests.map(([, pj]) => pj)), packageManager, ciBun: pins(/bun-version:\s*['"]?v?([\w.]+)/g), ciNode };
-}
-function stackAudit() {
-  const opt = k => { const i = a.indexOf(k); return i < 0 ? undefined : a.splice(i, 2)[1]; };
-  const ref = opt('--ref'), stdFile = opt('--standard') || path.join(PKG, 'standard/modern-stack.yml');
-  const space = opt('--core-space'), tgt = opt('--core-target');
-  const json = a.includes('--json'), core = a.includes('--core');
-  const std = YAML.parse(fs.readFileSync(stdFile, 'utf8'));
-  const targets = a.filter(x => !x.startsWith('--'));
-  const findings = [];
-  for (const t of targets.length ? targets : [ROOT]) {
-    const [name, dir] = t.includes('=') ? t.split('=') : [path.basename(path.resolve(t)), t];
-    const facts = repoFacts(name, path.resolve(dir), ref);
-    const found = audit(std, facts); findings.push(...found);
-    if (!json && !core) {
-      const d = found.filter(f => f.status === 'drift');
-      console.log(`${name} @ ${facts.ref}: ${d.length ? `${d.length} drift` : 'on standard'}${std.exceptions?.[name] ? ` (exception ${std.exceptions[name].status}: ${std.exceptions[name].reason})` : ''}`);
-      for (const f of found) console.log(`  ${f.status === 'drift' ? 'DRIFT   ' : 'excepted'} ${f.layer.padEnd(11)} ${f.item}: ${f.have} -> ${f.want}`);
-    }
-  }
-  if (core) {
-    const [type, id] = tgt ? tgt.split(':') : [];
-    console.log(JSON.stringify(corePayloads(std, findings, { space: space || std.core.space, target: tgt ? { type, id } : std.core.followup_target, month: sydneyMonth() }), null, 2));
-  } else if (json) console.log(JSON.stringify({ standard: std.name, findings }, null, 2));
-  else console.log(`eng stack-audit: ${findings.filter(f => f.status === 'drift').length} drift finding(s) against ${std.name} (read-only; --core prints Core follow-up payloads, never sends them)`);
-  process.exit(findings.some(f => f.status === 'drift') ? 1 : 0);
-}
 
 // ---------- custom lint / constraints ----------
 function builtinRules(cfg) {
@@ -342,13 +264,16 @@ function lint() {
   const cfg = ref ? YAML.parse(sh(`git show ${ref}:eng.config.yml`)) : loadConfig();
   if (ref) console.log(`  rules from ${ref}:eng.config.yml`);
   let hits = lintHits(cfg);
-  // Renovation (brownfield): findings in renovation/baselines/lint.json pass; only new ones fail. warn mode reports only.
+  // A repo that adopted the standard while shipping (eng init): findings in renovation/baselines/ pass; only new ones fail. warn mode reports only.
   const bl = readOr(baselinePath('lint'));
   if (bl) {
     const c = compareBaseline(JSON.parse(bl), lintFindings(hits)), fresh = new Set(c.fresh.map(f => f.fingerprint));
     console.log(`  baseline ${baselinePath('lint')}: ${c.known.length} baselined, ${c.gone.length} fixed since the baseline`);
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
+  // Credential-looking filenames are checked where eng init baselined them (a repo that adopted the standard while shipping).
+  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')))).fresh : [];
+  hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
   if (hits.length && cfg.renovation?.gates?.mode === 'warn')  // mode from the config the rules came from: a branch cannot switch the base to warn
@@ -366,11 +291,41 @@ function rulesProve() {
     console.log(`  ${r.id}: ${hits.length ? 'bites' : 'DOES NOT BITE'} on ${r.proven_by.incident} fixture (${hits.length} hit)`);
     if (!hits.length) bad.push(r.id);
   }
-  if (bad.length) die(`rules prove: ${bad.join(', ')} do not fail on their recorded mistake`);
-  console.log('eng rules prove: PASS');
+  const laws = cfg.laws?.enabled ? lawsProofs(cfg) : [];
+  if (bad.length || laws.length) die(`rules prove:${bad.length ? ` ${bad.join(', ')} do not fail on their recorded mistake` : ''}${laws.length ? `\n  ${laws.join('\n  ')}` : ''}`);
+  console.log(`eng rules prove: PASS${cfg.laws?.enabled ? ' (lint rules and Bend proofs)' : ''}`);
+}
+// The formal wall, when the repo keeps Bend laws (laws.enabled): the proofs check, every planted mutation breaks them, and
+// the TS parity test passes with nothing skipped. Copies pi-fabric (planted mutations) and prism-liquidity-agent (parity).
+function bendRun(args, cwd) { return spawnSync('bend', args, { cwd, encoding: 'utf8', env: { ...process.env, BEND_NO_TELEMETRY: '1' } }); }
+function lawsProofs(cfg) {
+  const l = cfg.laws, scratch = engTmp(cfg).dir;
+  const v = bendRun(['version'], ROOT);
+  if (v.status !== 0 || v.stdout.trim() !== `bend ${l.bend_version}`) return [`laws: need bend ${l.bend_version}, found "${(v.stdout || v.stderr || 'not installed').trim()}"`];
+  const fails = [], r = bendRun([l.proof_file], path.join(ROOT, l.dir)), out = (r.stdout + r.stderr).trim();
+  console.log(`  [proofs] bend ${l.proof_file}: ${out.split('\n').at(-1)}`);
+  if (r.status !== 0 || !out.includes('ALL PROOFS CHECK')) fails.push('laws: proofs do not check');
+  for (const m of l.mutations || []) {
+    const tmp = fs.mkdtempSync(path.join(scratch, 'eng-mut-'));
+    fs.cpSync(path.join(ROOT, l.dir), tmp, { recursive: true });
+    const file = path.join(tmp, m.file), src = fs.readFileSync(file, 'utf8');
+    if (!src.includes(m.from)) { fails.push(`laws: mutation ${m.name}: pattern not found (mutation is stale)`); continue; }
+    fs.writeFileSync(file, src.replace(m.from, m.to));
+    const x = bendRun([l.proof_file], tmp), killed = x.status !== 0 || !(x.stdout + x.stderr).includes('ALL PROOFS CHECK');
+    console.log(`  mutation "${m.name}": ${killed ? 'caught by proofs' : 'NOT CAUGHT'}`);
+    if (!killed) fails.push(`laws: mutation ${m.name}: proofs still pass with the bug planted (laws too weak)`);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  if (l.parity) {
+    const p = run(l.parity), po = (p.stdout + p.stderr).trim();
+    const skipped = /\b[1-9]\d* (skip|skipped|todo)\b/.test(po), passed = /\b[1-9]\d* (pass|passed)\b/.test(po); // bun: `N pass`/`N skip`; Vitest: `N passed`/`N skipped`
+    console.log(`  [parity] ${l.parity}: exit ${p.status}`);
+    if (p.status !== 0 || skipped || !passed) fails.push('laws: parity test failed or skipped');
+  }
+  return fails;
 }
 
-// ---------- verification: create + maintain ----------
+// ---------- the commit under test ----------
 const head = () => sh('git rev-parse HEAD');
 // The PR's base: --base <ref> or ENG_BASE for a stacked PR, else project.default_branch (origin/ when fetched).
 const baseRef = cfg => { const b = (process.argv.includes('--base') && process.argv[process.argv.indexOf('--base') + 1]) || process.env.ENG_BASE || cfg.project.default_branch; if (b.startsWith('origin/')) return b; try { sh(`git rev-parse --verify origin/${b}`); return `origin/${b}`; } catch { return b; } };
@@ -379,87 +334,13 @@ const patchId = (cfg, rev = 'HEAD') => { const mb = sh(`git merge-base ${baseRef
 // last merged one: a squash merge is one commit whose diff HEAD^..HEAD has the same patch-id as the PR branch had
 // against its merge-base. Records written on the (now deleted) PR head resolve on main through that patch-id.
 const mergedPatchId = () => { try { return sh('git diff --binary HEAD^ HEAD | git patch-id --stable').split(' ')[0] || 'empty'; } catch { return 'empty'; } };
-const effectivePatchId = cfg => { const p = patchId(cfg); return p === 'empty' && sh(`git merge-base ${baseRef(cfg)} HEAD`) === head() ? mergedPatchId() : p; };
 const byTime = (x, y) => (Date.parse(x.at) || 0) - (Date.parse(y.at) || 0);
-function notes(sha) { try { return sh(`git notes --ref ${NOTES} show ${sha}`).split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } }
-function allNotes() { let l = ''; try { l = sh(`git notes --ref ${NOTES} list`); } catch {} return l.split('\n').filter(Boolean).flatMap(x => notes(x.split(' ')[1])); }
-function record(rec) { sh(`git notes --ref ${NOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${rec.sha}`); }
-function runCheck(cfg, id, cwd) { const r = run(`bash ${path.join(ROOT, cfg.verification.checks_dir, id + '.sh')}`, cwd); return { ok: r.status === 0, out: (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ') }; }
 // A checkout's .eng/mistakes.jsonl is the pre-31-Oct-2026 mistakes log (now in git's common dir); it never counts as uncommitted code.
 function clean() { if (sh('git status --porcelain -- . ":(exclude).eng/mistakes.jsonl" ":(exclude)renovation/proof" ":(exclude)renovation/receipts"')) die('working tree not clean; commit first so the verdict binds to a real SHA'); }
 
-function verifyCreate(id) {
-  const cfg = loadConfig(); clean();
-  const chk = path.join(ROOT, cfg.verification.checks_dir, id + '.sh');
-  if (!fs.existsSync(chk)) die(`no check ${chk}`);
-  const H = head(), B = sh(`git merge-base ${baseRef(cfg)} HEAD`);
-  if (B === H) die('HEAD equals base; nothing to prove');
-  const round = openRound(cfg, 'verify-base'), wt = path.join(round.dir, 'wt');
-  round.onClose(() => { spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: ROOT }); spawnSync('git', ['worktree', 'prune'], { cwd: ROOT }); });
-  sh(`git worktree add --detach ${wt} ${B}`);
-  if (fs.existsSync(path.join(ROOT, 'node_modules'))) fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(wt, 'node_modules'));
-  const before = runCheck(cfg, id, wt);
-  sh(`git worktree remove --force ${wt}`);
-  const after = runCheck(cfg, id, ROOT);
-  console.log(`  base ${B.slice(0, 8)}: ${before.ok ? 'PASS' : 'FAIL'}  (${before.out})`);
-  console.log(`  head ${H.slice(0, 8)}: ${after.ok ? 'PASS' : 'FAIL'}  (${after.out})`);
-  const verdict = !before.ok && after.ok ? 'VERIFIED' : 'NOT_VERIFIED';
-  record({ kind: 'create', check: id, sha: H, base: B, patch_id: patchId(cfg), before: before.ok ? 'pass' : 'fail', after: after.ok ? 'pass' : 'fail', verdict, check_hash: sha256(fs.readFileSync(chk, 'utf8')), at: new Date().toISOString() });
-  if (verdict !== 'VERIFIED') die(`verify create ${id}: ${before.ok ? 'check passes on base, so it cannot catch the bug (tautological)' : 'check fails on HEAD'}`);
-  console.log(`eng verify create ${id}: VERIFIED, pinned to ${H} (git notes --ref ${NOTES})`);
-}
-
-function verifyMaintain() {
-  const cfg = loadConfig(), v = cfg.verification; clean();
-  const H = head(), pid = effectivePatchId(cfg), dir = path.join(ROOT, v.checks_dir);
-  const ids = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.sh')).map(f => f.slice(0, -3)) : [];
-  const hist = allNotes(); const problems = [];
-  for (const id of ids) {
-    const src = fs.readFileSync(path.join(dir, id + '.sh'), 'utf8');
-    const runs = Array.from({ length: v.flake_runs }, () => runCheck(cfg, id, ROOT).ok);
-    const passes = runs.filter(Boolean).length;
-    const status = passes === runs.length ? 'pass' : passes === 0 ? 'fail' : 'FLAKY';
-    // Chronological, not notes-list (SHA) order; prefer a record for this exact patch (squash merge, rebase, merge-in).
-    const recs = hist.filter(n => n.check === id).sort(byTime);
-    const prev = recs.filter(n => n.patch_id === pid && pid !== 'empty').at(-1) ?? recs.at(-1);
-    const covers = (src.match(/^# covers: (.+)$/m)?.[1] || '').split(/\s+/).filter(Boolean);
-    const missing = covers.filter(c => !fs.existsSync(path.join(ROOT, c)));
-    // Age = commits since the freshest proof. A record whose SHA is gone (squashed PR head, deleted branch) still counts
-    // as fresh when it proved this same patch; otherwise it cannot be aged and is ignored.
-    const ageOf = n => { try { return Number(sh(`git rev-list --count ${n.sha}..HEAD`)); } catch { return n.patch_id === pid && pid !== 'empty' ? 0 : Infinity; } };
-    const age = prev ? Math.min(...recs.map(ageOf)) : 0;
-    const stale = missing.length ? `covers missing path(s): ${missing.join(' ')}` : !prev ? 'never proven with verify create' : age === Infinity ? 'no reachable or same-patch proof (every prior record is on an unreachable commit with a different patch-id)' : age > v.stale_after_commits ? `last proven ${age} commits ago` : prev.check_hash && prev.check_hash !== sha256(src) ? 'check edited since it was proven (re-run verify create)' : '';
-    const carried = prev && prev.sha !== H ? (prev.patch_id === pid ? `new SHA, same patch-id as ${prev.sha.slice(0, 8)} (merge-in or squash)` : `new SHA, patch changed since ${prev.sha.slice(0, 8)}`) : prev ? 'same SHA' : 'no prior verdict';
-    console.log(`  ${id}: ${status} x${runs.length} | ${carried}${stale ? ' | STALE: ' + stale : ''}`);
-    if (status !== 'pass') problems.push(`${id} ${status}`);
-    if (stale) problems.push(`${id} stale`);
-    if (!notes(H).some(n => n.check === id && n.kind === 'reverify'))
-      record({ kind: 'reverify', check: id, sha: H, patch_id: pid, from: prev?.sha, result: status, at: new Date().toISOString() });
-  }
-  // Repeat mistakes become rules.
-  const ms = readMistakes();
-  const counts = ms.reduce((a, m) => (a[m.key] = (a[m.key] || 0) + 1, a), {});
-  const ruleIds = new Set([...builtinRules(cfg).map(r => r.id), ...ids]);
-  for (const p of unenforced(cfg)) problems.push(p);
-  for (const [k, n] of Object.entries(counts)) if (n >= v.repeat_threshold && !ruleIds.has(k) && !/^(gate|verdict):/.test(k)) problems.push(`mistake "${k}" seen ${n}x with no rule or check named ${k}: add constraints.rules[${k}] or ${v.checks_dir}/${k}.sh`);
-  if (problems.length) die(`verify maintain:\n  ${problems.join('\n  ')}`);
-  console.log(`eng verify maintain: PASS (${ids.length} checks re-verified on ${H.slice(0, 8)})`);
-}
-
-const MISTAKES = () => mistakesLog(ROOT);
-const readMistakes = () => [fs.existsSync(MISTAKES()) ? fs.readFileSync(MISTAKES(), 'utf8') : '', readOr(LEGACY_MISTAKES, '')].join('\n').split('\n').filter(Boolean).map(JSON.parse);
-function logMistake(key, what, source = 'human', dedupe = false) {
-  const sha = head();
-  if (dedupe && readMistakes().some(m => m.key === key && m.sha === sha)) return false; // one entry per key per SHA, so re-running a gate does not inflate counts
-  fs.mkdirSync(path.dirname(MISTAKES()), { recursive: true });
-  fs.appendFileSync(MISTAKES(), JSON.stringify({ key, what, sha, source, at: new Date().toISOString() }) + '\n');
-  return true;
-}
-function mistake(key, what) { logMistake(key, what); console.log(`eng mistake: recorded ${key}`); }
-
 // ---------- rule -> enforcer (pstack correct: "keep a table that pairs each rule with what enforces it") ----------
 function enforcerIds(cfg) {
-  const d = path.join(ROOT, cfg.verification.checks_dir);
+  const d = path.join(ROOT, checksDir(cfg));
   const checks = fs.existsSync(d) ? fs.readdirSync(d).filter(f => f.endsWith('.sh')).map(f => f.slice(0, -3)) : [];
   return { rules: builtinRules(cfg).map(r => r.id), checks, gates: cfg.gates.required };
 }
@@ -479,78 +360,11 @@ function unenforced(cfg) {
   return out;
 }
 
-// ---------- retro: read-only. Copies mattpocock/skills retro (proposes only; candidates from the record; mechanical -> check,
-// judgment -> reviewer standards; prune no-ops) and pstack correct (class = seen twice; fix at the highest level:
-// architecture, types, lint whose error names the fix, test, docs last; a rule that exists and still repeats is fixed higher).
-const LEVELS = ['1 architecture', '2 types', '3 lint/CI check', '4 test', '5 docs/review (judgment only)'];
-const ROUTE = {   // gate -> [level index, our skill, why not higher]
-  typecheck: [1, 'pstack principle-type-system-discipline', 'a type error is already a type-level signal; make the bad state unrepresentable'],
-  laws: [1, 'write-law-and-proof (Bend) + law-conformance', 'laws are type-level proofs; strengthen the law or the kernel boundary'],
-  lint: [2, 'custom-lint', 'the class is a code pattern; a lint whose message names the fix is the highest check that sees it'],
-  rules: [2, 'custom-lint (rule fixture)', 'a lint rule no longer fails on its recorded mistake; repair the rule'],
-  stack: [0, 'eng-stack', 'off-stack additions are an architecture choice; record an exception or remove'],
-  drift: [2, 'add-gate (pre-commit hook runs eng drift-check)', 'generated files are edited by hand; the source of truth exists, the guard is not catching it early'],
-  test: [3, 'property-test', 'behaviour regressions; test the behaviour over all inputs'],
-  verify: [3, 'eng-verify', 'a behaviour check flaked or went stale'],
-  e2e: [3, 'e2e-flow', 'a user flow broke; extend the flow'],
-  fallow: [2, 'fallow rules/boundaries in .fallowrc.json (not review)', 'a graph finding (unused, cycle, boundary, clone) is mechanical; encode the policy in fallow config, the type system cannot see the module graph'],
-  launch: [0, 'repo launch (eng.config.yml launch: up/doctor/down + eng launch-check)', 'isolation is the codebase\'s job, not the verify skill\'s; one supported way to start a private copy'],
-  conform: [3, 'law-conformance', 'shipped code drifted from the laws'],
-};
-// When did this repo gain an enforcer for id? (first commit adding the check file or the rule id to eng.config.yml)
-function enforcerSince(cfg, id) {
-  const tries = [`git log --reverse --format=%cI --diff-filter=A -- ${cfg.verification.checks_dir}/${id}.sh`, `git log --reverse --format=%cI -S"id: ${id}" -- eng.config.yml`];
-  const ts = tries.map(c => { try { return sh(c).split('\n')[0]; } catch { return ''; } }).filter(Boolean).sort();
-  return ts[0] ? new Date(ts[0]) : null;
-}
-function retro() {
-  const cfg = loadConfig(), v = cfg.verification, ms = readMistakes();
-  const { rules, checks } = enforcerIds(cfg);
-  const groups = {}; for (const m of ms) (groups[m.key] ||= []).push(m);
-  const out = [`# eng retro (${new Date().toISOString().slice(0, 10)}, HEAD ${head().slice(0, 8)}): proposals only. Nothing changes until Matt approves one.`,
-    `Source: ${MISTAKES()} (${ms.length} entries). A class counts at ${v.repeat_threshold}+ (pstack correct). Order: ${LEVELS.join(' > ')}.`, ''];
-  // pstack correct: a rule that exists and still repeats is a repeat. Mistakes from before the enforcer existed are what it was built from.
-  const settled = [];
-  for (const k of Object.keys(groups)) if (rules.includes(k) || checks.includes(k)) {
-    const since = enforcerSince(cfg, k); const after = since ? groups[k].filter(m => new Date(m.at) > since) : groups[k];
-    if (after.length < v.repeat_threshold) { settled.push(`- ${k}: enforced since ${since ? since.toISOString().slice(0, 16) : '?'} (${rules.includes(k) ? 'eng lint rule' : 'verify check'}); ${groups[k].length} mistake(s) before, ${after.length} after.`); delete groups[k]; }
-    else groups[k] = after;
-  }
-  const classes = Object.entries(groups).filter(([, l]) => l.length >= v.repeat_threshold).sort((a, b) => b[1].length - a[1].length);
-  out.push(`## Classes (${classes.length})`);
-  classes.forEach(([k, l], i) => {
-    const enforced = rules.includes(k) || checks.includes(k);
-    let lvl, skill, why;
-    if (/^(launch|verify-infra)/.test(k)) [lvl, skill, why] = ROUTE.launch;
-    else if (k === 'verdict:FAIL') [lvl, skill, why] = [3, 'eng-verify (+ create-verification-skill)', 'a verifier caught what the build missed; the failing behaviour needs a check that fails first'];
-    else if (k.startsWith('gate:')) [lvl, skill, why] = ROUTE[k.slice(5)] ?? [2, 'add-gate', 'a repo command failed repeatedly'];
-    else if (enforced) [lvl, skill, why] = [0, 'add-gate (one write path) + pstack architect', `"${k}" already has an enforcer and still repeats; pstack correct: fix it at a higher level`];
-    else [lvl, skill, why] = [2, 'custom-lint (or a check in ' + v.checks_dir + ')', 'no enforcer yet. First rule out architecture (one owner / one write path: add-gate) and types (write-law-and-proof); if neither fits, a lint whose error names the fix'];
-    out.push(`${i + 1}. **${k}** x${l.length} (${[...new Set(l.map(m => m.source || 'human'))].join(', ')})`);
-    for (const m of l.slice(-3)) out.push(`   - ${m.sha?.slice(0, 8)} ${m.at?.slice(0, 16)}: ${m.what}`);
-    out.push(`   - Proposed level: ${LEVELS[lvl]}. Skill: ${skill}.`, `   - Why not higher: ${why}.`, `   - Prove it: the new check must fail on the commits above (eng rules prove / eng verify create).`);
-  });
-  if (!classes.length) out.push('- none (no key seen twice)');
-  out.push('', `## Enforced, no repeat since (${settled.length})`, ...(settled.length ? settled : ['- none']));
-  const singles = Object.entries(groups).filter(([, l]) => l.length < v.repeat_threshold);
-  out.push('', `## One-offs (not a class yet: ${singles.length})`, ...singles.map(([k, l]) => `- ${k}: ${l[0].what}`));
-  // Prune (retro: no-ops; correct: drop a rule once its mistake can't happen)
-  const prune = [];
-  for (const id of [...(cfg.constraints?.rules || []).map(r => r.id), ...checks]) if (!readMistakes().some(m => m.key === id)) prune.push(`- ${id}: no mistake or failure names it in the log. Deletion test: can this mistake still happen? If not, drop it (pstack correct).`);
-  const agents = readOr('AGENTS.md', ''); const human = agents.replace(/<!-- eng:begin -->[\s\S]*?<!-- eng:end -->/g, '');
-  const ids = [...rules, ...checks, ...cfg.gates.required];
-  for (const line of human.split('\n')) if (/\b(must|never|always|don't|do not|only)\b/i.test(line) && !ids.some(id => line.includes(id))) prune.push(`- AGENTS.md: "${line.trim().slice(0, 100)}" has no enforcer. Mechanical -> a check; judgment -> reviewer standards; no behaviour change -> delete (retro no-ops).`);
-  for (const r of cfg.agents?.rules || []) if (r.enforced_by === 'review') prune.push(`- agents.rules "${r.rule}": reviewer judgment only. Re-check that no check can enforce it.`);
-  out.push('', `## Prune candidates (${prune.length})`, ...(prune.length ? prune : ['- none']));
-  out.push('', 'Next: Matt picks items. Each approved item is one commit at the proposed level, proven failing on the commits above.');
-  console.log(out.join('\n'));
-}
-
 // ---------- launch: the repo owns an isolated local launch (pstack create-verification-skill Launch / Doctor / Cleanup) ----------
 // Contract (eng.config.yml launch:). eng gives each run ENG_RUN_ID, ENG_PORT (a free port eng picked), ENG_RUN_DIR (outside the repo).
-// basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng ephemeral and eng launch-check start: <tmp>/eng-launch/<id> here,
-// <scratch root>/<id> in eng ephemeral. Keep a socket in it short: the run dir is its root plus the id, 107 bytes is the cap.
-// eng ephemeral also sets ENG_SOCK_DIR ($HOME/.cache/eng/s/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
+// basename(ENG_RUN_DIR) == ENG_RUN_ID for every run eng run <name> and eng doctor --launch start: <tmp>/eng-launch/<id> here,
+// <scratch root>/<id> in eng run <name>. Keep a socket in it short: the run dir is its root plus the id, 107 bytes is the cap.
+// eng run <name> also sets ENG_SOCK_DIR ($HOME/.cache/eng/s/<8 hex>, under 60 bytes) for unix sockets, and ENG_NETWORK_ISOLATED=1
 // under isolation.network: private.
 // up: start, return once ready, write $ENG_RUN_DIR/state.json {url, pids[], storage, evidence}. doctor: read-only, exit 0 = worth driving.
 // down: stop only the PIDs this run started. Storage and evidence live under the run dir, never shared and never in the repo.
@@ -584,8 +398,8 @@ function launchCheck() {
   const st = launchStatic(l);
   if (checkOnly) {
     console.log(`  check-only (no processes started); inspected: ${st.files.join(', ') || 'no script files'}`);
-    if (st.issues.length) die(`launch-check: ${NO_LAUNCH.split(';')[0]} that meets the contract:\n  ${st.issues.join('\n  ')}`);
-    return console.log('eng launch-check: PASS (check-only)');
+    if (st.issues.length) die(`doctor --launch: ${NO_LAUNCH.split(';')[0]} that meets the contract:\n  ${st.issues.join('\n  ')}`);
+    return console.log('eng doctor --launch: PASS (check-only)');
   }
   const base = path.join(os.tmpdir(), 'eng-launch'), t = (l.ready_timeout_s ?? 60) * 1000, runs = [], fails = [];
   const env = r => ({ ...process.env, ENG_RUN_ID: r.id, ENG_PORT: String(r.port), ENG_RUN_DIR: r.dir });
@@ -618,95 +432,8 @@ function launchCheck() {
     }
   }
   if (st.issues.length) console.log(`  static notes: ${st.issues.join('; ')}`);
-  if (fails.length) die(`launch-check:\n  ${fails.join('\n  ')}`);
-  console.log(`eng launch-check: PASS (2 concurrent runs on ports ${runs.map(r => r.port).join(' + ')}, own storage, down left no processes; evidence kept under ${base})`);
-}
-
-// ---------- laws (Bend) ----------
-// Copies: pi-fabric (proofs gate + kernels compiled with `bend x.bend -o x.mjs`, checked in, hash manifest,
-// planted mutations must break the proofs) and prism-liquidity-agent (TS parity against Bend in CI; we use
-// random inputs and never skip). Plus ours: LAWS.bend changes need a recorded approval.
-function bendRun(args, cwd) { return spawnSync('bend', args, { cwd, encoding: 'utf8', env: { ...process.env, BEND_NO_TELEMETRY: '1' } }); }
-function lawsManifest(l) {
-  const dir = path.join(ROOT, l.dir);
-  const inputs = Object.fromEntries(fs.readdirSync(dir).filter(f => f.endsWith('.bend')).sort().map(f => [`${l.dir}/${f}`, sha256(fs.readFileSync(path.join(dir, f), 'utf8'))]));
-  return { bend: l.bend_version, inputs };
-}
-function compileKernels(l) {
-  const out = {};
-  for (const k of l.kernels || []) {
-    const base = tmpBase(loadConfig()); fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-    const tmp = fs.mkdtempSync(path.join(base, 'eng-bend-')); const o = path.join(tmp, 'k.mjs');
-    const r = bendRun([path.join(ROOT, k.source), '-o', o], ROOT);
-    if (r.status !== 0) die(`laws: bend ${k.source} -o failed: ${r.stdout}${r.stderr}`);
-    out[k.out] = `// GENERATED by \`eng laws --write\` from ${k.source} with bend ${l.bend_version}. Do not edit; see ${l.dir}/${l.laws_file}.\n` + fs.readFileSync(o, 'utf8');
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-  return out;
-}
-function lawsWrite() {
-  const l = loadConfig().laws;
-  const files = compileKernels(l);
-  for (const [p, c] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(ROOT, p)), { recursive: true }); fs.writeFileSync(path.join(ROOT, p), c); console.log(`  wrote ${p}`); }
-  const m = { ...lawsManifest(l), outputs: Object.fromEntries(Object.entries(files).map(([p, c]) => [p, sha256(c)])) };
-  fs.writeFileSync(path.join(ROOT, l.manifest), JSON.stringify(m, null, 2) + '\n'); console.log(`  wrote ${l.manifest}`);
-}
-function lawsApprove(by, note) {
-  const l = loadConfig().laws; if (!by) die('usage: eng laws approve <who> <note>  (run by the rule owner, not an agent)');
-  const f = path.join(ROOT, l.dir, l.laws_file);
-  const rec = { laws_file: `${l.dir}/${l.laws_file}`, sha256: sha256(fs.readFileSync(f, 'utf8')), approved_by: by, note, at: new Date().toISOString() };
-  fs.writeFileSync(path.join(ROOT, l.approval_file), JSON.stringify(rec, null, 2) + '\n');
-  console.log(`eng laws approve: recorded ${rec.sha256.slice(0, 12)} by ${by}`);
-}
-function lawsMutations(l) {
-  const bad = [];
-  for (const m of l.mutations || []) {
-    const base = tmpBase(loadConfig()); fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-    const tmp = fs.mkdtempSync(path.join(base, 'eng-mut-'));
-    fs.cpSync(path.join(ROOT, l.dir), tmp, { recursive: true });
-    const f = path.join(tmp, m.file), src = fs.readFileSync(f, 'utf8');
-    if (!src.includes(m.from)) { bad.push(`${m.name}: pattern not found (mutation is stale)`); continue; }
-    fs.writeFileSync(f, src.replace(m.from, m.to));
-    const r = bendRun([l.proof_file], tmp); const out = r.stdout + r.stderr;
-    const killed = r.status !== 0 || !out.includes('ALL PROOFS CHECK');
-    console.log(`  mutation "${m.name}": ${killed ? 'caught by proofs' : 'NOT CAUGHT'}`);
-    if (!killed) bad.push(`${m.name}: proofs still pass with the bug planted (laws too weak)`);
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-  return bad;
-}
-function laws() {
-  const cfg = loadConfig(), l = cfg.laws;
-  if (!l?.enabled) die('laws gate is required but laws.enabled is false (skipped = failed)');
-  const fails = [];
-  const v = bendRun(['version'], ROOT);
-  if (v.status !== 0 || v.stdout.trim() !== `bend ${l.bend_version}`) die(`laws: need bend ${l.bend_version}, found "${(v.stdout || v.stderr || 'not installed').trim()}"`);
-  // 1. proofs
-  const r = bendRun([l.proof_file], path.join(ROOT, l.dir)); const out = (r.stdout + r.stderr).trim();
-  console.log(`  [proofs] bend ${l.proof_file}: ${out.split('\n').map(x => '    ' + x).join('\n').trim()}`);
-  if (r.status !== 0 || !out.includes('ALL PROOFS CHECK')) fails.push('proofs do not check');
-  // 2. LAWS.bend approval
-  const lawsSha = sha256(fs.readFileSync(path.join(ROOT, l.dir, l.laws_file), 'utf8'));
-  const appr = JSON.parse(readOr(l.approval_file, '{}'));
-  if (appr.sha256 !== lawsSha) fails.push(`${l.dir}/${l.laws_file} changed without a recorded approval (have ${String(appr.sha256).slice(0, 12)}, file is ${lawsSha.slice(0, 12)}). Laws need sign-off: the rule owner runs \`eng laws approve <who> <note>\`.`);
-  else console.log(`  [approval] ${l.laws_file} ${lawsSha.slice(0, 12)} approved by ${appr.approved_by} (${appr.note})`);
-  // 3. generated kernels match the .bend (rebuild and compare bytes) + manifest hashes
-  const gen = compileKernels(l); const man = JSON.parse(readOr(l.manifest, '{}'));
-  const want = { ...lawsManifest(l), outputs: Object.fromEntries(Object.entries(gen).map(([p, c]) => [p, sha256(c)])) };
-  for (const [p, c] of Object.entries(gen)) if (readOr(p) !== c) fails.push(`${p} does not match what bend compiles from the .bend sources; run \`eng laws --write\``);
-  if (JSON.stringify(man) !== JSON.stringify(want)) fails.push(`${l.manifest} hashes are stale; run \`eng laws --write\``);
-  if (!fails.some(f => f.includes('--write'))) console.log(`  [kernel] ${Object.keys(gen).join(', ')} matches bend output; manifest hashes match`);
-  // 4. planted mutations must break the proofs (pi-fabric test-verified-kernels pattern)
-  fails.push(...lawsMutations(l));
-  // 5. TS parity against the kernel; a skip counts as a failure
-  if (l.parity) {
-    const p = run(l.parity); const po = (p.stdout + p.stderr).trim();
-    const skipped = /\b[1-9]\d* (skip|skipped|todo)\b/.test(po), passed = /\b[1-9]\d* (pass|passed)\b/.test(po); // bun: `N pass`/`N skip`; Vitest: `N passed`/`N skipped`
-    console.log(`  [parity] ${l.parity}: ${po.split('\n').filter(x => /pass|fail|skip|error|Expected|Received|"[sdk]"/.test(x)).slice(0, 12).map(x => x.trim()).join(' | ')}`);
-    if (p.status !== 0 || skipped || !passed) fails.push('parity test failed or skipped');
-  }
-  if (fails.length) die(`laws:\n  ${fails.join('\n  ')}`);
-  console.log('eng laws: PASS');
+  if (fails.length) die(`doctor --launch:\n  ${fails.join('\n  ')}`);
+  console.log(`eng doctor --launch: PASS (2 concurrent runs on ports ${runs.map(r => r.port).join(' + ')}, own storage, down left no processes; evidence kept under ${base})`);
 }
 
 // ---------- e2e policy: is e2e required for this change? (lib/e2e-policy.mjs; eng.config.yml → e2e.policy) ----------
@@ -744,12 +471,12 @@ function e2eRequired() {
   const cfg = loadConfig(), d = e2eDecision(cfg);
   if (process.argv.includes('--json')) return console.log(JSON.stringify(d, null, 2));
   for (const c of d.files) console.log(`  ${c.kind === 'run' ? 'RUN ' : 'skip'} ${c.cat.padEnd(9)} ${c.file}`);
-  console.log(`eng e2e-required: ${d.required ? 'REQUIRED' : 'NOT REQUIRED'} (${d.reason})`);
+  console.log(`eng e2e --required: ${d.required ? 'REQUIRED' : 'NOT REQUIRED'} (${d.reason})`);
   if (process.argv.includes('--exit-code') && !d.required) process.exit(10);
 }
 
 // The PR from CI env, else from gh for this branch (push builds carry refs/heads/..., not the PR). With no PR the dir is
-// branch-<slug>, and .branch inside records the real name so eng clean --evidence can resolve it later.
+// branch-<slug>, and .branch inside records the real name.
 function evidenceDirKey(dir) {
   let branch = process.env.ENG_BRANCH || process.env.BUILDKITE_BRANCH || (process.env.GITHUB_REF || '').replace(/^refs\/heads\//, '') || '';
   if (!branch || branch.startsWith('refs/')) { try { branch = sh('git rev-parse --abbrev-ref HEAD'); } catch {} }
@@ -781,6 +508,7 @@ function flakeCheck() {
 
 function e2e() {
   if (process.argv.includes('--flake-check')) return flakeCheck();
+  if (process.argv.includes('--required')) return e2eRequired();
   const cfg = loadConfig(), e = cfg.e2e, H = head();
   const tmp = withTmp(cfg);
   if (process.argv.includes('--if-required')) {
@@ -797,7 +525,7 @@ function e2e() {
     const ai = files.filter(f => /\bagent\.(act|assert|waitFor|extract)\(|^\s*agents\s*:/m.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
     if (ai.length) die(`e2e: e2e.model is none but these files use agent steps or configure agents: ${ai.join(', ')}`);
   }
-  const out = path.join(e.evidence_dir, evidenceDirKey(e.evidence_dir), H, 'e2e');  // per PR, so eng clean --evidence clears it on merge or close
+  const out = path.join(e.evidence_dir, evidenceDirKey(e.evidence_dir), H, 'e2e');  // per PR, so it can be cleared on merge or close
   fs.rmSync(path.join(ROOT, out), { recursive: true, force: true });
   // CI=1: cache read-only (never records); --strict-cache: a stale recording fails instead of handing off to a live agent.
   const env = { ...tmp.env, DO_NOT_TRACK: '1', E2E_TELEMETRY_DISABLED: '1', CI: '1', PATH: `${e.node_bin ? e.node_bin + ':' : ''}${process.env.PATH}` };
@@ -817,52 +545,7 @@ function e2e() {
   console.log(`eng e2e: PASS (${tests} test(s); ${ev.length} evidence file(s) in ${out})`);
 }
 
-
-// ---------- find-laws: rank files by law hotspots (the agent then writes plain-words laws) ----------
-const HOTSPOTS = {
-  money: /\b(price|amount|total|subtotal|discount|refund|balance|payout|invoice|cents|currency|tax|fee)\w*/gi,
-  permissions: /\b(auth|role|permission|isAdmin|owner|grant|revoke|canAccess|policy)\w*/gi,
-  state: /\b(status|state|transition|phase|stage)\b/gi,
-  deletion: /\b(delete|remove|destroy|purge|softDelete|archive)\w*/gi,
-  idempotency: /\b(idempoten\w*|dedupe\w*|requestId|retry|upsert)\b/gi,
-  limits: /\b(limit|quota|max\w*|min\w*|cap|threshold)\b/gi,
-  pagination: /\b(cursor|page|offset|paginat\w*)\b/gi,
-  dates: /\b(date|expir\w*|valid(From|Until|To)|startsAt|endsAt|deadline|Date\.now)\b/gi,
-};
-const WEIGHT = { money: 5, permissions: 5, deletion: 4, state: 3, idempotency: 3, limits: 2, pagination: 2, dates: 2 };
-function findLaws() {
-  const files = sh('git ls-files --cached --others --exclude-standard').split('\n')
-    .filter(f => /\.(ts|tsx|js|mjs|bend|sql)$/.test(f) && !/(^|\/)(generated|node_modules|\.eng|\.agents|\.claude|tests?)\//.test(f) && !/\.(test|spec|e2e)\.ts$/.test(f));
-  const rows = [];
-  for (const f of files) {
-    const src = fs.readFileSync(path.join(ROOT, f), 'utf8'); const hits = {};
-    for (const [k, re] of Object.entries(HOTSPOTS)) { const n = (src.match(re) || []).length; if (n) hits[k] = n; }
-    const score = Object.entries(hits).reduce((a, [k, n]) => a + WEIGHT[k] * Math.min(n, 5), 0);
-    if (score) rows.push({ f, score, hits });
-  }
-  rows.sort((a, b) => b.score - a.score);
-  const md = `# Law candidates (${new Date().toISOString().slice(0, 10)})\n\nGenerated by \`eng find-laws\`. Hotspot ranking only; the find-the-laws skill turns it into plain-words laws for approval.\n\n| Rank | File | Score | Hotspots |\n|---|---|---|---|\n` +
-    rows.map((r, i) => `| ${i + 1} | ${r.f} | ${r.score} | ${Object.entries(r.hits).map(([k, n]) => `${k} ${n}`).join(', ')} |`).join('\n') + '\n\n## Proposed laws\n\n(the agent writes these; the rule owner approves or strikes each)\n';
-  const prev = readOr('.eng/laws-candidates.md');
-  const keep = prev && prev.includes('## Proposed laws\n') ? prev.slice(prev.indexOf('## Proposed laws\n')) : null;
-  fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, '.eng/laws-candidates.md'), keep ? md.slice(0, md.indexOf('## Proposed laws\n')) + keep : md);
-  rows.slice(0, 10).forEach((r, i) => console.log(`  ${i + 1}. ${r.f} (score ${r.score}: ${Object.keys(r.hits).join(', ')})`));
-  console.log(`eng find-laws: ${rows.length} file(s) ranked -> .eng/laws-candidates.md`);
-}
-
-// ---------- conform: vendored pi-intent intent-conform (MIT), unchanged ----------
-function conform() {
-  const r = spawnSync('node', [path.join(PKG, 'vendor/pi-intent/kit/intent-conform.mjs'), ROOT, ...(process.argv.includes('--require-coverage') ? ['--require-coverage'] : [])],
-    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, BEND_NO_TELEMETRY: '1' } });
-  console.log((r.stdout + r.stderr).trim().split('\n').map(l => '  ' + l).join('\n'));
-  if (r.status !== 0) die(`conform: exit ${r.status}`);
-  console.log('eng conform: PASS');
-}
-
-// ---------- gate: everything, skipped = failed ----------
-
-// ---------- verdict: verification tooling's result, bound to patch-id (pstack Shipping step 3) ----------
+// ---------- verdict: verification tooling's result, bound to the exact commit (pstack Shipping step 3) ----------
 // Soundness comes from what ran on the exact commit, not from who ran it (Matt, 6 Nov 2026). CI green is not a verdict.
 const VNOTES = 'eng-verdict';
 const gitCommonDir = () => sh('git rev-parse --path-format=absolute --git-common-dir');
@@ -878,11 +561,11 @@ function verdictRecord(result) {
   const by = arg('--by');
   if (!by) die('verdict: --by <verifier-id> is required (the name of the verifier: a tool, lane or agent, the builder included)');
   for (const k of ['--family', '--provider', '--model']) if (process.argv.includes(k)) die(`verdict: ${k} was removed; a verdict counts by what ran on the commit, not by who ran it`);
-  // Verification first (lib/verification.mjs): the verdict carries the eng verdict round runs this verifier made on HEAD as evidence.
+  // Verification first (lib/verification.mjs): the verdict carries the eng run --by runs this verifier made on HEAD as evidence.
   // --review records a reading of the diff instead: the required check for review-only text, optional elsewhere.
   const H = head(), method = process.argv.includes('--review') ? 'review' : 'verification', runs = method === 'verification' ? runsFor(runLog(gitCommonDir()), H, by) : [];
   if (method === 'verification' && result !== 'FAIL') {
-    if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one round per check: eng verdict round --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
+    if (!runs.length) die(`verdict: no runs by ${by} on ${H.slice(0, 8)}. Run the change against this commit first, one run per check: eng run --by ${by} -- <cmd> (the app on a running instance, e2e, property and mutation tests, formal checks). For text no check can run, record --review instead`);
     const bad = runs.find(r => r.exit !== 0);
     if (bad) die(`verdict: run \`${bad.cmd}\` by ${by} exited ${bad.exit} on ${H.slice(0, 8)}; record FAIL, or fix it and re-run that same command until it passes`);
   }
@@ -891,7 +574,6 @@ function verdictRecord(result) {
     ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at }) => ({ cmd, exit, output, sha, at })) } : {}),
     ...Object.fromEntries([['session', arg('--session')], ['route', arg('--route')]].filter(([, v]) => v)), evidence: arg('--evidence'), at: new Date().toISOString() };
   sh(`git notes --ref ${VNOTES} append -m '${JSON.stringify(rec).replaceAll("'", "'\\''")}' ${H}`);
-  if (result === 'FAIL') logMistake('verdict:FAIL', `FAIL by ${by}${rec.evidence ? ', evidence ' + rec.evidence : ''}`, 'verdict');
   console.log(`eng verdict: recorded ${result} (${method}${runs.length ? `, ${runs.length} run${runs.length === 1 ? '' : 's'}` : ''}) by ${by} on ${H.slice(0, 8)}, patch-id ${rec.patch_id.slice(0, 12)}`);
   // --pr: the record (head SHA included) also goes on the PR as an eng-verdict/v1 comment; self-merge and eng merge gate read those.
   if (!arg('--pr')) return;
@@ -900,7 +582,7 @@ function verdictRecord(result) {
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
 // ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (a counted PASS for
-// this patch-id); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
+// this exact commit); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
   const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
@@ -919,7 +601,9 @@ function verdictStatus(n) {
   if (state !== 'success') process.exit(1);
 }
 function verdictCheck() {
-  const cfg = loadConfig(), H = head(), pid = patchId(cfg);
+  const cfg = loadConfig();
+  evidenceCheck(cfg);
+  const H = head(), pid = patchId(cfg);
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
@@ -931,52 +615,34 @@ function verdictCheck() {
   const others = patchVerdicts(pid), all = others.filter(x => x.sha === H);
   console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}`);
   for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
-  if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng verdict round --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
+  if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng run --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
   const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
   if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
   const testable = testableFiles(sh(`git diff --no-renames --name-only ${sh(`git merge-base ${baseRef(cfg)} HEAD`)} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
   for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
   const v = latest.filter(x => !passProblem(x, testable)).at(-1);
-  if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng verdict round --by <id> -- <cmd>), then eng verdict PASS --by <id>');
+  if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng run --by <id> -- <cmd>), then eng verdict PASS --by <id>');
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 
-// ---------- fallow: codebase graph analysis (fallow.tools, MIT) ----------
-// greenfield: the whole repo must be clean (bare `fallow`: dead code + architecture + dupes + health).
-// brownfield: fail only on findings not in the committed baselines (fallow adoption guide, option B).
-function fallowGate() {
-  const cfg = loadConfig(), f = cfg.fallow; withTmp(cfg);
-  if (!f) die('fallow: no fallow: section in eng.config.yml (JS/TS repos must run it)');
-  const bin = path.join(ROOT, 'node_modules/.bin/fallow');
-  if (!fs.existsSync(bin)) die(`fallow: not installed. Run: vp add -D -E fallow@${f.version}`);
-  const v = (run(`${bin} --version`).stdout.match(/fallow (\S+)/) || [])[1];
-  if (v !== String(f.version)) die(`fallow: installed ${v}, pinned ${f.version} (eng.config.yml fallow.version)`);
-  const d = f.baselines_dir || 'fallow-baselines', b = k => path.join(d, `${k}.json`);
-  if (a[0] === '--save-baseline') {
-    if (f.mode !== 'brownfield') die('fallow: greenfield repos keep no baseline; fix the findings');
-    fs.mkdirSync(path.join(ROOT, d), { recursive: true });
-    for (const k of ['dead-code', 'health', 'dupes']) { const r = run(`${bin} ${k} --quiet --save-baseline ${b(k)}`); if (![0, 1].includes(r.status)) die(`fallow ${k} --save-baseline: ${r.stderr.trim()}`); }
-    return console.log(`eng fallow: baselines saved to ${d}/ (commit them; refresh per release, never per merge)`);
-  }
-  let c = `${bin} --quiet`;
-  if (f.mode === 'brownfield') {
-    const miss = ['dead-code', 'health', 'dupes'].filter(k => !fs.existsSync(path.join(ROOT, b(k))));
-    if (miss.length) die(`fallow: brownfield but no baseline for ${miss.join(', ')}. Run on main: eng fallow --save-baseline`);
-    c += ` --baseline ${b('dead-code')} --health-baseline ${b('health')} --dupes-baseline ${b('dupes')}`;
-  } else if (f.mode !== 'greenfield') die(`fallow: mode must be greenfield or brownfield, got ${f.mode}`);
-  const r = run(c);
-  if (r.status !== 0) { process.stdout.write(r.stdout); process.stderr.write(r.stderr); die(`fallow (${f.mode}): ${r.status === 2 ? 'runtime/config error' : 'new findings'}; fix in code, or model a real exception narrowly (fallow.tools/docs/adoption)`); }
-  console.log(`eng fallow: PASS (${f.mode}, fallow ${v}${f.mode === 'brownfield' ? ', new findings only vs ' + d + '/' : ', whole repo clean'})`);
-}
-
+// eng gate [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then declared runs
+// that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its own identity.
 function gate() {
   const cfg = loadConfig(); const res = [], t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
-  const map = { verdict: 'verdict check', conform: 'conform', drift: 'drift-check', stack: 'stack-check', lint: 'lint', rules: 'rules prove', verify: 'verify maintain', laws: 'laws', e2e: 'e2e --if-required', launch: 'launch-check', fallow: 'fallow', doctor: 'doctor', isolation: 'isolation check', evidence: 'evidence check', downloads: 'downloads check' };
+  const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
-  for (const g of [...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)]) {
-    const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} ephemeral run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
+  const dir = checksDir(cfg), abs = path.join(ROOT, dir), entries = fs.existsSync(abs) ? fs.readdirSync(abs, { withFileTypes: true }).map(e => [e.name, e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name), { throwIfNoEntry: false })?.isFile()) ? 'file' : e.isDirectory() ? 'dir' : 'other']) : null;
+  const checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg), quote: quoteArg });
+  const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
+  for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
+  const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
+  for (const s of steps) {
+    const g = s.name;
+    if (s.none) { res.push([g, 'pass', s.none, []]); continue; }
+    if (s.fail) { res.push([g, 'FAIL', s.fail, []]); continue; }
+    const n = g.replace(/^ephemeral:/, ''), c = s.cmd ?? (wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g]);
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
     const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
     const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
@@ -994,8 +660,6 @@ function gate() {
     res.push([g, r.status === 0 ? 'pass' : r.status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more]);
   }
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
-  const logged = res.filter(([g, st]) => st !== 'pass' && g !== 'verdict').filter(([g, , l]) => logMistake(`gate:${g}`, l, 'gate', true)).map(([g]) => `gate:${g}`);
-  if (logged.length) console.log(`  logged to ${MISTAKES()}: ${logged.join(', ')} (eng retro reads it)`);
   if (res.some(r => r[1] !== 'pass')) die('gate: not all required gates passed');
   console.log('eng gate: PASS');
 }
@@ -1009,75 +673,20 @@ function reportFindings(findings, rules) {
   for (const f of findings) console.log(`  ${rules[f.rule].mode === 'fail' ? 'FAIL' : 'WARN'} ${path.relative(ROOT, f.path) || f.path}: ${f.why} (${f.rule}, ${rules[f.rule].source})`);
   return findings.filter(f => rules[f.rule].mode === 'fail').length;
 }
-// tests_leave_nothing for one command outside eng gate (a proof script, a CI test step). Exits with the command's code, else 1 on leftovers.
-function leaveNothing() {
-  const cfg = loadConfig(), i = a.indexOf('--'), c = i >= 0 ? a.slice(i + 1) : [];
-  if (!c.length) die('usage: eng leave-nothing -- <cmd> [args...]');
-  const t = withTmp(cfg), own = fs.mkdtempSync(path.join(t.dir, 'run-')), mode = diskRules(cfg).tests_leave_nothing.mode;
-  let r, left;
-  try { r = spawnSync(c[0], c.slice(1), { cwd: ROOT, stdio: 'inherit', env: privateTmpEnv(RUN_ENV, own) }); left = leftovers(own); }
-  finally { fs.rmSync(own, { recursive: true, force: true }); }  // its own dir, even when ENG_TMP belongs to a parent eng
-  if (left.length && mode !== 'off') console.log(`  ${mode === 'fail' ? 'FAIL' : 'WARN'} ${c.join(' ')} ${leftText(left)}`);
-  const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGKILL: 9 }[r.signal];
-  if (r.status !== 0) { console.error(`eng: FAIL leave-nothing: ${c.join(' ')} exited ${r.status ?? r.signal}`); process.exit(sig ? 128 + sig : r.status || 1); }
-  if (left.length && mode === 'fail') die(`leave-nothing: ${c.join(' ')} left files behind`);
-  console.log(`eng leave-nothing: ${left.length && mode === 'warn' ? 'WARN' : 'PASS'} (${c.join(' ')} ${left.length ? `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'}; rule ${mode}` : `left its private TMPDIR empty${mode === 'off' ? '; rule off' : ''}`})`);
-}
 const evidenceRoots = cfg => (cfg.hygiene?.evidence_roots ?? [cfg.e2e?.evidence_dir ?? '.eng/evidence']).map(r => path.resolve(ROOT, expandPath(r, cfg.project.name)));
-// no_cache_in_evidence + evidence_budget. Args: run dirs to check; none = every run dir under hygiene.evidence_roots. Never deletes.
-function evidenceCheck() {
-  const cfg = loadConfig(), rules = diskRules(cfg), given = a.slice(1).filter(x => !x.startsWith('--'));
-  const runs = given.length ? given.map(d => path.resolve(ROOT, d)) : evidenceRoots(cfg).flatMap(evidenceRuns);
+// Part of eng verdict check: no_cache_in_evidence and evidence_budget over every run dir under hygiene.evidence_roots. Never deletes.
+function evidenceCheck(cfg) {
+  const rules = diskRules(cfg), runs = evidenceRoots(cfg).flatMap(evidenceRuns);
   const found = evidenceFindings(runs, rules), bad = reportFindings(found, rules);
-  if (bad) die(`evidence check: ${bad} evidence dir problem(s) above`);
-  if (found.length) return console.log(`eng evidence check: WARN (${runs.length} run dir(s); ${found.length} warning(s) above)`);
-  console.log(`eng evidence check: PASS (${runs.length} run dir(s); no build cache${rules.no_cache_in_evidence.mode === 'off' ? ' check (off)' : ''}, ${rules.evidence_budget.mode === 'off' ? 'no budget (off)' : `each under ${rules.evidence_budget.max_mb} MB`})`);
+  if (bad) die(`verdict: ${bad} evidence dir problem(s) above`);
+  console.log(`  evidence: ${found.length ? `WARN (${found.length} warning(s) above)` : 'PASS'} (${runs.length} run dir(s); ${rules.no_cache_in_evidence.mode === 'off' ? 'cache check off' : 'no build cache'}, ${rules.evidence_budget.mode === 'off' ? 'no budget (off)' : `each under ${rules.evidence_budget.max_mb} MB`})`);
 }
-// pinned_downloads: run prepare twice against one fresh cache, each time with a new run dir. The second run has no
-// network (bwrap --unshare-net), so any download it tries, through eng fetch or not, fails it. A prepare that hides a
-// failed download (`|| true`) is not caught.
-const NO_NET = ['--unshare-net', '--die-with-parent', '--dev-bind', '/', '/'];
-function downloadsCheck() {
-  const cfg = loadConfig(), p = diskRules(cfg).pinned_downloads;
-  if (p.mode === 'off') return console.log('eng downloads check: OFF (hygiene.disk_rules.pinned_downloads.mode: off)');
-  if (!p.prepare) return console.log('eng downloads check: PASS (no pinned downloads; hygiene.disk_rules.pinned_downloads.prepare is null)');
-  if (spawnSync('bwrap', [...NO_NET, 'true']).status !== 0) {
-    const why = 'cannot prove the second prepare run downloads nothing: bubblewrap (bwrap) with network namespaces is not available here';
-    if (p.mode === 'fail') die(`downloads check: ${why}`);
-    return console.log(`  WARN ${why} (pinned_downloads, ${p.source})\neng downloads check: WARN (not run)`);
-  }
-  const round = openRound(cfg, 'downloads'), cache = path.join(round.dir, 'cache'), runs = [1, 2].map(n => path.join(round.dir, `run-${n}`)), snaps = [];
-  let offline = null;
-  fs.mkdirSync(cache);
-  for (const [n, d] of runs.entries()) {
-    fs.mkdirSync(d);
-    const argv = n === 0 ? ['bash', '-c', p.prepare] : ['bwrap', ...NO_NET, 'bash', '-c', p.prepare];
-    const r = spawnSync(argv[0], argv.slice(1), { cwd: ROOT, encoding: 'utf8', env: { ...round.env, ENG_DOWNLOAD_CACHE: cache, ENG_RUN_DIR: d, ENG_RUN_ID: `downloads-${n + 1}` } });
-    const tail = (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ');
-    if (r.status !== 0 && n === 0) die(`downloads check: prepare run 1 exited ${r.status}: ${tail}`);
-    if (r.status !== 0) offline = `the second prepare run failed with no network (exit ${r.status}), so it downloads again on every run: ${tail}`;
-    snaps.push(snapshot(cache));
-  }
-  const found = [...(offline ? [offline] : []), ...downloadFindings(cache, snaps[0], snaps[1], runs, path.join(round.dir, 'unpacked'))];
-  for (const f of found) console.log(`  ${p.mode === 'fail' ? 'FAIL' : 'WARN'} ${f} (pinned_downloads, ${p.source})`);
-  if (found.length && p.mode === 'fail') die(`downloads check: ${found.length} problem(s) above`);
-  console.log(found.length ? `eng downloads check: WARN (${found.length} warning(s) above)` : `eng downloads check: PASS (prepare ran twice, the second with no network; ${snaps[0].size} cached file(s), none fetched twice, unchecked or copied or extracted into a run dir)`);
-}
-// eng fetch <name> <version> <url> <sha256>: prints the cached file's path (stdout only). Cache: $ENG_DOWNLOAD_CACHE, else the config's.
-async function fetchCmd() {
-  const [name, version, url, sum] = a;
-  if (!name || !version || !url || !sum) die('usage: eng fetch <name> <version> <url> <sha256>');
-  const cache = process.env.ENG_DOWNLOAD_CACHE || cacheEnv(loadConfig()).ENG_DOWNLOAD_CACHE;
-  const download = async u => u.startsWith('file:') ? fs.readFileSync(fileURLToPath(u)) : (r => r.ok ? r.arrayBuffer().then(b => Buffer.from(b)) : Promise.reject(new Error(`${u}: HTTP ${r.status}`)))(await fetch(u));
-  const r = await fetchPinned({ name, version, url, sha256: sum }, cache, download).catch(e => die(`fetch: ${e.message}`));
-  console.error(`  ${r.fetched ? 'fetched' : 'cached'} ${name} ${version} (sha256 ok)`);
-  console.log(r.file);
-}
-
-// ---------- doctor: the config declares every disk-hygiene piece the repo needs, and the built-in disk rules find nothing new ----------
+// ---------- doctor: is this repo on the hallway? The config declares every piece the repo needs, each agents rule names its
+// enforcer, the merge settings match merge.auto, and the built-in disk rules find nothing new. --launch also proves launch:. ----------
 function doctor() {
-  const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
-  const checks = [...doctorConfig(cfg, files, readOr), ...mergeDoctor(cfg), ...ephemeralDoctor(cfg)];
+  if (a.includes('--launch')) launchCheck();
+  const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean), merges = mergeDoctor(cfg);
+  const checks = [...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' }))];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
@@ -1085,108 +694,36 @@ function doctor() {
   for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
   hits = hits.filter(h => !h.warn);
   const bad = checks.filter(c => !c.ok).length + hits.length;
-  if (bad) die(`doctor: ${bad} disk-hygiene problem(s) above`);
+  if (merges.some(c => !c.ok)) mergeSettings(cfg);
+  if (bad) die(`doctor: ${bad} problem(s) above`);
   console.log(`eng doctor: PASS (${checks.length} config checks, ${DISK_RULE_IDS.length + 1} disk rules)`);
 }
 
-// ---------- clean: disk hygiene. Dry-run by default; --apply acts. Never deletes unpushed or dirty work. ----------
-function cleanCmd() {
-  const cfg = loadConfig(), apply = a.includes('--apply'), hours = Number(arg('--older-than') ?? cfg.hygiene?.tmp_max_age_hours ?? 6);
-  if (!(hours >= 0)) die('clean: --older-than <hours> must be a number >= 0');
-  const verb = apply ? 'removed' : 'would remove';
-  if (a.includes('--containers')) return cleanContainers(cfg, apply);
-  if (a.includes('--evidence')) return cleanEvidence(cfg, apply);
-  if (!a.includes('--worktrees') || a.includes('--tmp')) {
-    const dirs = staleTmpDirs(cfg.project.name, hours, { base: tmpBase(cfg) });
-    for (const d of dirs) {
-      if (!d.stale) { console.log(`  keep   ${d.path} (${d.why})`); continue; }
-      if (apply) fs.rmSync(d.path, { recursive: true, force: true });
-      console.log(`  ${verb.padEnd(12)} ${d.path} (${d.ageH.toFixed(1)}h old)`);
-    }
-    console.log(`eng clean: ${dirs.filter(d => d.stale).length} stale eng temp dir(s) for ${cfg.project.name} in ${tmpBase(cfg)} older than ${hours}h${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
-    // ENG_SOCK_DIR folders a killed eng ephemeral run left (any repo's: they are per user), once that run's eng is gone.
-    const socks = staleSockDirs(hours, { env: { ...process.env, ...(PARENT_SOCK_DIR ? { ENG_SOCK_DIR: PARENT_SOCK_DIR } : {}) } });
-    for (const d of socks) {
-      if (!d.stale) { console.log(`  keep   ${d.path} (${d.why})`); continue; }
-      if (apply) fs.rmSync(d.path, { recursive: true, force: true });
-      console.log(`  ${verb.padEnd(12)} ${d.path} (socket folder of a run that is gone)`);
-    }
-    if (socks.length) console.log(`eng clean: ${socks.filter(d => d.stale).length} stale eng socket folder(s)${apply ? ' removed' : ' (dry run; --apply to delete)'}`);
-  }
-  if (!a.includes('--worktrees')) return;
-  const git = args => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
-  if (!a.includes('--no-fetch')) { const f = git(['fetch', '--prune', '--quiet']); if (f.status !== 0) console.log(`  WARN git fetch --prune failed (${f.stderr.trim().split('\n')[0]}); using cached remote refs`); }
-  const base = baseRef(cfg), wts = parseWorktrees(git(['worktree', 'list', '--porcelain']).stdout);
-  const mainPath = wts[0]?.path, cwdTop = path.resolve(sh('git rev-parse --show-toplevel'));
-  const rows = wts.map(w => ({ w, c: classifyWorktree(w, { git, base, mainPath, cwdTop }) })).filter(r => !r.c.skip);
-  let removed = 0; const reported = [];
-  for (const { w, c } of rows) {
-    const label = `${w.path} [${w.branch ?? 'detached ' + (w.head || '').slice(0, 8)}]`;
-    if (c.keep) { console.log(`  keep   ${label}: ${c.why}`); if (c.report) reported.push(`${label}: ${c.why}`); continue; }
-    if (apply) {
-      const r = c.prune ? git(['worktree', 'prune']) : git(['worktree', 'remove', w.path]); // no --force: git refuses anything dirty
-      if (r.status !== 0) { console.log(`  keep   ${label}: git worktree remove refused: ${r.stderr.trim()}`); reported.push(`${label}: remove refused`); continue; }
-    }
-    removed++; console.log(`  ${verb.padEnd(12)} ${label}: ${c.why}`);
-  }
-  if (reported.length) console.log(`  REPORT to the repo lead (never deleted):\n    ${reported.join('\n    ')}`);
-  console.log(`eng clean --worktrees: ${removed} worktree(s) ${apply ? 'removed' : 'removable (dry run; --apply to remove)'}, ${rows.length - removed} kept`);
-}
-// Containers this repo labelled (hygiene.containers.label=<repo>) are removed with their volumes, except permanent ones
-// (permanent() in lib/ephemeral.mjs: the persist label or a restart policy) and the volumes they use. Nothing else is touched.
-function cleanContainers(cfg, apply) {
-  const cli = ['docker', 'podman'].find(c => spawnSync(c, ['--version']).status === 0) || die('clean --containers: no docker or podman');
-  const label = `${cfg.hygiene?.containers?.label ?? 'eng.repo'}=${slug(cfg.project.name)}`, persist = { label: runRules(cfg).ephemeral_runs.persist_label };
-  const q = args => { const r = spawnSync(cli, args, { encoding: 'utf8' }); if (r.status !== 0) die(`clean --containers: ${cli} ${args.join(' ')}: ${r.stderr.trim()}`); return r.stdout.split('\n').filter(Boolean); };
-  // Labels and restart policy come from inspect's JSON: ls prints labels as "k=v,k=v", which a comma in a value makes ambiguous.
-  const inspect = (kind, ids) => ids.length ? JSON.parse(q([kind, 'inspect', ...ids]).join('\n')) : [];
-  const cs = inspect('container', q(['ps', '-aq', '--no-trunc', '--filter', `label=${label}`])).map(c => {
-    const restart = c.HostConfig?.RestartPolicy?.Name, keep = permanent({ labels: c.Config?.Labels, restart }, persist);
-    return { id: c.Id, name: String(c.Name ?? '').replace(/^\//, ''), why: keep ? (markedBy(c.Config?.Labels, persist) ?? `restart policy ${restart}`) : null, vols: (c.Mounts ?? []).filter(m => m.Type === 'volume').map(m => m.Name) };
-  });
-  const used = new Set(cs.filter(c => c.why).flatMap(c => c.vols)), going = new Set(cs.filter(c => !c.why).map(c => c.id));
-  // Any container not removed here that uses a volume keeps it: a permanent one, or one without this repo's label.
-  const users = name => q(['ps', '-aq', '--no-trunc', '--filter', `volume=${name}`]).filter(id => !going.has(id));
-  const vs = inspect('volume', q(['volume', 'ls', '-q', '--filter', `label=${label}`])).map(v => ({ name: v.Name, why: markedBy(v.Labels, persist) ?? (used.has(v.Name) ? 'used by a permanent container' : users(v.Name).length ? `used by container ${users(v.Name)[0].slice(0, 12)}, which this does not remove` : null) }));
-  const rmC = cs.filter(c => !c.why), rmV = vs.filter(v => !v.why);
-  // rm -v takes a container's anonymous volumes too, which carry no repo label: a marked one keeps its container's -v off.
-  const markedVol = new Map(inspect('volume', [...new Set(rmC.flatMap(c => c.vols))]).map(v => [v.Name, markedBy(v.Labels, persist)]).filter(([, l]) => l)), marked = new Set(markedVol.keys());
-  const [plain, holding] = [rmC.filter(c => !c.vols.some(v => marked.has(v))), rmC.filter(c => c.vols.some(v => marked.has(v)))];
-  for (const c of cs) console.log(`  ${c.why ? 'keep        ' : apply ? 'removed' : 'would remove'} container ${c.id.slice(0, 12)} ${c.name}${c.why ? ` (permanent: ${c.why})` : holding.includes(c) ? ' (without its volumes: one is marked permanent)' : ' (with its anonymous volumes)'}`);
-  for (const v of vs) console.log(`  ${v.why ? 'keep        ' : apply ? 'removed' : 'would remove'} volume ${v.name}${v.why ? ` (permanent: ${v.why})` : ''}`);
-  for (const v of marked) if (!vs.some(x => x.name === v)) console.log(`  keep         volume ${v} (permanent: ${markedVol.get(v)})`);
-  if (apply && plain.length) q(['rm', '-f', '-v', ...plain.map(c => c.id)]);
-  if (apply && holding.length) q(['rm', '-f', ...holding.map(c => c.id)]);
-  if (apply && rmV.length) q(['volume', 'rm', ...rmV.map(v => v.name)]);
-  console.log(`eng clean --containers: ${rmC.length} container(s), ${rmV.length} volume(s) labelled ${label}${apply ? ' removed' : ' (dry run; --apply to remove)'}; ${cs.length - rmC.length + vs.length - rmV.length} permanent kept`);
-}
-function cleanEvidence(cfg, apply) {
-  const d = path.join(ROOT, cfg.e2e?.evidence_dir ?? '.eng/evidence'); const names = fs.existsSync(d) ? fs.readdirSync(d) : [];
-  const state = n => { try { return JSON.parse(execSync(`gh pr view ${n} --json state`, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })).state; } catch { return null; } };
-  const branchState = n => {
-    let b; try { b = fs.readFileSync(path.join(d, n, '.branch'), 'utf8').trim(); } catch { return null; }
-    try { const prs = JSON.parse(execSync(`gh pr list --head ${JSON.stringify(b)} --state all --json state`, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })).map(p => p.state);
-      if (prs.length) return prs.includes('OPEN') ? 'OPEN' : prs.includes('MERGED') ? 'MERGED' : 'CLOSED'; } catch { return null; }
-    const r = spawnSync('git', ['ls-remote', '--exit-code', '--heads', 'origin', b], { cwd: ROOT, encoding: 'utf8', timeout: 15000 });
-    return r.status === 2 ? 'GONE' : r.status === 0 ? 'OPEN' : null;
-  };
-  const rows = classifyEvidence(names, state, branchState);
-  for (const r of rows) { if (!r.keep && apply) fs.rmSync(path.join(d, r.name), { recursive: true, force: true }); console.log(`  ${r.keep ? 'keep  ' : apply ? 'removed' : 'would remove'} ${path.relative(ROOT, path.join(d, r.name))} (${r.why})`); }
-  console.log(`eng clean --evidence: ${rows.filter(r => !r.keep).length} merged/closed PR evidence dir(s)${apply ? ' removed' : ' (dry run; --apply to delete)'}, ${rows.filter(r => r.keep).length} kept`);
-}
-function ciVerdict(ids) { // Buildkite: read each step outcome; anything but "passed" fails.
-  const bad = ids.filter(id => { const r = run(`buildkite-agent step get outcome --step ${id}`); return r.status !== 0 || r.stdout.trim() !== 'passed'; });
-  if (bad.length) die(`required checks not passed (skipped/missing = failed): ${bad.join(', ')}`);
-  console.log('eng ci-verdict: PASS');
-}
-
 const [cmd, ...a] = process.argv.slice(2);
-const cmds = { verdict: () => a[0] === 'round' ? launch(engCtx(), a.slice(1), 'verdict') : a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr'))), init, sync, 'drift-check': driftCheck, 'stack-check': stackCheck, 'stack-audit': stackAudit, lint, gate, e2e, conform, 'find-laws': findLaws, laws: () => a[0] === '--write' ? lawsWrite() : a[0] === 'approve' ? lawsApprove(a[1], a.slice(2).join(' ')) : laws(),
-  rules: () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove'),
-  verify: () => a[0] === 'create' ? verifyCreate(a[1]) : a[0] === 'maintain' ? verifyMaintain() : die('usage: eng verify create <id> | maintain'),
-  mistake: () => mistake(a[0], a.slice(1).join(' ')), retro, ship: () => a[0] === 'next' ? shipNext() : die('usage: eng ship next'), 'launch-check': launchCheck, fallow: fallowGate, 'ci-verdict': () => ciVerdict(a), 'e2e-required': e2eRequired, clean: cleanCmd,
-  renovate: () => renovate(engCtx(), a), launch: () => launch(engCtx(), a), doctor, ephemeral: () => ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a), merge: () => merge(engCtx(), a),
-  'leave-nothing': leaveNothing, evidence: () => a[0] === 'check' ? evidenceCheck() : die('usage: eng evidence check [<run-dir>...]'), downloads: () => a[0] === 'check' ? downloadsCheck() : die('usage: eng downloads check'), fetch: fetchCmd,
-  ...Object.fromEntries(['run-service', 'connect', 'stop', 'status', 'isolation'].map(k => [k, () => isolation(engCtx(), k, a).catch(e => die(`${k}: ${e.message}`))])) };
-function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), configErrors, shippingMd, lintHits, baseRef, head, patchId, patchVerdicts, loadConfig }; }
-(cmds[cmd] || (() => { console.log('eng init | sync | verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--session <s>] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n> | drift-check | stack-check | stack-audit [<name>=<path>...] [--ref <ref>] [--standard <file>] [--json | --core [--core-space <s>] [--core-target <type>:<id>]] | lint | rules prove | verify create <id> | verify maintain | mistake <key> <what> | retro | ship next | launch-check [--check-only] | fallow [--save-baseline] | laws | e2e [--if-required] [--flake-check [--runs N] [--results pass,fail,...]] | e2e-required [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] [--json] [--exit-code] | gate | clean [--older-than <h>] [--worktrees [--tmp]] [--no-fetch] [--apply] | renovate audit|plan|apply <step>|render [--check]|baseline [--kind k] [--reason r]|scan|wire --ci buildkite|github|ci-preflight|refresh|receipt --pr <n>|prove [--gate g] | launch [--ref <ref>] -- <cmd> | ephemeral check | ephemeral run <name> | ephemeral -- <cmd> | launch --keep [--ref <ref>] | launch down <dir> | verdict round [--by <id>] [--ref <ref>] -- <cmd> | doctor | leave-nothing -- <cmd> | evidence check [<run-dir>...] | downloads check | fetch <name> <version> <url> <sha256> | clean --containers|--evidence [--apply] | merge gate [--pr <n>] [--config-from <ref>] | merge watch|post [--dry-run] | merge settings | isolation check [--config-from <ref>] | run-service <service> [--secrets-stdin] | connect <service> -- <cmd> | stop <service> | status'); process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0); }))();
+// The hallway: every public command, its usage, and what runs it. --help prints this table.
+const COMMANDS = [
+  ['init', 'init [--owner <@handle>]', 'set up this repo: an empty repo gets the starter config; a repo that already ships also gets baselines, so only new findings fail', init],
+  ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
+  ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
+  ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
+  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
+  ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
+  ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
+  ['gate', 'gate [<step>...]', 'run every script in verification.checks_dir, then every verifier in gates.required; skipped or missing = failed. Named steps run only those (checks = the scripts)', gate],
+  ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
+  ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules; --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
+];
+function runCmd() {
+  const dd = a.indexOf('--'), opts = dd >= 0 ? a.slice(0, dd) : a;
+  if (opts.includes('--here')) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a.slice(dd));
+  if (dd >= 0 || opts.includes('--keep') || opts[0] === 'down') return scratchRun(engCtx(), a);
+  if (opts.length === 1) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', opts[0]]);
+  die(RUN_USAGE);
+}
+function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig }; }
+const found = COMMANDS.find(([n]) => n === cmd);
+if (found) found[3]();
+else {
+  console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
+  process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0);
+}

@@ -1,6 +1,7 @@
 // Verification tooling decides, not who ran it (Matt, 6 Nov 2026): every gate accepts a verification verdict with runs on its commit,
 // and refuses a verdict-free or review-only one on testable code. Review stays the required check for text no check can run.
 import { test, before, after } from 'node:test';
+import { pipeline } from '../lib/render.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -81,7 +82,7 @@ test('an unknown file list is testable, and review_only_paths is a list of globs
   assert.equal(reviewOnlyErrors({ review_only_paths: 'docs' }).length, 1);
 });
 
-// The CLI end to end: eng verdict round records evidence, eng verdict records it, eng verdict check applies the same rule.
+// The CLI end to end: eng run --by records evidence, eng verdict records it, eng verdict check applies the same rule.
 let dir;
 const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8' });
@@ -108,11 +109,11 @@ test('eng verdict: the builder verifies its own code with runs on the commit; re
   r = eng('verdict', 'check');
   assert.equal(r.status, 1, 'review-only on testable code'); assert.match(out(r), /review-only PASS on testable code \(lib\/sum\.mjs\)/);
 
-  r = eng('verdict', 'round', '--by', 'verifier-2', '--', 'sh', '-c', 'echo property sum ok; exit 3');
+  r = eng('run', '--by', 'verifier-2', '--', 'sh', '-c', 'echo property sum ok; exit 3');
   assert.equal(r.status, 3);
   assert.match(out(eng('verdict', 'PASS', '--by', 'verifier-2')), /exited 3 on .*record FAIL/, 'a failing run cannot back a PASS');
 
-  r = eng('verdict', 'round', '--by', 'builder-1', '--', process.execPath, '-e', "import('./lib/sum.mjs').then(m => { if (m.sum(2, 3) !== 5) process.exit(1); console.log('sum ok'); })");
+  r = eng('run', '--by', 'builder-1', '--', process.execPath, '-e', "import('./lib/sum.mjs').then(m => { if (m.sum(2, 3) !== 5) process.exit(1); console.log('sum ok'); })");
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /sum ok/); assert.match(r.stdout, /recorded the run by builder-1/);
   r = eng('verdict', 'PASS', '--by', 'builder-1');
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /recorded PASS \(verification, 1 run\) by builder-1/);
@@ -148,18 +149,34 @@ test('eng verdict PASS is refused after 1 failing round and 20 passing rounds of
   git('checkout -q main'); git('checkout -qb aged');
   fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/aged.mjs'), 'export const aged = 1;\n'); git('add -A'); git('commit -qm aged -m "Agent: builder-1"');
   const sha = git('rev-parse HEAD');
-  assert.equal(eng('verdict', 'round', '--by', 'builder-1', '--', 'sh', '-c', 'echo e2e broke; exit 1').status, 1);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'echo e2e broke; exit 1').status, 1);
   const log = runLog(git('rev-parse --path-format=absolute --git-common-dir'));
   for (let i = 0; i < 20; i++) recordRun(log, { sha, by: 'builder-1', cmd: `true ${i}`, exit: 0, output: 'ok', at: new Date().toISOString() });
   const r = eng('verdict', 'PASS', '--by', 'builder-1');
-  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c echo e2e broke; exit 1` by builder-1 exited 1/);
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c 'echo e2e broke; exit 1'` by builder-1 exited 1/);
+});
+
+// PR #48 review, round 2: two argvs that join to the same text are different commands, so one never hides the other's failure.
+test('eng verdict PASS is refused when a different argv with the same joined text passes after a failing run', () => {
+  git('checkout -q main'); git('checkout -qb argv');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/argv.mjs'), 'export const argv = 1;\n'); git('add -A'); git('commit -qm argv -m "Agent: builder-1"');
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'exit 7').status, 7);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'sh', '-c', 'exit', '7').status, 0);
+  const r = eng('verdict', 'PASS', '--by', 'builder-1');
+  assert.equal(r.status, 1, out(r)); assert.match(out(r), /run `sh -c 'exit 7'` by builder-1 exited 7/);
+  // A failure an older eng recorded with the unquoted key is never superseded by a new run of the same text.
+  const sha = git('rev-parse HEAD'), log = runLog(git('rev-parse --path-format=absolute --git-common-dir'));
+  recordRun(log, { sha, by: 'builder-2', cmd: 'sh -c exit 7', exit: 7, output: '', at: new Date().toISOString() });
+  assert.equal(eng('run', '--by', 'builder-2', '--', 'sh', '-c', 'exit', '7').status, 0);
+  const old = eng('verdict', 'PASS', '--by', 'builder-2');
+  assert.equal(old.status, 1, out(old)); assert.match(out(old), /run `sh -c exit 7` by builder-2 exited 7/);
 });
 
 // PR #42 review, finding 1: a PASS counts only for the exact commit it ran on. Patch-id ignores the message and whitespace.
 test('eng verdict check does not carry a PASS to a new SHA with the same patch-id (message-only amend, whitespace-only change)', () => {
   git('checkout -q main'); git('checkout -qb carry');
   fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/carry.mjs'), 'export const carry = 1;\n'); git('add -A'); git('commit -qm carry -m "Agent: builder-1"');
-  assert.equal(eng('verdict', 'round', '--by', 'builder-1', '--', 'true').status, 0);
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
   assert.equal(eng('verdict', 'PASS', '--by', 'builder-1').status, 0);
   const tested = git('rev-parse HEAD');
   assert.equal(eng('verdict', 'check').status, 0, 'the tested commit passes');
@@ -172,3 +189,86 @@ test('eng verdict check does not carry a PASS to a new SHA with the same patch-i
   assert.equal(r.status, 1, `whitespace-only change must not carry the PASS: ${out(r)}`);
 });
 
+
+// PR #48 review, round 4: a command that cannot start is a failed run, so an earlier pass of that same command stops counting.
+test('eng verdict PASS is refused when the same command passed, then could not start', () => {
+  git('checkout -q main'); git('checkout -qb nostart');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/nostart.mjs'), 'export const n = 1;\n'); git('add -A'); git('commit -qm nostart -m "Agent: builder-1"');
+  const tool = path.join(dir, '.git', 'eng-check-tool'); fs.writeFileSync(tool, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  assert.equal(eng('run', '--by', 'builder-3', '--', tool).status, 0);
+  fs.chmodSync(tool, 0o644);
+  const r = eng('run', '--by', 'builder-3', '--', tool);
+  assert.equal(r.status, 127, out(r)); assert.match(out(r), /recorded the run by builder-3 .* \(exit 127\)/);
+  const v = eng('verdict', 'PASS', '--by', 'builder-3');
+  assert.equal(v.status, 1, out(v)); assert.match(out(v), /exited 127/);
+});
+
+// Matt, 7 Nov 2026: the checks are the wall. eng gate runs every checks_dir script first, whatever gates.required says.
+test('eng gate runs every check first: a failing, flaky or stale check fails the gate despite a passing verdict', () => {
+  git('checkout -q main'); git('checkout -qb wall');
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'), c = YAML.parse(orig);
+  c.gates.required = ['verdict']; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.verification = { ...c.verification, checks_dir: '.eng/checks', flake_runs: 2 }; fs.writeFileSync(p, YAML.stringify(c));
+  fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.eng/checks/broken.sh'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(path.join(dir, '.eng/checks/flaky.sh'), '#!/bin/sh\nf=.eng/flaky-ran; if [ -e "$f" ]; then rm "$f"; exit 1; fi; touch "$f"\n');
+  fs.writeFileSync(path.join(dir, '.eng/checks/stale.sh'), '# covers: lib/gone.mjs\nexit 0\n');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true }); fs.writeFileSync(path.join(dir, 'lib/wall.mjs'), 'export const w = 1;\n');
+  git('add -A'); git('commit -qm wall -m "Agent: builder-1"');
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
+  assert.equal(eng('verdict', 'PASS', '--by', 'builder-1').status, 0);
+  assert.equal(eng('verdict', 'check').status, 0, 'the verdict alone passes');
+  let r = eng('gate');
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /FAIL\s+check:broken eng: FAIL check broken: failed 2\/2/);
+  assert.match(r.stdout, /FAIL\s+check:flaky eng: FAIL check flaky: FLAKY, passed 1\/2/);
+  assert.match(r.stdout, /FAIL\s+check:stale check stale is stale: covers missing path\(s\) lib\/gone\.mjs/);
+  assert.match(r.stdout, /pass\s+verdict/);
+  r = eng('gate', 'checks');
+  assert.equal(r.status, 1, out(r)); assert.doesNotMatch(r.stdout, /verdict/, 'gate checks runs only the checks');
+  assert.match(eng('gate', 'nope').stderr, /gate: nope is not a step here/);
+  for (const f of ['broken', 'flaky', 'stale']) fs.writeFileSync(path.join(dir, `.eng/checks/${f}.sh`), '#!/bin/sh\nexit 0\n');
+  git('add -A'); git('commit -qm fixed -m "Agent: builder-1"');
+  eng('run', '--by', 'builder-1', '--', 'true'); eng('verdict', 'PASS', '--by', 'builder-1');
+  r = eng('gate'); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+check:broken check broken: passed 2\/2/);
+  fs.writeFileSync(p, orig); git('add -A'); git('commit -qm restore');
+});
+
+test('CI and the rendered pipeline run the checks: a command or gate cleanup cannot drop them quietly', () => {
+  const ci = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(ci, /^ {6}- run: node bin\/eng\.mjs gate checks\b/m, 'eng-standard CI runs its checks on the Actions identity');
+  const own = YAML.parse(fs.readFileSync(ROOTCFG, 'utf8'));
+  const scripts = fs.readdirSync(new URL('../' + own.verification.checks_dir + '/', import.meta.url)).filter(f => f.endsWith('.sh'));
+  assert.ok(scripts.includes('gate-runs-checks.sh'), 'the repo keeps the check that a failing check fails eng gate');
+  const tpl = YAML.parse(fs.readFileSync(new URL('../templates/eng.config.yml', import.meta.url), 'utf8'));
+  const pipe = pipeline(tpl);
+  assert.match(pipe, /key: "checks"\n    command: "npx eng gate checks"/);
+  assert.match(pipe, /for k in checks /, 'the finalizer requires the checks step to pass');
+});
+
+test('eng gate never skips or misreads a check: odd names, other entries and a missing configured dir all fail', () => {
+  git('checkout -q main'); git('checkout -qb wall2');
+  const p = path.join(dir, 'eng.config.yml'), orig = fs.readFileSync(p, 'utf8'), c = YAML.parse(orig), d = path.join(dir, '.eng/checks');
+  c.gates.required = []; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.verification = { ...c.verification, checks_dir: '.eng/checks' }; fs.writeFileSync(p, YAML.stringify(c));
+  const gate = () => eng('gate', 'checks');
+  try {
+    fs.rmSync(d, { recursive: true, force: true });
+    let r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /verification\.checks_dir \.eng\/checks does not exist/);
+    fs.mkdirSync(d, { recursive: true });
+    const evil = 'bad"; exit 0; fi; $(touch injected) #.sh';
+    fs.writeFileSync(path.join(d, evil), 'exit 7\n');
+    r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL check bad"; exit 0; fi; \$\(touch injected\) #: failed 1\/1/);
+    assert.ok(!fs.existsSync(path.join(dir, 'injected')), 'a check name is never run as shell code');
+    fs.rmSync(path.join(d, evil));
+    fs.writeFileSync(path.join(d, 'noext'), 'exit 1\n');
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /\.eng\/checks\/noext is not a check: checks are \.eng\/checks\/<id>\.sh files/);
+    fs.rmSync(path.join(d, 'noext')); fs.mkdirSync(path.join(d, 'nested')); fs.writeFileSync(path.join(d, 'nested/broken.sh'), 'exit 1\n');
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stdout, /nested is not a check: .*, with no subdirectories/);
+    fs.rmSync(path.join(d, 'nested'), { recursive: true });
+    fs.mkdirSync(path.join(d, '.gitkeep')); fs.writeFileSync(path.join(d, '.gitkeep/failing.sh'), 'exit 7\n');
+    r = gate(); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /\.gitkeep is not a check: .*, with no subdirectories/, 'only a .gitkeep file is exempt');
+    fs.rmSync(path.join(d, '.gitkeep'), { recursive: true }); fs.writeFileSync(path.join(d, '.gitkeep'), '');
+    r = gate(); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+checks\s+no scripts in \.eng\/checks/);
+    const withChecks = { ...c, gates: { ...c.gates, required: ['checks'] } }; fs.writeFileSync(p, YAML.stringify(withChecks));
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stderr, /gates\.required: checks is not an eng gate any more: built in: eng gate always runs every verification\.checks_dir script first\. Fix: run `eng sync`/);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); fs.writeFileSync(p, orig); }
+});
