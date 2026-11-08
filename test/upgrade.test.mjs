@@ -83,6 +83,15 @@ test('a commented empty retired key goes alone: the next key, a custom checks_di
   assert.equal(migrate(crlf).text, 'verification:\r\n  checks_dir: ci/checks\r\nrenovation:\r\nz: 1\r\n', 'CRLF, the last pair of a map and a block scalar value');
 });
 
+test('emptying a flow collection with a trailing comma leaves valid YAML, and an edit that would not parse is never written', () => {
+  const m = s => migrate(s).text;
+  assert.equal(m('gates:\n  required: [verify,]\n'), 'gates:\n  required: []\n');
+  assert.equal(m('verification: { repeat_threshold: 2, }\n'), 'verification: {}\n');
+  assert.equal(m('gates:\n  required: [ verify , ]\n'), 'gates:\n  required: []\n');
+  assert.equal(m('gates:\n  required: [test, verify,]\n'), 'gates:\n  required: [test,]\n');
+  for (const s of ['gates:\n  required: [verify,]\n', 'verification: { repeat_threshold: 2, }\n', 'gates:\n  required: [test, verify,]\n']) assert.equal(YAML.parseDocument(m(s)).errors.length, 0, s);
+});
+
 test('a gate folded into another becomes that gate in place, once; a project command keeps it', () => {
   const m = s => migrate(s).text;
   assert.equal(m('gates:\n  required: [drift, laws, evidence, test]\n'), 'gates:\n  required: [drift, rules, verdict, test]\n');
