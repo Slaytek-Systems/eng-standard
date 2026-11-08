@@ -1,0 +1,108 @@
+# Motus-shaped eng.config.yml (test/upgrade.test.mjs): Motus main's top-level keys and gates list as of 8 Nov 2026, with
+# the values cut down to what a scratch repo can run. Comments and flow lists stay, so the migration must keep them.
+version: 1
+
+project:
+  name: motus-shaped
+  default_branch: main
+  protected_branches: [main]      # Ruleset main-protect.
+  commands:
+    install: "true"
+    typecheck: "true"
+    test: "true" # Vitest JSON report in Motus
+    check: "true"     # tsc + oxlint in Motus
+    dead_code: "true"
+    fallow_audit: "true" # pinned new-only audit; a project command, so the gate stays
+    proof: "true"
+  ui_paths: ["app/**", "components/**"]
+
+stack:
+  status: DRAFT
+  exceptions:
+    - { kind: framework, name: "next", reason: "existing stack" }
+  defaults:
+    language:        { use: TypeScript (strict), why: "most files", decision: DRAFT }
+  languages:
+    allowed: [typescript, javascript]
+    justified_when:
+      other: "Only with a measured reason TS cannot meet."
+  frameworks:
+    allowed: [convex, vitest]
+
+agents:
+  harnesses: [claude-code, codex]
+  skills_dir: .agents/skills
+  skills:
+    - pstack/*
+    - pocock/grilling
+    - eng/eng-verify
+  rules:
+    - rule: "A UI PR publishes its evidence before merge-ready"
+      enforced_by: review
+      why: "judgment call"
+
+merge:
+  owner: Motus Lead (shipping manager), only merger
+  command: gh pr merge <number> --squash --match-head-commit <sha>
+  method: squash
+
+ship:
+  manager: Motus Lead
+  author: merge-ready only
+  verifier: fresh-context agent
+  high_risk:
+    label: risk:high
+    reasons: [auth, CI]
+    paths:
+      - "eng.config.yml"
+      - ".github/**"
+
+deploy:                           # Never run by agents.
+  web: { trigger: "Railway build from main", who: Railway }
+
+verification:
+  checks_dir: .eng/checks
+  flake_runs: 1
+  stale_after_commits: 50
+  repeat_threshold: 2
+
+# The scratch repo may have no bwrap, so the declared run is not watched here (Motus leaves the default mode).
+hygiene:
+  run_rules:
+    ephemeral_runs:
+      mode: "off"
+      runs: [test]
+
+launch:
+  up: "true"
+  doctor: "true"
+  down: "true"
+  ready_timeout_s: 900
+  isolation:
+    ports: per_run
+
+e2e:
+  provider: playwright-test
+  version: 1.63.0
+  web_version: 0.14.0
+  model: none
+  evidence_dir: .eng/evidence
+  policy:
+    mode: path_based
+    labels: [risk:high]
+    main:
+      on_merge: full
+
+db:
+  migrations: "convex/migrations/**"
+  additive_only: true             # Real guard is elsewhere.
+
+hooks:
+  pre_commit: ["true"]
+
+constraints:
+  rules: []
+
+gates:
+  skipped_is_failed: true
+  required: [drift, stack, lint, rules, typecheck, check, test, verify, verdict, fallow_audit]

@@ -6,7 +6,8 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS, REMOVED_GATES } from '../lib/render.mjs';
+import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { retired, migrate, FIX } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
@@ -52,8 +53,7 @@ function configErrors(c) {
   if (!c.merge?.owner || !c.merge?.command) errs.push('merge.owner and merge.command are required (no global merge rule)');
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
   if (c.gates?.skipped_is_failed !== true) errs.push('gates.skipped_is_failed must be true');
-  for (const g of c.gates?.required || []) if (REMOVED_GATES[g] && !c.project?.commands?.[g]) errs.push(`gates.required: ${g} is not an eng gate any more: ${REMOVED_GATES[g]}`);
-  if ((c.gates?.required || []).includes('checks')) errs.push('gates.required: checks is built in: eng gate always runs verification.checks_dir first; remove it from the list');
+  for (const m of retired(c)) if (m.index !== undefined) errs.push(`${m.what} is not an eng gate any more: ${m.why}. Fix: ${FIX}`);
   for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
   for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
   const pre = c.hooks?.pre_commit;
@@ -95,10 +95,22 @@ function claudeLinks(cfg) {
     ...subagents.map(f => [`.claude/agents/${f}`, `../../${agentsDir}/${f}`])];
 }
 
+// Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
+function migrateConfig() {
+  const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
+  if (cur === null) return 0;
+  const { text, changes } = migrate(cur);
+  if (!changes.length) return 0;
+  fs.writeFileSync(p, text);
+  for (const m of changes) console.log(`  migrated eng.config.yml: removed ${m.what} (${m.why})`);
+  return changes.length;
+}
+
 function sync() {
+  const migrated = migrateConfig();
   const cfg = loadConfig();
   const files = render(cfg), exec = executables(cfg);
-  let changed = 0;
+  let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
     if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
@@ -180,6 +192,8 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
+  const due = retired(YAML.parse(readOr('eng.config.yml', '{}')));
+  if (due.length) die(`sync --check: eng.config.yml has ${due.length} retired entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.map(m => `${m.what}: ${m.why}`).join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
   const files = render(cfg);
   const bad = [];

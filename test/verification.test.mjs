@@ -269,6 +269,6 @@ test('eng gate never skips or misreads a check: odd names, other entries and a m
     fs.rmSync(path.join(d, '.gitkeep'), { recursive: true }); fs.writeFileSync(path.join(d, '.gitkeep'), '');
     r = gate(); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+checks\s+no scripts in \.eng\/checks/);
     const withChecks = { ...c, gates: { ...c.gates, required: ['checks'] } }; fs.writeFileSync(p, YAML.stringify(withChecks));
-    r = gate(); assert.equal(r.status, 1); assert.match(r.stderr, /gates\.required: checks is built in/);
+    r = gate(); assert.equal(r.status, 1); assert.match(r.stderr, /gates\.required: checks is not an eng gate any more: built in: eng gate always runs every verification\.checks_dir script first\. Fix: run `eng sync`/);
   } finally { fs.rmSync(d, { recursive: true, force: true }); fs.writeFileSync(p, orig); }
 });
