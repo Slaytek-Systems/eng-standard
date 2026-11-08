@@ -28,8 +28,21 @@ before(() => {
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+// The files the guard reads: tracked and untracked, regular files only. A `node_modules` symlink to a directory is listed by
+// git (the ignore rule `node_modules/` matches directories only) and is not a file (PR 50, round 10).
+const sourceFiles = root => execSync('git ls-files -z --cached --others --exclude-standard', { cwd: root, encoding: 'utf8' }).split('\0').filter(f => f && !ALLOWED.some(r => r.test(f)) && fs.statSync(path.join(root, f), { throwIfNoEntry: false })?.isFile());
+
+test('the model id guard reads regular files only: a directory symlink in the checkout is skipped', () => {
+  const root = fs.mkdtempSync(path.join(dir, 'guard-'));
+  execSync('git init -q -b main', { cwd: root }); fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules/\n');
+  fs.mkdirSync(path.join(root, 'deps')); fs.writeFileSync(path.join(root, 'deps', 'x.js'), ''); fs.symlinkSync('deps', path.join(root, 'node_modules'));
+  fs.writeFileSync(path.join(root, 'a.md'), 'text');
+  assert.ok(execSync('git ls-files --others --exclude-standard', { cwd: root, encoding: 'utf8' }).split('\n').includes('node_modules'), 'git lists the symlink');
+  assert.deepEqual(sourceFiles(root).sort(), ['.gitignore', 'a.md', 'deps/x.js']);
+});
+
 test('no model id is hard-coded outside the config, vendored upstream text and history', () => {
-  const files = execSync('git ls-files -z --cached --others --exclude-standard', { cwd: PKG, encoding: 'utf8' }).split('\0').filter(f => f && !ALLOWED.some(r => r.test(f)) && fs.existsSync(path.join(PKG, f)));
+  const files = sourceFiles(PKG);
   const hits = files.flatMap(f => fs.readFileSync(path.join(PKG, f), 'utf8').split('\n').flatMap((l, i) => MODEL_ID.test(l) ? [`${f}:${i + 1}: ${l.trim().slice(0, 120)}`] : []));
   assert.deepEqual(hits, [], `model ids belong in eng.config.yml (models:), not in the standard:\n${hits.join('\n')}`);
 });
