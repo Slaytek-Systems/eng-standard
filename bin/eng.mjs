@@ -95,6 +95,15 @@ function hookCommandChecks(cfg) {
       fix: file ? `chmod +x ${rel} and commit the mode (git update-index --chmod=+x ${rel})` : `add ${rel}, or fix hooks.${k}[${i}] in eng.config.yml` }];
   }));
 }
+// eng doctor: a hooks.pre_push script receives the hook's arguments ($1 remote name, $2 URL) only when its command passes
+// them on (PR #56 verdict 1 note: a branch-class script that reads them saw none). A warning, not a failure.
+function hookArgWarnings(cfg) {
+  return (cfg.hooks?.pre_push ?? []).flatMap((cmd, i) => {
+    const p = cmd.trim().split(/\s+/)[0];
+    if (!p.includes('/') || path.isAbsolute(p) || /^[$~'"]/.test(p) || path.normalize(p).startsWith('..') || /\$(@|\*|1|2|\{[@*12])/.test(cmd)) return [];
+    return [`hooks.pre_push[${i}]: ${p} gets none of the hook's arguments (remote name, URL); pass them on: ${p} "$@"`];
+  });
+}
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
@@ -829,6 +838,7 @@ async function doctor() {
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
+  for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }

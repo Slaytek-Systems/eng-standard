@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import { hooks } from '../lib/render.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -248,4 +248,34 @@ test('eng doctor fails a hook command whose repo-relative script is missing or n
   assert.match(out, /FAIL hooks\.pre_commit\[0\]: scripts\/gone\.sh is missing/);
   assert.doesNotMatch(out, /hooks\.pre_push\[[345]\]/, 'PATH commands, absolute paths and variables are not checked');
   assert.notEqual(d.status, 0);
+});
+
+// PR #56 verdict 1: the hook created its temp file before its cleanup trap, so a signal in between left the file behind.
+// The hook now keeps the ref lines in memory and never creates a file: a stand-in mktemp that pauses after creating one
+// proves it is never called, and a signal mid-run leaves nothing behind.
+test('the hook makes no temp file, so a signal at any point leaves nothing behind and the push fails', async () => {
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    const d = tmp('eng-pp-sig-'), bin = path.join(d, 'bin'), rec = path.join(d, 'rec'), file = path.join(d, 'pre-push');
+    fs.mkdirSync(bin); fs.mkdirSync(rec);
+    fs.writeFileSync(path.join(bin, 'mktemp'), `#!/bin/sh\necho called >"${rec}/mktemp-called"\nf=$(/usr/bin/mktemp "$@") || exit 1\necho "$f"\nsleep 2\n`, { mode: 0o755 });
+    fs.writeFileSync(file, hooks({ project: { default_branch: 'main' }, agents: { harnesses: [] }, hooks: { pre_push: ['sleep 2'] } })['.githooks/pre-push']);
+    const before = fs.readdirSync(d).sort();
+    const p = spawn('/bin/sh', [file, 'origin', 'u'], { cwd: d, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: d }, stdio: ['pipe', 'ignore', 'ignore'] });
+    p.stdin.end(`refs/heads/a ${'1'.repeat(40)} refs/heads/a ${Z}\n`);
+    await new Promise(r => setTimeout(r, 500));
+    p.kill(sig);
+    const code = await new Promise(r => p.on('close', (c, s) => r(c ?? s)));
+    assert.notEqual(code, 0, `${sig}: the push does not go through`);
+    assert.ok(!fs.existsSync(path.join(rec, 'mktemp-called')), `${sig}: the hook never calls mktemp`);
+    assert.deepEqual(fs.readdirSync(d).sort(), before, `${sig}: nothing left in TMPDIR`);
+  }
+});
+
+// PR #56 verdict 1 note: a script gets the hook's arguments only when its command passes them on. Doctor says so.
+test('eng doctor warns when a hooks.pre_push script is called without the hook arguments', () => {
+  const r = scratch('never', ['scripts/pass.sh "$@"', 'scripts/pass.sh', 'scripts/pass.sh "$1" "$2"', 'npm test']);
+  const d = spawnSync(process.execPath, [ENG, 'doctor'], { cwd: r.w, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: ROOT } });
+  const out = d.stdout + d.stderr;
+  assert.match(out, /WARN hooks\.pre_push\[1\]: scripts\/pass\.sh gets none of the hook's arguments \(remote name, URL\); pass them on: scripts\/pass\.sh "\$@"/);
+  assert.doesNotMatch(out, /WARN hooks\.pre_push\[[023]\]/, 'commands that pass the arguments, or are not repo scripts, get no warning');
 });

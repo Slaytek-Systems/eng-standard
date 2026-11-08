@@ -99,7 +99,7 @@ as commands in `eng.config.yml`, not in another hooks directory.
   they refuse, the push fails and no command runs. Then it runs each command in its own `sh -c`, in order, with the
   hook's arguments (`$1` the remote name, `$2` its URL) and the same ref lines on stdin that git gave the hook, byte for
   byte, an empty stdin included. Inside the command they are `$1` and `$2`, so a script gets them only when the command
-  passes them on: `scripts/check-push.sh "$@"`. The push fails at the first command that exits non-zero. The hook prints
+  passes them on: `scripts/check-push.sh "$@"`. `eng doctor` warns when a repo script is listed without them. The push fails at the first command that exits non-zero. The hook prints
   `eng: hooks.pre_push command <i> of <n> failed (exit <code>): <command>` and exits with that code. The hook runs
   from the top of the work tree, so `scripts/check-push.sh` names a file in the repo.
 - A command can refuse more pushes. It cannot let through a push that eng's checks refuse, because they run first.
