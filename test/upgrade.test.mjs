@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
-import { migrate } from '../lib/migrate.mjs';
+import { migrate, RETIRED_GATES } from '../lib/migrate.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -74,4 +74,48 @@ test('migrate edits flow and block lists and maps in place, and a second pass is
   assert.deepEqual(changes.map(c => c.what), ['gates.required: stack', 'gates.required: checks', 'verification.repeat_threshold']);
   assert.deepEqual(migrate(text), { text, changes: [] });
   assert.equal(migrate('gates:\n  required: [verify, test]\nproject:\n  commands:\n    verify: ./v.sh\n').changes.length, 0, 'a project command keeps the gate');
+});
+
+test('a commented empty retired key goes alone: the next key, a custom checks_dir, stays', () => {
+  const src = 'verification:\n  repeat_threshold: # retired\n  checks_dir: ci/checks\n  stale_after_commits:\n  flake_runs: 2\n';
+  assert.equal(migrate(src).text, 'verification:\n  checks_dir: ci/checks\n  flake_runs: 2\n');
+  const crlf = 'verification:\r\n  checks_dir: ci/checks\r\n  repeat_threshold: ~ # x\r\nrenovation:\r\n  receipt: |\r\n    a\r\n  ci: 1\r\nz: 1\r\n';
+  assert.equal(migrate(crlf).text, 'verification:\r\n  checks_dir: ci/checks\r\nrenovation:\r\nz: 1\r\n', 'CRLF, the last pair of a map and a block scalar value');
+});
+
+test('a gate folded into another becomes that gate in place, once; a project command keeps it', () => {
+  const m = s => migrate(s).text;
+  assert.equal(m('gates:\n  required: [drift, laws, evidence, test]\n'), 'gates:\n  required: [drift, rules, verdict, test]\n');
+  assert.equal(m('gates:\n  required:\n    - laws # proofs\n    - test\n'), 'gates:\n  required:\n    - rules # proofs\n    - test\n');
+  assert.equal(m('gates:\n  required: [rules, laws, verdict, evidence]\n'), 'gates:\n  required: [rules, verdict]\n', 'no duplicate when the successor is listed');
+  assert.equal(m('gates:\n  required: [laws, evidence, laws]\n'), 'gates:\n  required: [rules, verdict]\n');
+  assert.equal(m('gates:\n  required: [laws]\nproject:\n  commands:\n    laws: ./laws.sh\n'), 'gates:\n  required: [laws]\nproject:\n  commands:\n    laws: ./laws.sh\n');
+});
+
+// Each variant of the Motus-shaped fixture, migrated by eng sync: every check script and every gate that ran before still
+// runs in eng gate, as itself or as the gate it folded into. Only rows the table marks dropped may go, and no check is one.
+const variants = {
+  motus: t => t,
+  'commented empty key before a custom checks_dir': t => t.replace('  checks_dir: .eng/checks\n', '  repeat_threshold: # retired\n  checks_dir: ci/checks\n').replace('  repeat_threshold: 2\n', ''),
+  'laws and evidence, no rules or verdict': t => t.replace(/required: \[.*\]/, 'required: [drift, laws, lint, test, evidence, verify, stack]'),
+  'block list, CRLF': t => t.replace(/required: \[(.*)\]/, (_, l) => `required:\n${l.split(', ').map(g => `    - ${g}\n`).join('')}`.trimEnd()).replace(/\n/g, '\r\n'),
+};
+for (const [name, edit] of Object.entries(variants)) test(`upgrade keeps every check and gate that ran: ${name}`, () => {
+  const d = fs.mkdtempSync(path.join(dir, 'v-')), run = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: d, encoding: 'utf8' });
+  fs.cpSync(FIXTURE, d, { recursive: true });
+  const text = edit(fs.readFileSync(path.join(FIXTURE, 'eng.config.yml'), 'utf8')), cfg = YAML.parse(text);
+  if (cfg.verification.checks_dir !== '.eng/checks') fs.renameSync(path.join(d, '.eng/checks'), path.join(d, (fs.mkdirSync(path.join(d, 'ci'), { recursive: true }), cfg.verification.checks_dir)));
+  fs.writeFileSync(path.join(d, 'eng.config.yml'), text);
+  const before = [...fs.readdirSync(path.join(d, cfg.verification.checks_dir)).map(f => `check:${f.replace(/\.sh$/, '')}`), ...cfg.gates.required];
+  for (const c of ['init -q -b main', 'config user.email t@t', 'config user.name t', 'add -A', 'commit -qm base']) execSync(`git ${c}`, { cwd: d, stdio: 'pipe' });
+  let r = run('sync'); assert.equal(r.status, 0, out(r));
+  execSync('git add -A && git commit -qm upgrade', { cwd: d, stdio: 'pipe' });
+  r = run('gate');
+  const ran = new Set([...r.stdout.matchAll(/^ {2}(?:pass|FAIL|SKIPPED=FAIL)\s+(\S+)/gm)].map(x => x[1]));
+  assert.ok(ran.size, out(r));
+  for (const step of before) {
+    const row = RETIRED_GATES[step];
+    if (ran.has(step) || (row?.into === 'checks' ? [...ran].some(s => s.startsWith('check:')) : ran.has(row?.into))) continue;
+    assert.ok(row?.drop && !step.startsWith('check:'), `${step} ran before the upgrade and not after it:\n${out(r)}`);
+  }
 });
