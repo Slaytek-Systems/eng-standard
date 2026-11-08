@@ -524,3 +524,33 @@ test('eng gate exits 0 only when every selected check ran and passed; a deferred
   r = eng(['gate', 'checks']);
   assert.equal(r.status, 0, `a repo with no heavy checks never defers: ${out(r)}`);
 });
+
+// ---------- verdict finding on 80a069f (PR 50, round 7): an eng path that is only data to another program is not eng. A Node
+// supervisor handed `eng.mjs gate` as arguments, with its own SIGURG handler, got the inner gate's signal and reported a
+// failure of its own. eng now signals a process only when eng is the program itself: argv[0], or a JS runtime's entry
+// script after the runtime's own options. ----------
+test('listens: eng is the program itself, never an argument to another program', async () => {
+  const { listens } = await import('../lib/nested.mjs');
+  const yes = [['node', '/p/bin/eng.mjs', 'gate'], ['/usr/bin/node', '--max-old-space-size=64', '/p/eng.mjs', 'gate', 'checks'], ['node', '-r', '/x/hook.cjs', '/p/eng.mjs', 'gate'], ['/p/bin/eng', 'run', '--', 'sh', '-c', 'x'], ['node', '/p/eng.mjs', 'run', '--by', 'v', '--', 'cmd', '--here'], ['bun', '/p/eng.mjs', 'gate']];
+  const no = [['node', '/x/supervisor.mjs', '/p/bin/eng.mjs', 'gate'], ['node', '/x/harness.js', '--target', '/p/eng.mjs', 'gate'], ['python3', '/p/eng.mjs', 'gate'], ['node', '/p/eng.mjs', 'run', '--here', '--', 'cmd'], ['node', '/p/eng.mjs', 'lint'], ['sh', '-c', 'node /p/eng.mjs gate']];
+  for (const a of yes) assert.equal(listens(a), true, JSON.stringify(a));
+  for (const a of no) assert.equal(listens(a), false, JSON.stringify(a));
+});
+for (const how of hows) test(`an unrelated program with eng's command as argument data is never signalled (${how} path)`, async t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  checks(DEFERRING);
+  const supDir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-r7-sup-'));
+  t.after(() => fs.rmSync(supDir, { recursive: true, force: true }));
+  const sup = path.join(supDir, 'supervisor.mjs');
+  fs.writeFileSync(sup, `import { spawnSync } from 'node:child_process';
+let urgent = 0; process.on('SIGURG', () => { urgent++; });
+const r = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(ENG)}, 'gate', 'check:model'], { stdio: 'inherit' });
+await new Promise(res => setTimeout(res, 200));
+console.log('urgent=' + urgent + ' inner=' + r.status);
+process.exit(urgent ? 1 : 0);
+`);
+  // The supervisor runs directly (not under eng run), carrying eng's path and `gate` as data arguments.
+  const r = spawnSync(process.execPath, [sup, ENG, 'gate'], { cwd: dir, encoding: 'utf8', env: { ...process.env, CI: '', ENG_BUDGET_ENFORCER: how } });
+  assert.match(r.stdout, /urgent=0 inner=3/, out(r));
+  assert.equal(r.status, 0, out(r));
+});
