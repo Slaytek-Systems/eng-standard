@@ -13,7 +13,7 @@ import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
 import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
-import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
+import { scratchRun, RUN_USAGE, noteDeferred } from '../lib/run.mjs';
 import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli.mjs';
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
@@ -670,11 +670,9 @@ async function gate() {
   let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
   const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
   console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
-  // An incomplete stage never certifies full verification: under eng run --by of this worktree, the deferred checks go in
-  // the run's record, and eng verdict refuses that run as PASS evidence. The worktree test keeps a gate a test suite runs
-  // on a fixture repo from marking the suite's own run.
-  const deferLog = process.env.ENG_RUN_DEFERRED;
-  if (deferred.length && deferLog && realOr(path.join(path.dirname(deferLog), 'wt')) === realOr(ROOT)) fs.appendFileSync(deferLog, deferred.map(s => `${s.check.id}\n`).join(''));
+  // An incomplete stage never certifies full verification: under eng run --by, however deeply nested, the deferred checks
+  // go in the run's record, and eng verdict refuses that run as PASS evidence (lib/run.mjs noteDeferred).
+  if (deferred.length) { try { noteDeferred(sh('git rev-parse --path-format=absolute --git-common-dir'), sh('git rev-parse HEAD'), deferred.map(s => s.check.id)); } catch (e) { die(`gate: cannot record the deferred heavy checks for the enclosing eng run (${e.message}); it would count as a full verification`); } }
   const done = await runChecks(bounded, how, t, keep, parallel);
   const res = [];
   for (const s of steps) {
@@ -751,7 +749,6 @@ async function runChecks(list, how, t, keep, parallel) {
 // ---------- disk rules (Matt, 30 Oct 2026; Core nd79fdwd1p4hc5nk60j7rmbn518h6tsv). lib/disk-rules.mjs has each rule's default, options and check. ----------
 // Node/Bun module compile cache defaults to TMPDIR/node-compile-cache and is keyed by absolute path, so each worktree
 // writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
-const realOr = p => { try { return fs.realpathSync(p); } catch { return p; } };
 const privateTmpEnv = (env, dir) => ({ ...env, ENG_TMP: dir, TMPDIR: dir, TMP: dir, TEMP: dir, NODE_DISABLE_COMPILE_CACHE: '1' });
 const leftText = left => `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'} in its private TMPDIR: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ', ...' : ''} (tests_leave_nothing: remove what the test creates in an after hook or finally)`;
 // Prints each finding at its rule's mode; returns how many fail.

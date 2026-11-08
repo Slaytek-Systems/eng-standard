@@ -314,3 +314,57 @@ test('eng verdict check does not count a recorded PASS whose run deferred heavy 
   assert.equal(passProblem({ method: 'verification', sha: 'abc', runs: [run] }, ['lib/x.mjs']), null, 'a full run counts');
   assert.match(passProblem({ method: 'verification', sha: 'abc', runs: [{ ...run, deferred: ['model'] }] }, ['lib/x.mjs']), /deferred heavy check\(s\) model: it is not a full verification/);
 });
+
+// ---------- verdict findings on 8657413 (PR 50, round 2): a nested eng run keeps its deferrals; env -i does not leave the
+// watchdog ----------
+const fixtureRepo = () => {
+  const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-fixture-'));
+  const g = c => execSync(`git ${c}`, { cwd: d, stdio: 'pipe' });
+  g('init -q -b main'); g('config user.email t@t'); g('config user.name t');
+  fs.copyFileSync(path.join(dir, 'eng.config.yml'), path.join(d, 'eng.config.yml'));
+  fs.mkdirSync(path.join(d, '.eng/checks'), { recursive: true });
+  fs.writeFileSync(path.join(d, '.eng/checks/model.sh'), '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n', { mode: 0o755 });
+  g('add -A'); g('commit -qm fixture');
+  return d;
+};
+for (const inner of [[], ['--by', 'nested-inner']]) test(`a nested eng run ${inner.length ? 'with' : 'without'} --by keeps the deferred heavy check in the outer record`, () => {
+  checks({ light: '#!/bin/sh\nexit 0\n', model: '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=5s\nexit 37\n' });
+  const by = `nested-outer-${inner.length}`;
+  let r = eng(['run', '--by', by, '--', process.execPath, ENG, 'run', ...inner, '--', process.execPath, ENG, 'gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /deferred\s+check:model/);
+  assert.deepEqual(runsBy(by).at(-1).deferred, ['model'], `the outer record says what the inner gate deferred: ${JSON.stringify(runsBy(by).at(-1))}`);
+  if (inner.length) assert.deepEqual(runsBy('nested-inner').at(-1).deferred, ['model'], 'the inner record says so too');
+  r = eng(['verdict', 'PASS', '--by', by]);
+  assert.notEqual(r.status, 0, out(r));
+  assert.match(out(r), /deferred heavy check\(s\) model/);
+});
+test('a gate on an unrelated fixture repo, run inside eng run --by, does not mark the outer record', () => {
+  checks({ light: '#!/bin/sh\nexit 0\n' });
+  const fx = fixtureRepo();
+  try {
+    const by = 'fixture-outer';
+    const r = eng(['run', '--by', by, '--', 'sh', '-c', `cd ${JSON.stringify(fx)} && ${JSON.stringify(process.execPath)} ${JSON.stringify(ENG)} gate checks`], { ENG_BUDGET_ENFORCER: 'watchdog' });
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stdout, /deferred\s+check:model/, 'the fixture gate deferred its heavy check');
+    assert.equal(runsBy(by).at(-1).deferred, undefined, `the outer record is not marked: ${JSON.stringify(runsBy(by).at(-1))}`);
+  } finally { fs.rmSync(fx, { recursive: true, force: true }); }
+});
+
+// The allocator takes 32 MB every 40 ms up to 640 MB, holds 1s, then exits 0 by itself.
+const SANE = 'const a=[];let n=0;const t=setInterval(()=>{if(n<20){a.push(Buffer.alloc(32<<20,1));n++}else{clearInterval(t);setTimeout(()=>process.exit(0),1000)}},40)';
+for (const how of hows) for (const [name, argv] of [['an env -i leader', ['/usr/bin/env', '-i', process.execPath, '-e', SANE]], ['an env -i child of a shell', ['sh', '-c', '"$0" -i "$1" -e "$2"; exit 0', '/usr/bin/env', process.execPath, SANE]]]) test(`${name} over its budget is stopped (${how} path)`, async t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const { runBounded } = await import('../lib/budget.mjs');
+  const r = await runBounded(argv, { memoryMb: 256, workers: 1, timeoutS: 20 }, { how, label: 'env-probe' }).result;
+  t.diagnostic(JSON.stringify(r));
+  assert.equal(r.stopped, 'memory', `the budget stopped it: ${JSON.stringify(r)}`);
+  assert.notEqual(r.status, 0);
+  assert.match(r.why, /memory 256 MB/);
+});
+test('a check that runs its allocator under env -i fails the gate on the watchdog path', () => {
+  checks({ clean: `#!/bin/sh\n# budget: memory=256M workers=1 timeout=20s\nexec /usr/bin/env -i ${process.execPath} -e '${SANE}'\n` });
+  const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /FAIL\s+check:clean\s+eng: FAIL check clean: stopped by its budget: memory 256 MB/);
+});
