@@ -375,6 +375,13 @@ for (const how of hows) for (const [name, pre] of [['through | cat', ''], ['unde
   const v = eng(['verdict', 'PASS', '--by', by]);
   assert.notEqual(v.status, 0, out(v)); assert.match(out(v), /exited 3/);
 });
+for (const how of hows) test(`a deferring gate that a check leaves running after its parent exits still makes the outer gate exit 3 (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  checks({ ...DEFERRING, orphan: `#!/bin/sh\n( setsid sh -c "sleep 0.3; ${process.execPath} ${ENG} gate check:model | cat" </dev/null >/dev/null 2>&1 & )\nsleep 2\n` });
+  const r = eng(['gate', 'check:orphan'], { ENG_BUDGET_ENFORCER: how });
+  assert.equal(r.status, 3, out(r));
+  assert.match(r.stdout, /INCOMPLETE\s+check:orphan/);
+});
 test('eng run --by around a deferring gate piped through cat records exit 3', () => {
   checks(DEFERRING);
   const r = eng(['run', '--by', 'piped-run', '--', 'sh', '-c', `${process.execPath} ${ENG} gate checks | cat`], { ENG_BUDGET_ENFORCER: 'watchdog' });

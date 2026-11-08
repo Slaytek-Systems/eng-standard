@@ -24,6 +24,7 @@ import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwa
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE } from '../lib/budget.mjs';
+import { enclose, tellEnclosing, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -256,6 +257,8 @@ function builtinRules(cfg) {
     .map(d => ({ ...d, ...(d.id === 'cargo-target-per-run' && cacheMode === 'warn' ? { warn: true } : {}), proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
   // Heavy tools in a check script need their bound (lib/budget.mjs); the TLC incident of 8 Nov 2026.
   r.push({ ...HEAVY_TOOL_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${HEAVY_TOOL_RULE.id}` } });
+  // A check is a leaf (PR 50, round 4: an inner gate's exit 3 was lost through `| cat`).
+  r.push({ ...NESTED_GATE_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${NESTED_GATE_RULE.id}` } });
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
@@ -668,9 +671,13 @@ async function gate() {
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
   const ci = !!process.env.CI && process.env.CI !== 'false', heavy = ci || a.includes('--heavy');
   let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
+  // A gate run inside a step that deferred anything tells this gate out of band (lib/nested.mjs); that step is incomplete.
+  let repo = ''; try { repo = sh('git rev-parse --path-format=absolute --git-common-dir'); } catch {}
+  let inner; try { inner = enclose(repo); } catch (e) { die(`gate: ${e.message}`); }
+  const nestedRow = (row, marks) => !marks.length || row[1] !== 'pass' ? row : [row[0], 'INCOMPLETE', `eng: INCOMPLETE ${row[0]}: a gate inside it deferred ${marks.flatMap(m => m.deferred).join(', ')} (exit 3), so it did not run everything. A check is a leaf: the gate composes the checks, so do not run eng gate inside one`, []];
   const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
   console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
-  const done = await runChecks(bounded, how, t, keep, parallel);
+  const done = await runChecks(bounded, how, t, keep, parallel, inner, nestedRow);
   const res = [];
   for (const s of steps) {
     const g = s.name;
@@ -684,14 +691,18 @@ async function gate() {
     const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
-    res.push(stepResult(g, r.status, r.stdout + r.stderr, own, keep));
+    res.push(nestedRow(stepResult(g, r.status, r.stdout + r.stderr, own, keep), inner(() => true)));
   }
+  const stray = inner(() => true);
+  if (stray.length) res.push(nestedRow(['nested', 'pass', '', []], stray));
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
-  if (res.some(r => !['pass', 'deferred'].includes(r[1]))) die('gate: not all required gates passed');
+  if (res.some(r => !['pass', 'deferred', 'INCOMPLETE'].includes(r[1]))) die('gate: not all required gates passed');
   // Exit 0 means every selected check ran and passed, nothing else. A deferred check makes the gate incomplete (exit 3), so
   // every caller (eng run --by, eng verdict, CI, a script) sees it from the exit code alone, whatever environment it had.
-  if (deferred.length) {
-    console.log(`eng gate: INCOMPLETE (exit 3). The light checks passed, and every other step that ran. Deferred, not run: ${deferred.map(s => s.check.id).join(', ')}. Run them with eng gate --heavy, or in CI; only exit 0 means every selected check ran and passed.`);
+  const incomplete = res.filter(r => r[1] === 'INCOMPLETE').map(r => r[0]);
+  if (deferred.length || incomplete.length) {
+    tellEnclosing(repo, deferred.map(s => s.check.id).concat(incomplete));
+    console.log(`eng gate: INCOMPLETE (exit 3). The light checks passed, and every other step that ran.${deferred.length ? ` Deferred, not run: ${deferred.map(s => s.check.id).join(', ')}.` : ''}${incomplete.length ? ` A gate inside ${incomplete.join(', ')} deferred checks.` : ''} Run them with eng gate --heavy, or in CI; only exit 0 means every selected check ran and passed.`);
     process.exit(GATE_INCOMPLETE);
   }
   console.log('eng gate: PASS');
@@ -712,7 +723,7 @@ function stepResult(g, status, text, own, keep) {
 // Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
 // the memory free when the gate started and the cores, and a check that does not fit waits for a running one to finish.
 // Each check runs flake_runs times, one after another.
-async function runChecks(list, how, t, keep, parallel) {
+async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
   const machine = { memoryMb: freeMemoryMb(), cores: cores() }, running = new Set(), waited = new Set(), out = new Map();
   // A signal ends the gate through process.exit, whoever owns ENG_TMP: lib/budget.mjs's exit hook then kills and awaits
   // every running check, its scope and its detached workers.
@@ -721,14 +732,17 @@ async function runChecks(list, how, t, keep, parallel) {
   const runCheck = async s => {
     const { id, path: p, runs, budget, declared } = s.check, own = fs.mkdtempSync(path.join(t.dir, `${slug(s.name)}-`));
     let passed = 0, text = '', stop = null;
+    const keys = new Set();
     for (let i = 0; i < runs && !stop; i++) {
-      const r = await runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how }).result;
+      const b = runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how });
+      keys.add(String(b.pid)); keys.add(b.unit);
+      const r = await b.result;
       text += r.stdout + r.stderr;
       if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
     }
     if (stop) { fs.rmSync(own, { recursive: true, force: true }); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, []]; }
     const summary = passed === runs ? `check ${id}: passed ${runs}/${runs}` : passed === 0 ? `eng: FAIL check ${id}: failed ${runs}/${runs}` : `eng: FAIL check ${id}: FLAKY, passed ${passed}/${runs}`;
-    return stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep);
+    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep), inner(k => keys.has(k)));
   };
   await new Promise(resolve => {
     let i = 0;
