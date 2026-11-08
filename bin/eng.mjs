@@ -24,7 +24,7 @@ import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwa
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE } from '../lib/budget.mjs';
-import { enclose, tellEnclosing, NESTED_GATE_RULE } from '../lib/nested.mjs';
+import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -671,10 +671,9 @@ async function gate() {
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
   const ci = !!process.env.CI && process.env.CI !== 'false', heavy = ci || a.includes('--heavy');
   let how; try { how = enforcer(); } catch (e) { die(`gate: ${e.message}`); }
-  // A gate run inside a step that deferred anything tells this gate out of band (lib/nested.mjs); that step is incomplete.
-  let repo = ''; try { repo = sh('git rev-parse --path-format=absolute --git-common-dir'); } catch {}
-  let inner; try { inner = enclose(repo); } catch (e) { die(`gate: ${e.message}`); }
-  const nestedRow = (row, marks) => !marks.length || row[1] !== 'pass' ? row : [row[0], 'INCOMPLETE', `eng: INCOMPLETE ${row[0]}: a gate inside it deferred ${marks.flatMap(m => m.deferred).join(', ')} (exit 3), so it did not run everything. A check is a leaf: the gate composes the checks, so do not run eng gate inside one`, []];
+  // A gate run inside a step that deferred anything signals this gate (lib/nested.mjs); that step is incomplete.
+  const repo = commonDir(ROOT), inner = enclose();
+  const nestedRow = (row, hit) => !hit || row[1] !== 'pass' ? row : [row[0], 'INCOMPLETE', `eng: INCOMPLETE ${row[0]}: a gate inside it ended incomplete (exit 3), so it did not run everything. A check is a leaf: the gate composes the checks, so do not run eng gate inside one`, []];
   const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
   console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
   const done = await runChecks(bounded, how, t, keep, parallel, inner, nestedRow);
@@ -688,20 +687,20 @@ async function gate() {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
     const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
-    const r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
+    const w = inner.open(), r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
-    res.push(nestedRow(stepResult(g, r.status, r.stdout + r.stderr, own, keep), inner(() => true)));
+    res.push(nestedRow(stepResult(g, r.status, r.stdout + r.stderr, own, keep), await inner.close(w)));
   }
-  const stray = inner(() => true);
-  if (stray.length) res.push(nestedRow(['nested', 'pass', '', []], stray));
+  if (inner.stray()) res.push(nestedRow(['nested', 'pass', '', []], true));
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
   if (res.some(r => !['pass', 'deferred', 'INCOMPLETE'].includes(r[1]))) die('gate: not all required gates passed');
   // Exit 0 means every selected check ran and passed, nothing else. A deferred check makes the gate incomplete (exit 3), so
   // every caller (eng run --by, eng verdict, CI, a script) sees it from the exit code alone, whatever environment it had.
   const incomplete = res.filter(r => r[1] === 'INCOMPLETE').map(r => r[0]);
   if (deferred.length || incomplete.length) {
-    tellEnclosing(repo, deferred.map(s => s.check.id).concat(incomplete));
+    const { failed } = tellEnclosing(repo);
+    if (failed.length) console.error(`eng gate: WARNING: could not tell the enclosing eng gate or eng run ${failed.join(', ')} that this gate is incomplete. If this gate's exit 3 is lost (a pipe, || true), that one may pass without these checks.`);
     console.log(`eng gate: INCOMPLETE (exit 3). The light checks passed, and every other step that ran.${deferred.length ? ` Deferred, not run: ${deferred.map(s => s.check.id).join(', ')}.` : ''}${incomplete.length ? ` A gate inside ${incomplete.join(', ')} deferred checks.` : ''} Run them with eng gate --heavy, or in CI; only exit 0 means every selected check ran and passed.`);
     process.exit(GATE_INCOMPLETE);
   }
@@ -732,17 +731,16 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
   const runCheck = async s => {
     const { id, path: p, runs, budget, declared } = s.check, own = fs.mkdtempSync(path.join(t.dir, `${slug(s.name)}-`));
     let passed = 0, text = '', stop = null;
-    const keys = new Set();
+    const w = inner.open();
     for (let i = 0; i < runs && !stop; i++) {
-      const b = runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how });
-      keys.add(String(b.pid)); keys.add(b.unit);
-      const r = await b.result;
+      const r = await runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how }).result;
       text += r.stdout + r.stderr;
       if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
     }
+    const hit = await inner.close(w);
     if (stop) { fs.rmSync(own, { recursive: true, force: true }); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, []]; }
     const summary = passed === runs ? `check ${id}: passed ${runs}/${runs}` : passed === 0 ? `eng: FAIL check ${id}: failed ${runs}/${runs}` : `eng: FAIL check ${id}: FLAKY, passed ${passed}/${runs}`;
-    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep), inner(k => keys.has(k)));
+    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep), hit);
   };
   await new Promise(resolve => {
     let i = 0;

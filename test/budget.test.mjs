@@ -366,7 +366,7 @@ for (const how of hows) for (const [name, pre] of [['through | cat', ''], ['unde
   const by = `piped-${how}-${pre ? 'env' : 'plain'}`;
   const r = eng(['run', '--by', by, '--', process.execPath, ENG, 'gate', 'check:wrapper'], { ENG_BUDGET_ENFORCER: how });
   assert.equal(r.status, 3, out(r));
-  assert.match(r.stdout, /INCOMPLETE\s+check:wrapper\s+eng: INCOMPLETE check:wrapper: a gate inside it deferred model/);
+  assert.match(r.stdout, /INCOMPLETE\s+check:wrapper\s+eng: INCOMPLETE check:wrapper: a gate inside it ended incomplete \(exit 3\)/);
   assert.doesNotMatch(r.stdout, /eng gate: PASS/);
   const rec = runsBy(by).at(-1);
   assert.equal(rec.exit, 3, JSON.stringify(rec));
@@ -386,7 +386,7 @@ test('eng run --by around a deferring gate piped through cat records exit 3', ()
   checks(DEFERRING);
   const r = eng(['run', '--by', 'piped-run', '--', 'sh', '-c', `${process.execPath} ${ENG} gate checks | cat`], { ENG_BUDGET_ENFORCER: 'watchdog' });
   assert.equal(r.status, 3, out(r));
-  assert.match(r.stderr, /eng run: INCOMPLETE \(exit 3\): a gate inside the command deferred model/);
+  assert.match(r.stderr, /eng run: INCOMPLETE \(exit 3\): a gate inside the command ended incomplete \(exit 3\)/);
   assert.equal(runsBy('piped-run').at(-1).exit, 3);
 });
 test('a deferring gate in another process tree does not mark a gate that is running', async () => {

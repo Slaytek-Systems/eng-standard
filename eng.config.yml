@@ -39,7 +39,7 @@ ship:
       - "lib/verification.mjs"    # which verdicts count: verification evidence, review-only paths
       - "lib/budget.mjs"          # check weights and budgets, imported by lib/verification.mjs
       - "lib/run.mjs"             # eng run --by: writes the verdict evidence runs
-      - "lib/nested.mjs"          # a gate inside a gate: markers that make the enclosing gate or run incomplete
+      - "lib/nested.mjs"          # a gate inside a gate: the signal that makes the enclosing gate or run incomplete
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"
       - "docs/merge-queue.md"
