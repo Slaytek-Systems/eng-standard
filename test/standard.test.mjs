@@ -91,3 +91,15 @@ test('doctor prints installed, rendered and latest versions, the CHANGELOG entri
   assert.match(o, /WARN eng-standard: .*latest UNKNOWN: could not read .*Not a pass/);
   assert.doesNotMatch(o, /ok {3}eng-standard/);
 });
+
+test('sync --check fails a lock with no valid renderer version, naming eng sync as the repair', () => {
+  const r = repo(), lock = r.file('.eng/lock.json'), good = fs.readFileSync(lock, 'utf8');
+  r.pin(`github:Slaytek-Systems/eng-standard#v${VERSION}`);
+  for (const [what, edit] of [['absent', j => { delete j.package; }], ['null', j => { j.package = null; }], ['empty', j => { j.package = ''; }], ['not a version', j => { j.package = 'main'; }]]) {
+    const j = JSON.parse(good); edit(j); fs.writeFileSync(lock, JSON.stringify(j, null, 2) + '\n');
+    const d = r.eng(['sync', '--check']);
+    assert.equal(d.status, 1, what); assert.match(d.stderr, /\.eng\/lock\.json: .*renderer version.*Fix: run eng sync/, what);
+  }
+  assert.equal(r.eng(['sync']).status, 0);
+  assert.equal(r.eng(['sync', '--check']).status, 0, 'eng sync writes the installed version');
+});

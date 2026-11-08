@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
+import YAML from 'yaml';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -122,5 +123,20 @@ test('any other value is a config error naming the allowed values', () => {
     const r = repo(withMode(bad));
     const s = r.eng('sync'); assert.notEqual(s.status, 0, bad);
     assert.match(s.stderr, /git\.rewrite_pushed must be never or protected/);
+  }
+});
+
+test('eng sync adds git.rewrite_pushed to an empty, flow or null git map with no manual edit, keeping the other keys', () => {
+  for (const graphite of [false, true]) for (const git of ['git: {}', 'git: { signing: true }', 'git:', 'git:   # keep me', 'git: ~']) {
+    const r = repo(`${withoutKey}${git}\n`, { graphite }), mode = graphite ? 'protected' : 'never', what = `${git} (graphite ${graphite})`;
+    const s = r.eng('sync'); assert.equal(s.status, 0, `${what}: ${s.stderr}`);
+    assert.match(s.stdout, new RegExp(`added git\\.rewrite_pushed: ${mode}`), what);
+    const cfg = YAML.parse(r.config());
+    assert.equal(cfg.git.rewrite_pushed, mode, what);
+    if (git.includes('signing')) assert.equal(cfg.git.signing, true, `${what}: signing kept`);
+    if (git.includes('keep me')) assert.match(r.config(), /# keep me/, what);
+    assert.deepEqual({ ...cfg, git: undefined }, { ...YAML.parse(withoutKey), git: undefined }, `${what}: other keys kept`);
+    const again = r.eng('sync'); assert.equal(again.status, 0, what); assert.doesNotMatch(again.stdout, /added git\.rewrite_pushed/, what);
+    assert.equal(r.eng('sync', '--check').status, 0, what);
   }
 });

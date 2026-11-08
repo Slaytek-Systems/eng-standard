@@ -85,3 +85,39 @@ test('the rendered pre-push hook refuses rewriting a pushed feature branch or ta
   const deny = JSON.parse(fs.readFileSync(path.join(w, '.claude/settings.json'), 'utf8')).permissions.deny;
   for (const d of ['Bash(git push --force:*)', 'Bash(git push -f:*)', 'Bash(git push origin +:*)']) assert.ok(deny.includes(d), d);
 });
+
+// Claude Code's documented Bash rule matching (code.claude.com/docs/en/permissions, Wildcard patterns): `*` matches any
+// text, spaces included, anywhere; a trailing ` *` or `:*` that is the rule's only wildcard also matches the bare command.
+const ruleMatches = (rule, cmd) => {
+  const body = rule.match(/^Bash\((.*)\)$/s)[1].replace(/:\*$/, ' *'), only = (body.match(/\*/g) || []).length === 1 && body.endsWith(' *');
+  const esc = s => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${only ? `${esc(body.slice(0, -2))}(?: .*)?` : esc(body)}$`, 's').test(cmd);
+};
+const denied = (dir, cmd) => JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8')).permissions.deny.some(r => ruleMatches(r, cmd));
+
+test('the agent deny list refuses every raw force-push spelling in both modes and still allows ordinary pushes and gt', () => {
+  const forced = [
+    'git push --force', 'git push --force origin feature', 'git push origin --force feature', 'git push origin feature --force',
+    'git push -f origin feature', 'git push origin -f feature', 'git push origin feature -f', 'git push -uf origin feature',
+    'git push --force-with-lease origin feature', 'git push origin --force-with-lease feature', 'git push origin feature --force-with-lease=feature:abc123',
+    'git push --force-with-lease --force-if-includes origin feature', 'git push origin feature --force-if-includes --force-with-lease',
+    'git push --mirror origin', 'git push origin --mirror', 'git push origin +feature', 'git push origin +HEAD:feature', 'git push -u origin +feature',
+    'git push origin --delete main', 'git push --delete origin main', 'git push origin -d main', 'git push origin :main', 'git push origin feature :refs/heads/main',
+    'git -C . push --force origin feature', 'git -c push.default=current push origin +feature', 'git push --no-verify origin feature', 'git push origin feature --no-verify',
+  ];
+  const allowed = ['git push', 'git push origin feature', 'git push -u origin feature', 'git push origin HEAD:eng/hallway-docs', 'git push --follow-tags origin main',
+    'git push origin --delete old-feature', 'git push --dry-run origin main', 'gt submit', 'gt submit --stack', 'git commit -m "never force-push"'];
+  for (const mode of ['never', 'protected']) {
+    const dir = rendered('templates/eng.config.yml', mode);
+    assert.deepEqual(forced.filter(c => !denied(dir, c)), [], `${mode}: raw force-push spellings the deny list misses`);
+    assert.deepEqual(allowed.filter(c => denied(dir, c)), [], `${mode}: ordinary commands the deny list blocks`);
+  }
+});
+
+test('ruleMatches follows the documented Claude Code wildcard rules', () => {
+  assert.ok(ruleMatches('Bash(ls *)', 'ls')); assert.ok(ruleMatches('Bash(ls *)', 'ls -la')); assert.ok(!ruleMatches('Bash(ls *)', 'lsof'));
+  assert.ok(ruleMatches('Bash(ls*)', 'lsof')); assert.ok(ruleMatches('Bash(ls:*)', 'ls'));
+  assert.ok(ruleMatches('Bash(git * main)', 'git push origin main')); assert.ok(!ruleMatches('Bash(git log * main)', 'git log main'));
+  assert.ok(ruleMatches('Bash(* --help *)', 'npm --help x')); assert.ok(!ruleMatches('Bash(* --help *)', 'npm --help'));
+  assert.ok(!ruleMatches('Bash(git push --force:*)', 'git push origin --force feature'), 'the 20ae133 rule shape misses a later flag');
+});
