@@ -80,7 +80,7 @@ test('codex-only: no rendered text claims an agent deny list, and it names codex
   const { agents, shipping, files } = renderText(['codex']);
   assert.equal(files['.claude/settings.json'], undefined);
   for (const [name, t] of [['AGENTS.md', agents], ['SHIPPING.md', shipping]]) {
-    assert.doesNotMatch(t, /agent deny list|deny lists only|\(deny list\)|Claude Code deny list/i, `${name} claims a deny list codex does not get`);
+    assert.doesNotMatch(t, /the agent deny list|deny lists only|\(deny list\)|Claude Code deny list/i, `${name} claims a deny list codex does not get`);
   }
   assert.match(agents, /codex: no agent deny list/);
   assert.match(shipping, /codex: no agent deny list/);

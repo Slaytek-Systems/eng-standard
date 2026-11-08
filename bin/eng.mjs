@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -87,6 +87,8 @@ const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json
 const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
 function render(cfg) {
+  const errs = renderErrors(cfg);
+  if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
   try { if (fs.readlinkSync(path.join(ROOT, 'CLAUDE.md')) === 'AGENTS.md') delete files['CLAUDE.md']; } catch {}
@@ -804,10 +806,16 @@ async function doctor() {
   if (a.includes('--launch')) launchCheck();
   const up = await upgradeInfo();
   console.log(up.line);
-  const cfg = loadConfig(), files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean), merges = mergeDoctor(cfg);
+  const cfg = loadConfig(), merges = mergeDoctor(cfg);
+  // Toolchain detection counts the product: what eng itself installs (rendered skills and their lockfiles, or the eng
+  // package vendored inside the repo) is not the repo's tooling.
+  const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
+  const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
+  const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
   const checks = [rewriteModeLine(cfg), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
+  for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
@@ -842,8 +850,12 @@ function runCmd() {
 }
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig }; }
 const found = COMMANDS.find(([n]) => n === cmd);
-if (found) found[3]();
+// Help never runs the command: `eng <cmd> --help`, `-h` (before any `--`, whose tail belongs to the command eng runs) and `eng help <cmd>`.
+const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
+const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
+if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
+else if (found) found[3]();
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
-  process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) ? 1 : 0);
+  process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);
 }

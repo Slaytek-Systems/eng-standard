@@ -2,6 +2,18 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.16.2 (8 Nov 2026)
+
+**Help never runs a command, and coverage claims are true per harness** (R3b, 8 Nov 2026: a Codex agent onboarded a Python repo from the docs alone and hit four defects that hurt every new adopter). No new command and no config change.
+
+- **Help is inert.** `eng <command> --help` and `-h` (or `help <command>` as the first argument) print that command's usage and exit 0, for all ten commands and their subcommands. They write no file, install no hook, run no check, start nothing and read no network. Before, `eng init --help` seeded the config, ran sync and set `core.hooksPath`, and `eng run --help` looked for a project command named `--help`. Only eng's own options count: a `--help` after `--` belongs to the command eng runs. Help for an unknown command exits 1.
+- **Coverage claims name the harness.** Only Claude Code gets an executable agent deny list (`.claude/settings.json`) and the post-edit hook. The rendered AGENTS.md rule table, SHIPPING.md rule 1 and the Branches section now name "the Claude Code deny list" only when `claude-code` is in `agents.harnesses`, and name each other harness as having none (for example `codex: no agent deny list`). Before, every repo read "agent deny lists only", Codex-only repos included.
+- **`eng doctor`** prints one line per selected harness: what Claude Code gets, and for every other harness the protections it does not get (`codex: no agent deny list; --no-verify and --admin are guarded by this text only ...`). It is a warning, not a failure.
+- **Tool detection counts the product.** Doctor's toolchain detection (`hygiene.caches.bun`, cargo, deno, vite) ignores the files eng renders (installed skills, such as pstack's `poteto-mode/scripts/bun.lock`) and the eng package when it sits inside the repo. A Python repo with eng's skills no longer needs a Bun cache; a repo with its own `bun.lock` still does.
+- **A reduced config fails with a message.** `eng sync` (and `sync --check`, `init`) checks every shape it renders from before rendering, and names each missing key with the template's default (`stack.frameworks is missing: ... The template default is stack.frameworks: {"allowed":[...]}`). Before, a config without `stack.frameworks` died with `TypeError: Cannot read properties of undefined`. Two reads that had a default elsewhere now use it: `e2e.evidence_dir` (`.eng/evidence`) and `verification.checks_dir` (`.eng/checks`).
+- Codex documents an execpolicy format (`prefix_rule(pattern=[...], decision="forbidden")`, `codex execpolicy check`). eng does not render one yet: a prefix rule cannot see a flag later on the line, so `git commit -m x --no-verify` passes a `["git", "commit", "--no-verify"]` rule. A follow-up can propose it.
+- **Upgrade:** zero manual edits. Move the pin, run `eng sync` (AGENTS.md and SHIPPING.md text changes for any repo; more for one without `claude-code`), commit. A config that rendered before still renders.
+
 ## 0.16.0 (8 Nov 2026)
 
 **Checks are chosen and sized up front** (Matt, 8 Nov 2026; incident Core nd7ergzhq2anaav9ynqkqhfcr18hvk84: an ad hoc TLC run with no -Xmx reached 4.19 GB RSS with ~15 agent sessions running, swap hit 100%, and sshd and T3 Connect stopped answering). Anyone can run a repo's checks without a heavy tool locking the machine up. No new command.
