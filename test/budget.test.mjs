@@ -401,6 +401,66 @@ test('a deferring gate in another process tree does not mark a gate that is runn
   assert.equal(await code, 0, text);
   assert.match(text, /eng gate: PASS/);
 });
+// ---------- verdict findings on 002fe6d (PR 50, round 5): the marker files. With no /run/user/<uid>, a symlink planted at
+// /tmp/eng-gates-<uid> led eng to empty the directory it pointed at; a marker write that failed (ENOSPC) was swallowed, so
+// `gate | cat` passed again. The channel is now a signal: eng touches no shared directory and writes nothing to report a
+// nested deferral. Every eng process here loads a preload (NODE_OPTIONS reaches the inner gate) that logs each shared-dir
+// path it sees. The symlink trap hides /run/user/<uid> and maps /tmp/eng-gates-<uid> to a symlink to a private 0700
+// directory holding a sentinel; the disk-full trap fails each marker write with ENOSPC, as the verdict's probe did. ----------
+const SHARED = /^\/(tmp\/eng-gates-\d+|run\/user\/\d+\/eng-gates)(\/|$)/;
+function sharedDirTrap(name, symlink) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `eng-r5-${name}-`)), victim = path.join(root, 'victim'), log = path.join(root, 'touched.log');
+  fs.mkdirSync(victim, { mode: 0o700 }); fs.writeFileSync(path.join(victim, 'important-data'), 'synthetic sentinel');
+  fs.symlinkSync(victim, path.join(root, 'eng-gates'));
+  const preload = path.join(root, 'preload.mjs');
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+const uid = process.getuid(), symlink = ${symlink}, fallback = '/tmp/eng-gates-' + uid, to = ${JSON.stringify(path.join(root, 'eng-gates'))};
+const append = fs.appendFileSync.bind(fs), log = ${JSON.stringify(log)};
+const full = () => Object.assign(new Error('injected ENOSPC'), { code: 'ENOSPC' });
+for (const op of ['statSync', 'lstatSync', 'mkdirSync', 'readdirSync', 'rmSync', 'writeFileSync', 'readFileSync', 'openSync', 'appendFileSync', 'existsSync']) {
+  const real = fs[op];
+  fs[op] = function (p, ...a) {
+    if (symlink && op === 'statSync' && p === '/run/user/' + uid) return undefined;
+    if (typeof p === 'string' && ${SHARED}.test(p)) {
+      append(log, op + ' ' + p + '\\n');
+      if (symlink && p.startsWith(fallback)) p = to + p.slice(fallback.length);
+      if (!symlink && op === 'writeFileSync' && /\\/[^/]+\\.\\d+$/.test(p)) throw full();
+    }
+    return real.call(fs, p, ...a);
+  };
+}
+`);
+  return { env: { NODE_OPTIONS: `--import ${preload}` }, victim, touched: () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '', done: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+const TRAPS = [['a planted symlink', true], ['a full disk', false]];
+for (const how of hows) for (const [trapName, symlink] of TRAPS) test(`a deferring gate inside a check, through | cat, makes the outer gate exit 3 with ${trapName}, and eng neither deletes nor writes anything for it (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  checks({ ...DEFERRING, wrapper: PIPED('') });
+  const trap = sharedDirTrap(how, symlink);
+  try {
+    const r = eng(['gate', 'check:wrapper'], { ENG_BUDGET_ENFORCER: how, ...trap.env });
+    t.diagnostic(out(r));
+    assert.deepEqual(fs.readdirSync(trap.victim), ['important-data'], 'the directory the planted symlink points at keeps its contents');
+    assert.doesNotMatch(r.stdout, /eng gate: PASS/);
+    assert.equal(r.status, 3, `the outer gate is incomplete: ${out(r)}`);
+    assert.match(r.stdout, /INCOMPLETE\s+check:wrapper/);
+    assert.equal(trap.touched(), '', 'eng touched no shared marker directory');
+  } finally { trap.done(); }
+});
+for (const [trapName, symlink] of TRAPS) test(`eng run --by around a deferring gate through | cat records exit 3 with ${trapName}`, async () => {
+  checks(DEFERRING);
+  const by = `r5-trap-${symlink}`, trap = sharedDirTrap('run', symlink);
+  try {
+    const r = eng(['run', '--by', by, '--', 'sh', '-c', `${process.execPath} ${ENG} gate checks | cat`], { ENG_BUDGET_ENFORCER: 'watchdog', ...trap.env });
+    assert.deepEqual(fs.readdirSync(trap.victim), ['important-data']);
+    assert.equal(r.status, 3, out(r));
+    const rec = runsBy(by).at(-1);
+    assert.equal(rec.exit, 3, JSON.stringify(rec));
+    const { passProblem } = await import('../lib/verification.mjs');
+    assert.ok(passProblem({ method: 'verification', sha: rec.sha, runs: [rec] }, ['lib/x.mjs']));
+    assert.equal(trap.touched(), '');
+  } finally { trap.done(); }
+});
 test('eng lint fails a check script that runs eng gate, and accepts one marked as a deliberate nested gate', () => {
   for (const bad of ['node ./bin/eng.mjs gate check:model | cat', '$eng gate', '"${ENG}" gate checks', 'npx eng gate --heavy', 'out=$(eng gate 2>&1)']) {
     checks({ wrapper: `#!/bin/sh\n${bad}\n` });
