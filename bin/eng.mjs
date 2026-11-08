@@ -102,7 +102,7 @@ function migrateConfig() {
   const { text, changes } = migrate(cur);
   if (!changes.length) return 0;
   fs.writeFileSync(p, text);
-  for (const m of changes) console.log(`  migrated eng.config.yml: removed ${m.what} (${m.why})`);
+  for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
   return changes.length;
 }
 
