@@ -181,6 +181,20 @@ test('rewrite modes: a harness with no deny list is told the truth about raw for
   assert.match(none['SHIPPING.md'], /enforce this locally for protected branches and tags; there is no agent deny list, so nothing local stops a raw force-push of a feature branch/);
   assert.match(none['AGENTS.md'], /no agent deny list, so no local guard on feature branches/);
   const claude = renderAll(cfg(['claude-code'], 'protected'), null);
-  assert.match(claude['SHIPPING.md'], /enforce this locally for protected branches and tags; the Claude Code deny list blocks a raw force-push on any branch\./, 'protected, claude-code only: the deny list covers feature branches');
+  assert.match(claude['SHIPPING.md'], /enforce this locally for protected branches and tags; the Claude Code deny list blocks a raw force-push on any branch \(common forms only/, 'protected, claude-code only: the deny list covers feature branches');
   assert.doesNotMatch(claude['SHIPPING.md'] + claude['AGENTS.md'], /no local guard|nothing local stops/, 'protected, claude-code only: no gap to name');
+});
+
+// PR #53 verdict 3: every claim that credits the Claude Code deny list says it catches the common forms only, and the rebase
+// hook's limits are named, in both modes.
+test('every claim that credits the Claude Code deny list or the rebase hook names its limit', () => {
+  for (const mode of ['never', 'protected']) {
+    const c = template(); c.agents.harnesses = ['claude-code', 'codex']; c.git = { ...(c.git ?? {}), rewrite_pushed: mode };
+    const f = renderAll(c, null), text = f['AGENTS.md'] + '\n' + f['SHIPPING.md'];
+    const credits = text.split('\n').filter(l => /Claude Code deny list/.test(l));
+    assert.ok(credits.length > 0, `${mode}: some line credits the deny list`);
+    for (const l of credits) assert.match(l, /common forms only: a flag later on the line or bundled short flags such as `-vf` get through/, `${mode}: deny-list claim without its limit: ${l}`);
+    const rebase = f['AGENTS.md'].split('\n').find(l => /\.githooks\/pre-rebase/.test(l) && l.startsWith('|'));
+    assert.match(rebase, mode === 'never' ? /only when the branch has an upstream/ : /protected branches only\); the guarded-tool rule is this text only/, `${mode}: ${rebase}`);
+  }
 });
