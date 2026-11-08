@@ -87,7 +87,7 @@ for (const how of ['systemd', 'watchdog']) test(`a check over its 512 MB budget 
   assert.match(r.stdout, how === 'systemd' ? /enforced by systemd user scope/ : /enforced by watchdog/);
   assert.match(r.stdout, /FAIL\s+check:hog\s+eng: FAIL check hog: stopped by its budget: memory 512 MB .*declared budget memory 512 MB, 1 worker, timeout 60s/);
   if (how === 'systemd') assert.match(r.stdout, /the kernel killed it at MemoryMax/);
-  else assert.match(r.stdout, /the process tree reached \d+ MB RSS/);
+  else assert.match(r.stdout, process.platform === 'linux' ? /the process tree reached \d+ MB PSS/ : /the process tree reached \d+ MB RSS/);
   if (how === 'systemd') assert.equal(spawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', 'eng-check-hog-*'], { encoding: 'utf8' }).stdout.trim(), '', 'the transient scope is removed');
 });
 
@@ -203,6 +203,67 @@ const alive = pid => { try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
 const scopes = pattern => spawnSync('systemctl', ['--user', 'list-units', '--all', '--plain', '--no-legend', pattern], { encoding: 'utf8' }).stdout.trim();
 const dropScopes = pattern => { for (const l of scopes(pattern).split('\n').filter(Boolean)) { const u = l.split(/\s+/)[0]; spawnSync('systemctl', ['--user', 'kill', '--signal=SIGKILL', u]); spawnSync('systemctl', ['--user', 'stop', u]); spawnSync('systemctl', ['--user', 'reset-failed', u]); } };
 const hows = ['systemd', 'watchdog'];
+
+// ---------- the watchdog counts memory the way the kernel does (PR 51 verdict 1: summed RSS counted the node binary
+// and libraries once per process, so the watchdog killed a suite at 2154 MB that the 2 GB scope ran at about 1.3 GB). ----------
+// Twenty idle node processes: about 40 MB RSS each, almost all of it pages they share. The leader prints their summed RSS,
+// so the test shows the RSS sum was over the budget while it ran.
+const SHARERS = `const { spawn } = require('child_process'), fs = require('fs');
+const kids = Array.from({ length: 20 }, () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4000)'], { stdio: 'ignore' }));
+setTimeout(() => { const kb = kids.reduce((s, k) => { try { return s + Number(fs.readFileSync('/proc/' + k.pid + '/stat', 'utf8').replace(/^.*\\) /, '').split(' ')[21]) * 4; } catch { return s; } }, 0); console.log('rss_sum_mb=' + Math.round(kb / 1024)); }, 2500);`;
+test('processes that share their pages stay under a budget their summed RSS exceeds (watchdog path)', { skip: process.platform !== 'linux' && 'PSS is Linux only; macOS sums ps RSS' }, () => {
+  const r = eng(['run', '--budget', 'memory=320M workers=1 timeout=60s', '--', process.execPath, '-e', SHARERS], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.doesNotMatch(out(r), /stopped by its budget/);
+  assert.equal(r.status, 0, out(r));
+  const rss = Number(r.stdout.match(/rss_sum_mb=(\d+)/)?.[1]);
+  assert.ok(rss > 320, `the children's summed RSS (${rss} MB) is over the 320 MB budget, so only shared pages separate the two measures: ${out(r)}`);
+});
+// Four processes, each 160 MB of its own memory: none is over 256 MB alone, the tree is.
+const SPREAD = `for i in 1 2 3 4; do node -e 'const a=[];let n=0;const t=setInterval(()=>{if(n<5){a.push(Buffer.alloc(32<<20,1));n++}else{clearInterval(t);setTimeout(()=>process.exit(0),3000)}},30)' & done; wait`;
+for (const how of hows) test(`a process tree whose own memory is over budget is still stopped, naming the budget (${how} path)`, t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const r = eng(['run', '--budget', 'memory=256M workers=1 timeout=60s', '--', 'bash', '-c', SPREAD], { ENG_BUDGET_ENFORCER: how });
+  assert.notEqual(r.status, 0, out(r));
+  assert.match(r.stderr, /eng: FAIL run: bash stopped by its budget: memory 256 MB/);
+  assert.match(out(r), how === 'systemd' ? /the kernel killed it at MemoryMax/ : process.platform === 'linux' ? /the process tree reached \d+ MB PSS/ : /the process tree reached \d+ MB RSS/);
+  assert.match(r.stdout, how === 'systemd' ? /enforced by systemd user scope/ : process.platform === 'linux' ? /enforced by watchdog \(timeout and process-tree PSS poll\)/ : /enforced by watchdog/);
+});
+
+// A shell outside a login session (PR 51's verifier) has no XDG_RUNTIME_DIR and no session bus address while the user
+// manager runs. eng finds it at /run/user/<uid>, but only when that directory is ours, mode 0700, with a bus socket.
+const RUNTIME = `/run/user/${process.getuid?.()}`;
+const noSession = () => { const e = { ...process.env }; for (const k of ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'ENG_BUDGET_ENFORCER']) delete e[k]; delete e.CI; return e; };
+const managerAt = d => spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--', 'true'], { env: { ...noSession(), XDG_RUNTIME_DIR: d }, stdio: 'ignore', timeout: 10e3 }).status === 0;
+const PICK = `import(${JSON.stringify(new URL('../lib/budget.mjs', import.meta.url).href)}).then(m => console.log(m.enforcer()))`;
+const pickIn = (bwrap = null) => { const r = spawnSync(bwrap ? 'bwrap' : process.execPath, [...(bwrap ? ['--dev-bind', '/', '/', ...bwrap, '--', process.execPath] : []), '-e', PICK], { env: noSession(), encoding: 'utf8' }); return (r.stdout.trim() || r.stderr.trim()); };
+const NO_MANAGER = `no user systemd manager answers at ${RUNTIME}`;
+test('with no XDG_RUNTIME_DIR, eng finds the user manager at /run/user/<uid>: enforcer() is systemd and a run over budget is killed in a scope that is then removed', { skip: process.platform !== 'linux' && 'Linux only' }, t => {
+  if (!managerAt(RUNTIME)) return t.skip(NO_MANAGER);
+  assert.equal(pickIn(), 'systemd');
+  const r = spawnSync(process.execPath, [ENG, 'run', '--budget', 'memory=256M workers=1 timeout=60s', '--', 'bash', '-c', ALLOC], { cwd: dir, encoding: 'utf8', env: noSession() });
+  try {
+    assert.notEqual(r.status, 0, out(r));
+    assert.match(r.stdout, /enforced by systemd user scope/);
+    assert.match(r.stderr, /stopped by its budget: memory 256 MB \(the kernel killed it at MemoryMax\)/);
+    assert.equal(scopes(`eng-run-${r.pid}-*`), '', 'the scope is removed: systemctl reached the manager too');
+  } finally { dropScopes(`eng-run-${r.pid}-*`); }
+});
+const bwrapWorks = () => spawnSync('bwrap', ['--dev-bind', '/', '/', '--', 'true'], { stdio: 'ignore' }).status === 0;
+for (const [name, setup] of [
+  ['missing', () => ['--tmpfs', '/run/user']],
+  ['owned by another user', () => fs.lstatSync('/root').uid === 0 ? ['--tmpfs', '/run/user', '--bind', '/root', RUNTIME] : null],
+  // Ours and holding the live bus socket, so only the mode check stops eng from using it.
+  ['ours but not mode 0700', d => { fs.chmodSync(d, 0o755); return ['--bind', d, RUNTIME, '--bind', `${RUNTIME}/bus`, `${RUNTIME}/bus`]; }],
+]) test(`with no XDG_RUNTIME_DIR and /run/user/<uid> ${name}, enforcer() is watchdog`, { skip: process.platform !== 'linux' && 'Linux only' }, t => {
+  if (!bwrapWorks()) return t.skip('bwrap cannot run here, so /run/user cannot be replaced for this process');
+  if (name.startsWith('ours') && !managerAt(RUNTIME)) return t.skip(NO_MANAGER);
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'eng-runtime-'));
+  try {
+    const args = setup(d);
+    if (!args) return t.skip('no root-owned directory to stand in for another user\'s');
+    assert.equal(pickIn(args), 'watchdog');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 
 for (const how of hows) test(`eng run --by: a command that traps TERM and exits 0 after its timeout is recorded as a failure (${how} path)`, t => {
   if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
