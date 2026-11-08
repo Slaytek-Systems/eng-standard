@@ -461,6 +461,43 @@ for (const [trapName, symlink] of TRAPS) test(`eng run --by around a deferring g
     assert.equal(trap.touched(), '');
   } finally { trap.done(); }
 });
+// ---------- verdict findings on 2ac7e01 (PR 50, round 6): a check whose PATH has no git could not confirm the enclosing
+// run's repository, so `gate | cat` passed; a --here that belongs to the command made the enclosing eng run -- look like
+// eng run --here; and a post-checkout hook's gate signalled eng run before it listened. ----------
+const incompleteRecord = async (by, r) => {
+  assert.equal(r.status, 3, out(r));
+  const rec = runsBy(by).at(-1);
+  assert.equal(rec.exit, 3, JSON.stringify(rec));
+  const { passProblem } = await import('../lib/verification.mjs');
+  assert.ok(passProblem({ method: 'verification', sha: rec.sha, runs: [rec] }, ['lib/x.mjs']));
+};
+const bashOnly = () => { const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-r6-path-')); fs.symlinkSync('/bin/bash', path.join(d, 'bash')); return d; };
+for (const how of hows) test(`a deferring gate whose PATH has no git, through | cat, makes the enclosing run and gate exit 3 (${how} path)`, async t => {
+  if (how === 'systemd' && !systemd) return t.skip(NO_SYSTEMD);
+  const tools = bashOnly();
+  try {
+    const inner = `ENG_BUDGET_ENFORCER=watchdog PATH=${tools} ${process.execPath} ${ENG} gate check:model | cat`;
+    checks({ ...DEFERRING, wrapper: `#!/bin/sh\n${inner}\n` });
+    await incompleteRecord(`r6-path-run-${how}`, eng(['run', '--by', `r6-path-run-${how}`, '--', 'sh', '-c', inner], { ENG_BUDGET_ENFORCER: how }));
+    const r = eng(['run', '--by', `r6-path-check-${how}`, '--', process.execPath, ENG, 'gate', 'check:wrapper'], { ENG_BUDGET_ENFORCER: how });
+    assert.doesNotMatch(r.stdout, /eng gate: PASS/);
+    assert.match(r.stdout, /INCOMPLETE\s+check:wrapper/);
+    await incompleteRecord(`r6-path-check-${how}`, r);
+  } finally { fs.rmSync(tools, { recursive: true, force: true }); }
+});
+test('a --here after eng run -- belongs to the command: the enclosing run still hears a deferring gate', async () => {
+  checks(DEFERRING);
+  await incompleteRecord('r6-here', eng(['run', '--by', 'r6-here', '--', 'sh', '-c', `${process.execPath} ${ENG} gate checks | cat`, '--here'], { ENG_BUDGET_ENFORCER: 'watchdog' }));
+});
+test('a post-checkout hook whose gate defers while eng run makes its worktree makes the run exit 3', async () => {
+  checks(DEFERRING);
+  const hooks = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-r6-hooks-'));
+  try {
+    fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\n${process.execPath} ${ENG} gate checks 2>&1 | tee ${path.join(hooks, 'gate.log')}\n`, { mode: 0o755 });
+    await incompleteRecord('r6-hook', eng(['run', '--by', 'r6-hook', '--', 'true'], { ENG_BUDGET_ENFORCER: 'watchdog', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks }));
+    assert.match(fs.readFileSync(path.join(hooks, 'gate.log'), 'utf8'), /deferred\s+check:model[\s\S]*INCOMPLETE \(exit 3\)/, 'the hook\'s gate deferred');
+  } finally { fs.rmSync(hooks, { recursive: true, force: true }); }
+});
 test('eng lint fails a check script that runs eng gate, and accepts one marked as a deliberate nested gate', () => {
   for (const bad of ['node ./bin/eng.mjs gate check:model | cat', '$eng gate', '"${ENG}" gate checks', 'npx eng gate --heavy', 'out=$(eng gate 2>&1)']) {
     checks({ wrapper: `#!/bin/sh\n${bad}\n` });
