@@ -185,7 +185,8 @@ test('every tool in the suggested catalog states its cost, when it earns it, and
 // never counts as a pass ----------
 const runLogFile = () => path.join(dir, '.git', 'eng', 'verdict-runs.jsonl');
 const runsBy = by => fs.existsSync(runLogFile()) ? fs.readFileSync(runLogFile(), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by) : [];
-const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// A killed process another reaper has not collected yet (eng run <name> makes one the subreaper) is a zombie: gone.
+const alive = pid => { try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')[0] !== 'Z'; } catch { if (process.platform === 'linux') return false; try { process.kill(pid, 0); return true; } catch { return false; } } };
 const scopes = pattern => spawnSync('systemctl', ['--user', 'list-units', '--all', '--plain', '--no-legend', pattern], { encoding: 'utf8' }).stdout.trim();
 const dropScopes = pattern => { for (const l of scopes(pattern).split('\n').filter(Boolean)) { const u = l.split(/\s+/)[0]; spawnSync('systemctl', ['--user', 'kill', '--signal=SIGKILL', u]); spawnSync('systemctl', ['--user', 'stop', u]); spawnSync('systemctl', ['--user', 'reset-failed', u]); } };
 const hows = ['systemd', 'watchdog'];
