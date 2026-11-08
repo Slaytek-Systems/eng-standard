@@ -6,7 +6,7 @@ set -euo pipefail
 repo=$PWD eng="node $PWD/bin/eng.mjs"
 d=$(mktemp -d -p "${ENG_TMP:?run under eng gate}")
 trap 'rm -rf "$d"' EXIT
-mkdir "$d/repo" && cd "$d/repo"  # the cache (XDG_CACHE_HOME) sits beside the fixture repo, never in it
+cd "$d"
 export XDG_CACHE_HOME="$d/xdg" GIT_CONFIG_GLOBAL=/dev/null
 git init -q -b main && git config user.email check@eng && git config user.name check
 cp "$repo/templates/eng.config.yml" .

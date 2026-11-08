@@ -3,8 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import crypto from 'node:crypto';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { renderAll, renderErrors, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
@@ -25,6 +24,7 @@ import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwa
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
+import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
@@ -291,16 +291,16 @@ function builtinRules(cfg) {
   return [...r, ...(cfg.constraints?.rules || [])];
 }
 function lintFiles(rule, files, base) {
-  const re = new RegExp(rule.pattern, rule.flags ?? ''), pre = [].concat(rule.paths).map(glob2re), ex = [].concat(rule.exclude ?? []).map(glob2re), hits = [];
+  const re = rule.scan ? null : new RegExp(rule.pattern, rule.flags ?? ''), pre = [].concat(rule.paths).map(glob2re), ex = [].concat(rule.exclude ?? []).map(glob2re), hits = [];
   for (const f of files) {
     const name = f.replace(/\.fixture$/, '');
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
     // rule.bounds (built-in rules only): a bound set on an earlier line of the same file covers the later lines it names.
     const bounds = (rule.bounds || []).map(b => ({ set: new RegExp(b.set), then: new RegExp(b.then) })), on = [];
-    // rule.continued: a command split over backslash-continued lines is one line, reported at its first.
-    const raw = fs.readFileSync(path.join(base, f), 'utf8').split('\n'), lines = [];
-    for (let i = 0; i < raw.length; i++) { let l = raw[i]; const at = i; if (rule.continued) while (/\\$/.test(l) && i + 1 < raw.length) l = `${l.slice(0, -1)} ${raw[++i]}`; lines.push([l, at]); }
-    lines.forEach(([line, i]) => {
+    const text = fs.readFileSync(path.join(base, f), 'utf8'), raw = text.split('\n');
+    // rule.scan (built-in rules only): reads the whole script and returns the lines it fails.
+    if (rule.scan) { for (const n of rule.scan(text)) hits.push({ file: f, line: n, rule: rule.id, text: raw[n - 1], message: rule.message, ...(rule.warn ? { warn: true } : {}) }); continue; }
+    raw.forEach((line, i) => {
       if (re.test(line) && !on.some(b => b.then.test(line))) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
       for (const b of bounds) if (!on.includes(b) && b.set.test(line)) on.push(b);
     });
@@ -693,7 +693,6 @@ function verdictCheck() {
 const GATE_INCOMPLETE = 3;
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
-  KEEP_DIR = expandPath('${XDG_CACHE_HOME}/eng/${repo}/failed', cfg.project.name);
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
@@ -720,14 +719,17 @@ async function gate() {
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
     // tests_leave_nothing: each step gets its own TMPDIR (stepTmp), so whatever it leaves there is its own.
     const own = stepTmp(t, g);
-    const w = inner.open(), r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
+    const w = inner.open(), o = stepOutput(), r = c ? await streamed(c, privateTmpEnv(RUN_ENV, own), o, g) : (o.feed('no command'), { status: null });
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
-    res.push(nestedRow(stepResult(g, r.status, r.stdout + r.stderr, own, keep), await inner.close(w)));
+    res.push(nestedRow(stepResult(g, r.status, o, own, keep), await inner.close(w)));
   }
   if (inner.stray()) res.push(nestedRow(['nested', 'pass', '', []], true));
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
-  if (res.some(r => !['pass', 'deferred', 'INCOMPLETE'].includes(r[1]))) die('gate: not all required gates passed');
+  const failed = res.filter(r => !['pass', 'deferred', 'INCOMPLETE'].includes(r[1]));
+  // A failed step's output is printed here, its end only; eng keeps no other copy.
+  for (const [g, , , , tail] of failed) if (tail) console.error(`eng gate: ${g} failed; the end of its output (at most ${TAIL_LINES} lines, ${TAIL_BYTES >> 10} KiB):\n${tail}`);
+  if (failed.length) die('gate: not all required gates passed');
   // Exit 0 means every selected check ran and passed, nothing else. A deferred check makes the gate incomplete (exit 3), so
   // every caller (eng run --by, eng verdict, CI, a script) sees it from the exit code alone, whatever environment it had.
   const incomplete = res.filter(r => r[1] === 'INCOMPLETE').map(r => r[0]);
@@ -739,42 +741,26 @@ async function gate() {
   }
   console.log('eng gate: PASS');
 }
-// A step's row: [name, status, the line that says why, more lines]. Removes the step's private TMPDIR and reports what it left.
-function stepResult(g, status, text, own, keep, summary = '') {
+// A step's row: [name, status, the line that says why, more lines, the end of its output if it failed]. Removes the step's
+// private TMPDIR and reports what it left; a step that passed but left something fails here, so its tail is decided last.
+function stepResult(g, status, o, own, keep, summary = '') {
   const left = leftovers(own); fs.rmSync(own, { recursive: true, force: true });
-  const lines = `${text}\n${summary}`.trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
-  const why = status === 0 ? lines.at(-1) : lines.find(x => !PASS_LINE.test(x) && FAIL_LINE.test(x)) ?? lines.at(-1);
-  // A failing eng subcommand's die() puts its detail on the lines after "eng: FAIL ...:"; print them, not just the header.
-  const at = lines.indexOf(why), more = status !== 0 && /eng: FAIL .*:$/.test(why ?? '') ? lines.slice(at + 1, at + 21) : [];
-  const kept = keptOutput(g, status === 0 ? null : text);
-  if (kept) more.push(`full output: ${kept}`);
-  if (left.length && keep !== 'off') {
-    if (keep === 'fail' && status === 0) return [g, 'FAIL', leftText(left), []];
-    more.push(`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`);
-  }
-  return [g, status === 0 ? 'pass' : status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more];
+  const { why, more } = o.reason(status, summary);
+  const row = left.length && keep === 'fail' && status === 0 ? [g, 'FAIL', leftText(left), []]
+    : [g, status === 0 ? 'pass' : status === null ? 'SKIPPED=FAIL' : 'FAIL', why, [...more, ...(left.length && keep !== 'off' ? [`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`] : [])]];
+  return row[1] === 'pass' ? row : [...row, o.tail()];
 }
-// A failing step's reason: the first line that says something failed (TAP not ok, node --test ✖, vitest ×, FAIL, Error:,
-// an "N failed" summary), never a line that marks a pass, even one whose test name says "failed"; else the last line.
-const PASS_LINE = /^(ok\b|✔|✓|√|PASS\b|#\s*pass\b|ℹ\s*pass\b)/;
-const FAIL_LINE = /^not ok\b|^✖|✗|×|\bFAIL(ED)?\b|AssertionError|\bError:|\b[1-9]\d* (failed|failing)\b|^#\s*fail\s+[1-9]|^ℹ\s*fail\s+[1-9]|eng: FAIL/;
-// A failed step's whole output, kept where eng keeps this repo's caches (outside the repo and outside ENG_TMP, which goes on
-// exit): one file per step and checkout, 0600, at most KEEP_MAX bytes (its start and its end). The step's next pass removes
-// it, and a file untouched for KEEP_DAYS goes the next time a step fails.
-const KEEP_MAX = 1 << 20, KEEP_HEAD = 256 << 10, KEEP_DAYS = 14;
-let KEEP_DIR = null;
-function keptOutput(step, text) {
-  if (!KEEP_DIR) return null;
-  const file = path.join(KEEP_DIR, `${slug(step)}-${crypto.createHash('sha256').update(ROOT).digest('hex').slice(0, 8)}.log`);
-  if (text === null) { fs.rmSync(file, { force: true }); return null; }
-  try {
-    fs.mkdirSync(KEEP_DIR, { recursive: true, mode: 0o700 });
-    for (const n of fs.readdirSync(KEEP_DIR)) { const p = path.join(KEEP_DIR, n); if (Date.now() - fs.statSync(p).mtimeMs > KEEP_DAYS * 864e5) fs.rmSync(p, { force: true }); }
-    let b = Buffer.from(text);
-    if (b.length > KEEP_MAX) { const mark = Buffer.from(`\n... ${b.length - KEEP_MAX} bytes cut (eng keeps the first ${KEEP_HEAD} and the last ${KEEP_MAX - KEEP_HEAD - 100}) ...\n`); b = Buffer.concat([b.subarray(0, KEEP_HEAD), mark, b.subarray(b.length - (KEEP_MAX - KEEP_HEAD - 100))]); }
-    fs.rmSync(file, { force: true }); fs.writeFileSync(file, b, { mode: 0o600, flag: 'wx' });
-    return file;
-  } catch { return null; }
+// Runs a gate command with its output streamed into o (never buffered whole, so a noisy one is neither killed nor cut).
+// Resolves to { status, signal }. A signal the gate gets while it runs stops the gate, as a check's does.
+function streamed(cmd, env, o, g) {
+  return new Promise(resolve => {
+    const child = spawn('bash', ['-c', cmd], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const onSig = [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]].map(([s, n]) => [s, () => { console.error(`eng gate: interrupted by ${s} during ${g}`); process.exit(128 + n); }]);
+    for (const [s, f] of onSig) process.prependListener(s, f);
+    for (const [from, k] of [[child.stdout, 'out'], [child.stderr, 'err']]) { from.setEncoding('utf8'); from.on('data', d => o.feed(d, k)); }
+    child.on('error', e => o.feed(`eng gate: cannot run bash: ${e.message}\n`, 'err'));
+    child.on('close', (status, signal) => { for (const [s, f] of onSig) process.off(s, f); resolve({ status, signal }); });
+  });
 }
 // Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
 // the memory free when the gate started and the cores, and a check that does not fit waits for a running one to finish.
@@ -787,17 +773,16 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
   for (const [s, f] of onSig) process.on(s, f);
   const runCheck = async s => {
     const { id, path: p, runs, budget, declared } = s.check, own = stepTmp(t, s.name);
-    let passed = 0, text = '', stop = null;
-    const w = inner.open();
+    let passed = 0, stop = null;
+    const w = inner.open(), o = stepOutput();
     for (let i = 0; i < runs && !stop; i++) {
-      const r = await runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how }).result;
-      text += r.stdout + r.stderr;
+      const r = await runBounded(['bash', p], budget, { cwd: ROOT, env: privateTmpEnv(RUN_ENV, own), label: `check-${id}`, how, onData: o.feed }).result;
       if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
     }
     const hit = await inner.close(w);
-    if (stop) { fs.rmSync(own, { recursive: true, force: true }); const kept = keptOutput(s.name, text); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, kept ? [`full output: ${kept}`] : []]; }
+    if (stop) { fs.rmSync(own, { recursive: true, force: true }); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, [], o.tail()]; }
     const summary = passed === runs ? `check ${id}: passed ${runs}/${runs}` : passed === 0 ? `eng: FAIL check ${id}: failed ${runs}/${runs}` : `eng: FAIL check ${id}: FLAKY, passed ${passed}/${runs}`;
-    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, text, own, keep, summary), hit);
+    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, o, own, keep, summary), hit);
   };
   await new Promise(resolve => {
     let i = 0;
