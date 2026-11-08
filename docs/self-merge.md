@@ -150,7 +150,7 @@ can be empty (OrganizationAdmin does not apply to personal repos), so the rules 
 delete the ruleset as the repo admin; that is the only way around it. Merge queue is not available (user-owned repo).
 
 ```sh
-R=Mattslayga/eng-standard
+R=Slaytek-Systems/eng-standard
 
 # 1. Labels the workflows use
 gh label create risk:high --repo $R --color B60205 --force --description "Needs counted PASSes on the exact head from N distinct verifiers"   # --force updates an existing label

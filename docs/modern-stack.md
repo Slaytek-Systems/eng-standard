@@ -23,7 +23,7 @@ Approved by Matt on Thu 15 Oct 2026 (Sydney). The machine-readable floors are in
 2. SvelteKit 3 is piloted on Equitus, then Syncsoon. Convex + Better Auth repos wait until the adapter supports Better Auth 1.7.
 3. Svelte template linting is not covered: Oxlint plus svelte-check warnings, no ESLint. Matt accepted losing it on 15 Oct 2026.
 4. Equitus's host is undecided. Compare real Vercel + Supabase costs against a Railway estimate first.
-5. Floors live here. Core keeps the reasoning. Until 0.14.0 a monthly `eng stack-audit` filed Core follow-ups; the 6 Nov 2026 CLI cut dropped that command, so the floors are advice, not a check.
+5. Floors live here. Core keeps the reasoning. Until 0.14.0 a monthly `stack-audit` run filed Core follow-ups; the 6 Nov 2026 CLI cut dropped that command, so the floors are advice, not a check.
 
 ## Recorded exceptions
 

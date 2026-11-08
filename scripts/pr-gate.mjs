@@ -17,7 +17,7 @@ import { selfMergeConfig, decide, eventTarget, parseVerdicts, isAutoRevert, REVE
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = YAML.parse(fs.readFileSync(path.join(ROOT, 'eng.config.yml'), 'utf8'));
 const C = selfMergeConfig(cfg), HR = cfg.ship.high_risk;
-const R = process.env.GITHUB_REPOSITORY || 'Mattslayga/eng-standard';
+const R = process.env.GITHUB_REPOSITORY || 'Slaytek-Systems/eng-standard';
 const [cmd, ...a] = process.argv.slice(2);
 const dry = a.includes('--dry-run');
 const opt = k => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : null; };
