@@ -751,15 +751,20 @@ function stepResult(g, status, o, own, keep, summary = '') {
   return row[1] === 'pass' ? row : [...row, o.tail()];
 }
 // Runs a gate command with its output streamed into o (never buffered whole, so a noisy one is neither killed nor cut).
-// Resolves to { status, signal }. A signal the gate gets while it runs stops the gate, as a check's does.
+// Resolves to { status, signal }. A signal the gate gets while it runs is held until the command has ended (an inner eng run
+// removes its folders first), then it stops the gate.
 function streamed(cmd, env, o, g) {
   return new Promise(resolve => {
     const child = spawn('bash', ['-c', cmd], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    const onSig = [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]].map(([s, n]) => [s, () => { console.error(`eng gate: interrupted by ${s} during ${g}`); process.exit(128 + n); }]);
-    for (const [s, f] of onSig) process.prependListener(s, f);
+    let got = null;
+    const held = ['SIGINT', 'SIGTERM', 'SIGHUP'].map(s => { const before = process.listeners(s), f = () => { got ??= s; }; process.removeAllListeners(s); process.on(s, f); return [s, f, before]; });
     for (const [from, k] of [[child.stdout, 'out'], [child.stderr, 'err']]) { from.setEncoding('utf8'); from.on('data', d => o.feed(d, k)); }
     child.on('error', e => o.feed(`eng gate: cannot run bash: ${e.message}\n`, 'err'));
-    child.on('close', (status, signal) => { for (const [s, f] of onSig) process.off(s, f); resolve({ status, signal }); });
+    child.on('close', (status, signal) => {
+      for (const [s, f, before] of held) { process.off(s, f); for (const b of before) process.on(s, b); }
+      if (got) { console.error(`eng gate: interrupted by ${got} during ${g}`); process.exit(128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[got]); }
+      resolve({ status, signal });
+    });
   });
 }
 // Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
