@@ -124,7 +124,8 @@ ship:                             # Shipping model (approved by Matt, 13 Oct 202
   split_bot_when: "concurrent PR load or release work outgrows the lead agent"
 
 verification:
-  checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present. eng gate runs every one first, whatever gates.required says.
+  checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present. eng gate runs every one first, whatever gates.required says. Each declares '# weight: light|heavy' and '# budget: memory=<size> workers=<n> timeout=<duration>' in its header (defaults: light, 2G, 2, 30m); see standard/checks.yml.
+  # parallel: false               # Default false: checks run one after another, as before 0.16.0. true: side by side while their budgets fit free memory and cores (only for checks that share no state).
   flake_runs: 3                   # eng gate runs each check this many times; any failure (FLAKY included) fails the gate. A missing `# covers:` path fails it too.
   # Verification first (Matt, 3 Nov 2026): a PASS needs passing `eng run --by` runs on its commit. A review (eng verdict --review)
   # counts only when every changed file matches these globs: text no check can run. Default below; unknown files count as testable.
