@@ -2,6 +2,10 @@
 
 One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md files in `.agents/skills` (symlinked into `.claude/skills`), AGENTS.md (Codex/Cursor) + CLAUDE.md (`@AGENTS.md`), git hooks, and a Node CLI.
 
+## Start here
+
+How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `AGENTS.md` carries the short version (section "This standard").
+
 ## One standard, one contextual init
 
 There is one standard and one init (Matt, 6 Nov 2026; Core nd71bs9kx7rnwphcj0jhp50b1n8hpk4d). `eng init` looks at the repo in front of it and applies the same bar. A new repo gets the checks from the start. A repo that already ships gets baselines for what it has today, so only new findings fail (`renovation/README.md`).
@@ -15,7 +19,7 @@ The CLI is the hallway (Matt, 6 Nov 2026; Core nd756dc09wh4rt0d3bk74g5gv18hqpfe)
 | Command | Does |
 |---|---|
 | `eng init [--owner @handle]` | one contextual init: seed `eng.config.yml` if missing, render everything, set `core.hooksPath .githooks`, print the branch ruleset advice. A repo that already ships also gets a CODEOWNERS line and baselines |
-| `eng sync [--check]` | render AGENTS.md, SHIPPING.md, hooks and skills from the config; `--check` fails if any generated file, symlink or lock differs |
+| `eng sync [--check]` | render AGENTS.md, SHIPPING.md, hooks and skills from the config; `--check` fails if any generated file, symlink or lock differs, if `.eng/lock.json` was rendered by another eng version or names none, or if the package.json pin floats |
 | `eng lint [--config-from <ref>]` | fast fit: built-in and repo regex rules and credential-looking filenames; baselined findings pass |
 | `eng run [--by <id>] [--ref r] -- <cmd>` | run a command in a private 0700 worktree of the exact commit (HEAD unless `--ref`), under `hygiene.scratch_root`, removed on exit. With `--by` the command, exit code, output tail and SHA are that verifier's evidence. `--keep` / `down <dir>` is the persistent form |
 | `eng run <name>` / `eng run --here -- <cmd>` | a declared run (`project.commands.<name>`, or `launch`) or one command, in this checkout, that must leave nothing behind: no container, network, volume, temp entry or process (`hygiene.run_rules.ephemeral_runs`). `eng gate` runs each declared run this way |
@@ -25,7 +29,7 @@ The CLI is the hallway (Matt, 6 Nov 2026; Core nd756dc09wh4rt0d3bk74g5gv18hqpfe)
 | `eng rules prove` | each lint rule fails on its recorded fixture; with `laws.enabled`, the Bend proofs check, each planted mutation breaks them, and the parity test passes |
 | `eng gate [<step>...]` | every script in `verification.checks_dir` first (the wall: a failing, flaky or stale check fails the gate, whatever the verdict says), then every `gates.required`; skipped or missing = failed. `eng gate checks` runs only the checks; CI runs it on its own identity |
 | `eng merge gate\|post` | `merge.auto`: the one required check requires the tooling's PASS for the exact head (`docs/merge-queue.md`). `post` runs the post-merge check on main, opens the exact-inverse revert on red, and tends open PRs |
-| `eng doctor [--launch]` | is this repo on the hallway: config pieces, an enforcer for each `agents.rules` entry, merge settings (and the ruleset to apply), disk rules. `--launch` proves the `launch:` contract with two concurrent runs |
+| `eng doctor [--launch]` | is this repo on the hallway: config pieces, an enforcer for each `agents.rules` entry, merge settings (and the ruleset to apply), disk rules, a stale lock or floating pin. It prints the installed, rendered and latest eng-standard versions and the CHANGELOG entries in between (latest from GitHub `main` or `ENG_STANDARD_SOURCE`). `--launch` proves the `launch:` contract with two concurrent runs |
 | `ship.log_step`, `hooks.pre_commit`, `agents.post_edit_command`, `models.routing`, `models.pstack`, `stack.defaults.agent_activity_ui` | optional config: the SHIPPING.md logging step, extra pre-commit commands (after `sync --check` and `lint`), a Claude Code PostToolUse hook, the model routing note, pstack role models, and the STACK.md default for agent activity UI (shadcn Trace) |
 | `npm test` | this package's own tests (`node --test`) |
 

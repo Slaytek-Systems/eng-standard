@@ -2,7 +2,7 @@
 
 There is one standard and one init (Matt, 6 Nov 2026; Core nd71bs9kx7rnwphcj0jhp50b1n8hpk4d). `eng init` looks at the repo in front of it and applies the same bar. An empty repo gets the starter `eng.config.yml`. A repo that already ships gets a config built from what is there, and keeps what it has today passing while new findings fail. It never merges, never bypasses protection, never edits rulesets and never touches prod. It writes files on a branch; the lead reviews, commits and opens the PR, and that PR goes through the repo's own gates and verifier.
 
-Until 0.14.0 this was a separate `eng renovate` command with seven adoption steps. The 6 Nov 2026 CLI cut folded it into `eng init`.
+Until 0.14.0 this was a separate `renovate` command with seven adoption steps. The 6 Nov 2026 CLI cut folded it into `eng init`.
 
 ## What `eng init --owner @policy-owner` writes in a repo that already ships
 

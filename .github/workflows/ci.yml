@@ -22,6 +22,25 @@ jobs:
       - run: node bin/eng.mjs run test                    # npm test once: it must leave nothing behind (ephemeral_runs, tests_leave_nothing)
       - run: node bin/eng.mjs gate checks                 # every .eng/checks script, as github-actions[bot]; a failing check fails CI
       - run: node bin/eng.mjs --help
+  release-tag:
+    # Tags the release: the main commit that changed package.json's version gets vX.Y.Z once its test passes (push from a
+    # manual merge, or the post-merge run self-merge dispatches). Never moves or deletes a tag. Rule: lib/release.mjs.
+    needs: test
+    if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/release-tag.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
   start-self-merge:
     # The post-merge check on main, or an auto-revert branch's test, just finished: self-merge reads the result now (a red
     # main opens the auto-revert; a green one lets the next PR merge). Pass or fail, never on pull_request.

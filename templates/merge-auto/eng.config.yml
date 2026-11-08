@@ -6,9 +6,14 @@ version: 1
 project:
   name: eng-standard
   default_branch: main
-  protected_branches: [main]      # Never rebased, force-pushed or deleted. Feature branches may be rebased.
+  protected_branches: [main]      # Never rebased, force-pushed or deleted, in either git.rewrite_pushed mode.
   commands:
     test: npm test
+
+git:
+  rewrite_pushed: never           # never (recommended): no pushed branch or tag is ever rewritten. protected: only default_branch,
+                                  # protected_branches and tags are locked, so a guarded tool (Graphite's gt restack and gt submit)
+                                  # may rewrite feature branches. Agents never force-push with git in either mode (deny list).
 
 merge:                            # The merge rule (AGENTS.md). No PR needs a human merge, gate changes included. Nobody bypasses anything.
   owner: "GitHub auto-merge behind strict branch protection. No human merges, Matt included"

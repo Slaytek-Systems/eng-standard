@@ -1,7 +1,12 @@
 # from<TAB>to. Applied in order to every pstack file eng init installs. The vendored copy stays byte-identical to upstream.
-# {skills_dir} = agents.skills_dir from eng.config.yml (.agents/skills). Only Cursor-specific PATHS are rewritten; tool names (Task, AskQuestion, subagent_type) are mapped in AGENTS.md instead.
+# {skills_dir} = agents.skills_dir from eng.config.yml (.agents/skills). Cursor-specific PATHS are rewritten; tool names (Task, AskQuestion, subagent_type) are mapped in AGENTS.md instead.
+# Policy rewrites (Matt, 3 Nov 2026: pushed history is never rewritten): each upstream sentence that says to force-push is
+# replaced with the merge-based step. test/no-force-push.test.mjs fails if a rendered skill still says it, e.g. after a pin bump.
 ~/.cursor/rules/pstack-models.mdc	.eng/pstack-models.md
 ~/.cursor/skills/	~/.agents/skills/
 .cursor/automations/benny/	.eng/automations/benny/
 .cursor/benny/	.eng/benny/
 .cursor/skills/	{skills_dir}/
+Force-push only your own branch, with `--force-with-lease` pinned to the SHA you last pushed or took over, and on any push you did not make, stop and report to the root.	Never rewrite a pushed branch (eng-standard SHIPPING.md rule 1): every fix is a new commit, the base comes in by merge (`gh pr update-branch <n>`), and on any push you did not make, stop and report to the root.
+Where this playbook says to report a rebase, that owner rebases its own branch and publishes it with `git push --force-with-lease` per `playbooks/autopilot-full.md` step 2.	Where this playbook says to report a rebase, that owner brings the base in with a merge (`gh pr update-branch <n>`) and pushes a new commit. Pushed history is never rewritten (eng-standard SHIPPING.md rule 1).
+move its patch onto the merge result, and push with `--force-with-lease`.	merge the new trunk into it (`gh pr update-branch <pr>`) and push that merge commit. Pushed history is never rewritten (eng-standard SHIPPING.md rule 1).
