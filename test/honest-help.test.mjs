@@ -158,3 +158,21 @@ test('removing any one key the template sets (to depth 3) gives render errors or
   assert.ok(paths.length > 100);
   assert.deepEqual(thrown, []);
 });
+
+// PR #53 verdict 1: in protected mode the pre-push hook lets every feature-branch rewrite through, so for a harness with no deny
+// list nothing local stops a raw force-push of a feature branch. The text and doctor must say so, in both rewrite modes.
+test('rewrite modes: a harness with no deny list is told the truth about raw force-pushes, in never and in protected mode', () => {
+  const cfg = (harnesses, mode) => { const c = template(); c.agents.harnesses = harnesses; c.git = { ...(c.git ?? {}), rewrite_pushed: mode }; return c; };
+  for (const hs of [['codex'], ['claude-code', 'codex']]) {
+    const never = cfg(hs, 'never'), prot = cfg(hs, 'protected');
+    const lineOf = c => R.harnessLines(c).find(l => l.what.startsWith('codex:')).what;
+    assert.match(lineOf(never), /a raw force-push by \.githooks\/pre-push only \(which --no-verify skips\)/, `${hs}: never mode, the hook blocks any non-fast-forward push`);
+    assert.doesNotMatch(lineOf(prot), /a raw force-push by \.githooks\/pre-push only/, `${hs}: protected mode must not claim the hook guards feature branches`);
+    assert.match(lineOf(prot), /a raw force-push of a feature branch has no local guard/, `${hs}: protected mode names the gap`);
+    const ship = renderAll(prot, null)['SHIPPING.md'], agents = renderAll(prot, null)['AGENTS.md'];
+    assert.doesNotMatch(ship, /so the git hooks are their only local guard\)/, `${hs}: protected SHIPPING.md must not imply the hooks guard feature branches`);
+    assert.match(ship, /nothing local stops a raw force-push of a feature branch/, `${hs}: protected SHIPPING.md names the gap`);
+    assert.match(agents, /no local guard on feature branches/, `${hs}: protected AGENTS.md rule table names the gap`);
+    assert.match(renderAll(never, null)['SHIPPING.md'], /so the git hooks are their only local guard\)/, `${hs}: never mode keeps its accurate wording`);
+  }
+});
