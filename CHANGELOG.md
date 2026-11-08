@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.16.1 (8 Nov 2026)
+
+**The watchdog counts memory the way the kernel does** (Matt, 9 Nov 2026 AEDT; Core task p5768f79znhdff9fsd6918vwss8hvb7d). A repo's own test suite is no longer killed because eng mis-measured its memory. In PR 51's verdict 1, a shell with no `XDG_RUNTIME_DIR` fell back to the watchdog, and the watchdog killed eng-standard's suite at 2154 MB summed RSS against the 2048 MB default (exit 137). The same suite passed under the same 2 GB limit in a systemd scope.
+
+- **PSS, not summed RSS.** On Linux the watchdog sums each process's PSS (`/proc/<pid>/smaps_rollup`). PSS splits a shared page between the processes that map it, so the node binary and its libraries count once, as the scope's cgroup counts them. Measured on the devbox over one run of `npm ci && eng run test` (1003 polls at 100 ms, up to 63 processes): summed RSS peaked at 2673 MB and was over 2048 MB in 52 polls. Summed PSS peaked at 1219 MB. The cgroup's `memory.current` peaked at 1291 MB. A process whose `smaps_rollup` cannot be read counts at its RSS, which can only overcount. Ownership is unchanged: pid and start time from the kernel, plus the `ENG_BUDGET_UNIT` tag. Messages say `the process tree reached <n> MB PSS`, and the enforcer line says `process-tree PSS poll`.
+- **Polling cost.** Reading `smaps_rollup` is a kernel page-table walk. For 50 node processes it takes about 16 ms per read of the whole tree (median over 3×300 reads; 18–24% of one core at 100 ms, almost all system time). PSS is at most RSS, so the watchdog reads `smaps_rollup` only on a poll where summed RSS is over the budget. The stop decision is the same as reading PSS every poll, and the poll stays at 100 ms. In the suite run above, 52 of 1003 polls would read it.
+- **macOS** stays on `ps` RSS, which can overcount pages that processes share. A suite of many processes can be stopped there below its real use. Declare a larger `# budget:` or `--budget` there.
+- **eng finds the user manager without a login session.** When `XDG_RUNTIME_DIR` is unset, eng uses `/run/user/<uid>` for the probe and for every `systemd-run --user` and `systemctl --user` call. It does so only when that directory is owned by this uid, has mode 0700 and holds a `bus` socket. A command in a scope then inherits `XDG_RUNTIME_DIR` from `systemd-run`. eng does not change its own environment or the watchdog command's environment. `ENG_BUDGET_ENFORCER` keeps its meaning.
+- **Upgrade:** zero manual edits. Move the pin. Nothing renders differently. A suite that the watchdog stopped for summed RSS now runs to its result.
+
 ## 0.16.0 (8 Nov 2026)
 
 **Checks are chosen and sized up front** (Matt, 8 Nov 2026; incident Core nd7ergzhq2anaav9ynqkqhfcr18hvk84: an ad hoc TLC run with no -Xmx reached 4.19 GB RSS with ~15 agent sessions running, swap hit 100%, and sshd and T3 Connect stopped answering). Anyone can run a repo's checks without a heavy tool locking the machine up. No new command.
