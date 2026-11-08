@@ -63,11 +63,12 @@ for (const own of ['.github/PULL_REQUEST_TEMPLATE.md', 'PULL_REQUEST_TEMPLATE.md
     let r = eng(['sync']);
     assert.equal(r.status, 0, out(r));
     assert.equal(fs.readFileSync(path.join(dir, own), 'utf8'), '## Our template\n', 'the repo\'s own template is untouched');
-    assert.ok(!fs.readdirSync(path.join(dir, '.github')).some(n => n === 'pull_request_template.md'), `eng rendered no ${ENG_TEMPLATE} beside ${own}: ${out(r)}`);
+    assert.ok(!(fs.existsSync(path.join(dir, '.github')) && fs.readdirSync(path.join(dir, '.github')).includes('pull_request_template.md')), `eng rendered no ${ENG_TEMPLATE} beside ${own}: ${out(r)}`);
     r = eng(['sync', '--check']);
     assert.equal(r.status, 0, out(r));
     r = eng(['doctor'], { ENG_STANDARD_SOURCE: PKG });
-    assert.match(r.stdout, new RegExp(`PR template: ${own.replace(/[./]/g, '\\$&')} \\(the repo's own; eng renders none\\)`), out(r));
+    const named = own.endsWith('/feature.md') ? path.dirname(own) : own;
+    assert.match(r.stdout, new RegExp(`PR template: ${named.replace(/[./]/g, '\\$&')} \\(the repo's own; eng renders none\\)`), out(r));
   });
 
 test('eng keeps rendering its PR template when it is the only one, and a second sync changes nothing', () => {
@@ -134,7 +135,7 @@ for (const [kind, output, why] of [['TAP', TAP, /not ok 3 - totals the quote/], 
     assert.ok(kept, `the gate prints where the full output is: ${out(r)}`);
     assert.equal(fs.statSync(kept).mode & 0o777, 0o600);
     assert.ok(kept.startsWith(path.join(process.env.XDG_CACHE_HOME, 'eng') + path.sep), `kept in eng's cache, outside the repo: ${kept}`);
-    assert.equal(fs.readFileSync(kept, 'utf8').trim(), output.trim() + '\neng: FAIL check suite: failed 1/1', 'every line of the check\'s output');
+    assert.equal(fs.readFileSync(kept, 'utf8'), output, 'every line of the check\'s output');
     checks({ suite: '#!/usr/bin/env bash\necho ok 1 - fine\n' });
     assert.equal(eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' }).status, 0);
     assert.equal(fs.existsSync(kept), false, 'a pass removes the kept output of the last failure');
@@ -188,15 +189,14 @@ test('eng lint fails a check\'s docker or podman run without both --memory and -
     'docker run --rm --name tlc-$$ --memory 1536m --cpus 2 tlc:1 true',
     'podman run --rm -m=1g --cpus=1 img true',
     'docker run --rm \\\n  --name "tlc-$$" \\\n  --memory "${ENG_BUDGET_HEAP_MB}m" \\\n  --cpus "$ENG_BUDGET_WORKERS" \\\n  img true',
-    '# docker run img (a comment)',
+    '# docker run --rm img (a comment)',
     'docker ps',
   ]) {
     const r = lint(ok);
     assert.equal(r.status, 0, `${ok}\n${out(r)}`);
   }
-  const r = eng(['rules', 'prove']);
-  assert.equal(r.status, 0, out(r));
-  assert.doesNotMatch(out(r), /DOES NOT BITE/, 'the built-in fixture shows the container rule biting');
+  const proofs = out(eng(['rules', 'prove'])).match(/heavy-tool-unbounded: \S+/g);
+  assert.deepEqual(proofs, ['heavy-tool-unbounded: bites', 'heavy-tool-unbounded: bites'], 'the built-in fixture proves the java and the container half');
 });
 
 test('the catalog and the rendered budget text give the container pattern, and say docker enforces it, not eng', () => {

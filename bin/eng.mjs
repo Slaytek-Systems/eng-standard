@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
@@ -10,7 +11,7 @@ import { renderAll, renderErrors, harnessLines, executables, expandSkills, route
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath } from '../lib/hygiene.mjs';
+import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath, openSockDir, staleSockDirs } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
 import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
@@ -23,7 +24,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
-import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE } from '../lib/budget.mjs';
+import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
@@ -92,8 +93,21 @@ function render(cfg) {
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
   try { if (fs.readlinkSync(path.join(ROOT, 'CLAUDE.md')) === 'AGENTS.md') delete files['CLAUDE.md']; } catch {}
+  if (ownPrTemplates(files[ENG_PR_TEMPLATE]).length) delete files[ENG_PR_TEMPLATE];
   return files;
 }
+// GitHub reads a PR template from .github/, the root or docs/, named in any case, as a file or a PULL_REQUEST_TEMPLATE/
+// folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
+// overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
+const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
+function ownPrTemplates(rendered) {
+  const ours = p => p === ENG_PR_TEMPLATE && (parseLock(readOr('.eng/lock.json')).files.includes(p) || readOr(p) === rendered);
+  return ['.github', '.', 'docs'].flatMap(d => { try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
+    .filter(p => !ours(p));
+}
+const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
+// The exact name is on disk: on a case-insensitive disk existsSync would also find another file whose name differs in case.
+const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch { return false; } };
 
 function claudeLinks(cfg) {
   if (!cfg.agents.harnesses.includes('claude-code')) return [];
@@ -124,7 +138,19 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   ? { ok: false, what: 'git.rewrite_pushed is missing', fix: 'run eng sync: it adds protected when Graphite is set up here, otherwise never, and prints why' }
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
+// eng sync writes one link per skill (and per subagent) into .claude/skills and .claude/agents. If that folder, or .claude, is
+// itself a symlink, every link and every rmSync before it would land in the folder it points at (Kalsigns: .claude/skills ->
+// ../.agents/skills, where the links would replace the skills they point to). Checked before anything is written.
+function linkDirErrors() {
+  const raw = (() => { try { return YAML.parse(readOr('eng.config.yml', '')) ?? {}; } catch { return {}; } })();
+  if (!raw.agents?.harnesses?.includes?.('claude-code')) return [];
+  return ['.claude', '.claude/skills', '.claude/agents'].filter(p => { try { return fs.lstatSync(path.join(ROOT, p)).isSymbolicLink(); } catch { return false; } })
+    .map(p => `config error: ${p} is a symlink (to ${fs.readlinkSync(path.join(ROOT, p))}). eng sync writes a link per skill into ${p}, so it would write through to where the link points. Fix: make ${p} a real directory (remove the symlink, mkdir ${p}), then run eng sync; eng links each skill into it.`);
+}
+
 function sync() {
+  const linkErrs = linkDirErrors();
+  if (linkErrs.length) die(`sync: ${linkErrs.join('\n  ')}`);
   const migrated = migrateConfig();
   const cfg = loadConfig();
   const files = render(cfg), exec = executables(cfg);
@@ -144,7 +170,7 @@ function sync() {
   }
   // Prune files (and skill symlinks) a previous sync generated that the config no longer renders.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && fs.existsSync(path.join(ROOT, p)) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  for (const p of old.files) if (!(p in files) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
   const links = new Set(claudeLinks(cfg).map(([l]) => l));
   const cl = path.join(ROOT, '.claude/skills');
   const ours = fs.existsSync(cl) ? fs.readdirSync(cl).map(n => `.claude/skills/${n}`).filter(l => { try { return fs.readlinkSync(path.join(ROOT, l)).startsWith(`../../${cfg.agents.skills_dir}/`) && !fs.existsSync(path.join(ROOT, l)); } catch { return false; } }) : [];
@@ -215,7 +241,7 @@ function syncCheck() {
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
   const files = render(cfg);
-  const bad = [];
+  const bad = [...linkDirErrors()];
   for (const [p, c] of Object.entries(files)) {
     const cur = readOr(p);
     if (cur === null) bad.push(`${p}: missing`);
@@ -259,6 +285,7 @@ function builtinRules(cfg) {
     .map(d => ({ ...d, ...(d.id === 'cargo-target-per-run' && cacheMode === 'warn' ? { warn: true } : {}), proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${d.id}` } })));
   // Heavy tools in a check script need their bound (lib/budget.mjs); the TLC incident of 8 Nov 2026.
   r.push({ ...HEAVY_TOOL_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${HEAVY_TOOL_RULE.id}` } });
+  r.push({ ...CONTAINER_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${CONTAINER_RULE.id}` } });
   // A check is a leaf (PR 50, round 4: an inner gate's exit 3 was lost through `| cat`).
   r.push({ ...NESTED_GATE_RULE, paths: `${checksDir(cfg)}/*.sh`, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${NESTED_GATE_RULE.id}` } });
   return [...r, ...(cfg.constraints?.rules || [])];
@@ -270,7 +297,10 @@ function lintFiles(rule, files, base) {
     if (!pre.some(p => p.test(name)) || ex.some(p => p.test(name))) continue;
     // rule.bounds (built-in rules only): a bound set on an earlier line of the same file covers the later lines it names.
     const bounds = (rule.bounds || []).map(b => ({ set: new RegExp(b.set), then: new RegExp(b.then) })), on = [];
-    fs.readFileSync(path.join(base, f), 'utf8').split('\n').forEach((line, i) => {
+    // rule.continued: a command split over backslash-continued lines is one line, reported at its first.
+    const raw = fs.readFileSync(path.join(base, f), 'utf8').split('\n'), lines = [];
+    for (let i = 0; i < raw.length; i++) { let l = raw[i]; const at = i; if (rule.continued) while (/\\$/.test(l) && i + 1 < raw.length) l = `${l.slice(0, -1)} ${raw[++i]}`; lines.push([l, at]); }
+    lines.forEach(([line, i]) => {
       if (re.test(line) && !on.some(b => b.then.test(line))) hits.push({ file: f, line: i + 1, rule: rule.id, text: line, message: rule.message, ...(rule.warn ? { warn: true } : {}) });
       for (const b of bounds) if (!on.includes(b) && b.set.test(line)) on.push(b);
     });
@@ -663,6 +693,7 @@ function verdictCheck() {
 const GATE_INCOMPLETE = 3;
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
+  KEEP_DIR = expandPath('${XDG_CACHE_HOME}/eng/${repo}/failed', cfg.project.name);
   const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
@@ -687,8 +718,8 @@ async function gate() {
     if (deferred.includes(s)) { res.push([g, 'deferred', `heavy check, not run in this stage: CI runs it, or run eng gate --heavy (${budgetText(s.check.budget)})`, []]); continue; }
     if (s.check) { res.push(done.get(s)); continue; }
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
-    // tests_leave_nothing: each step gets its own TMPDIR inside ENG_TMP, so whatever it leaves there is its own.
-    const own = fs.mkdtempSync(path.join(t.dir, `${slug(g)}-`));
+    // tests_leave_nothing: each step gets its own TMPDIR (stepTmp), so whatever it leaves there is its own.
+    const own = stepTmp(t, g);
     const w = inner.open(), r = c ? spawnSync('bash', ['-c', c], { cwd: ROOT, encoding: 'utf8', env: privateTmpEnv(RUN_ENV, own) }) : { status: null, stdout: '', stderr: 'no command' };
     const sig = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[r.signal]; // interrupted (Ctrl-C / kill of the group): stop now; the exit trap removes ENG_TMP
     if (sig) { console.error(`eng gate: interrupted by ${r.signal} during ${g}`); process.exit(128 + sig); }
@@ -709,17 +740,41 @@ async function gate() {
   console.log('eng gate: PASS');
 }
 // A step's row: [name, status, the line that says why, more lines]. Removes the step's private TMPDIR and reports what it left.
-function stepResult(g, status, text, own, keep) {
+function stepResult(g, status, text, own, keep, summary = '') {
   const left = leftovers(own); fs.rmSync(own, { recursive: true, force: true });
-  const lines = text.trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
-  const why = status === 0 ? lines.at(-1) : lines.find(x => /AssertionError|Error:|FAIL |✗|×|\bfailed\b|eng: FAIL/.test(x)) ?? lines.at(-1);
+  const lines = `${text}\n${summary}`.trim().split('\n').map(x => x.trim()).filter(x => x && !/^[⎯─-]+(\[\d+\/\d+\])?⎯*$/.test(x));
+  const why = status === 0 ? lines.at(-1) : lines.find(x => !PASS_LINE.test(x) && FAIL_LINE.test(x)) ?? lines.at(-1);
   // A failing eng subcommand's die() puts its detail on the lines after "eng: FAIL ...:"; print them, not just the header.
   const at = lines.indexOf(why), more = status !== 0 && /eng: FAIL .*:$/.test(why ?? '') ? lines.slice(at + 1, at + 21) : [];
+  const kept = keptOutput(g, status === 0 ? null : text);
+  if (kept) more.push(`full output: ${kept}`);
   if (left.length && keep !== 'off') {
     if (keep === 'fail' && status === 0) return [g, 'FAIL', leftText(left), []];
     more.push(`${keep === 'warn' ? 'WARN ' : ''}${leftText(left)}`);
   }
   return [g, status === 0 ? 'pass' : status === null ? 'SKIPPED=FAIL' : 'FAIL', why, more];
+}
+// A failing step's reason: the first line that says something failed (TAP not ok, node --test ✖, vitest ×, FAIL, Error:,
+// an "N failed" summary), never a line that marks a pass, even one whose test name says "failed"; else the last line.
+const PASS_LINE = /^(ok\b|✔|✓|√|PASS\b|#\s*pass\b|ℹ\s*pass\b)/;
+const FAIL_LINE = /^not ok\b|^✖|✗|×|\bFAIL(ED)?\b|AssertionError|\bError:|\b[1-9]\d* (failed|failing)\b|^#\s*fail\s+[1-9]|^ℹ\s*fail\s+[1-9]|eng: FAIL/;
+// A failed step's whole output, kept where eng keeps this repo's caches (outside the repo and outside ENG_TMP, which goes on
+// exit): one file per step and checkout, 0600, at most KEEP_MAX bytes (its start and its end). The step's next pass removes
+// it, and a file untouched for KEEP_DAYS goes the next time a step fails.
+const KEEP_MAX = 1 << 20, KEEP_HEAD = 256 << 10, KEEP_DAYS = 14;
+let KEEP_DIR = null;
+function keptOutput(step, text) {
+  if (!KEEP_DIR) return null;
+  const file = path.join(KEEP_DIR, `${slug(step)}-${crypto.createHash('sha256').update(ROOT).digest('hex').slice(0, 8)}.log`);
+  if (text === null) { fs.rmSync(file, { force: true }); return null; }
+  try {
+    fs.mkdirSync(KEEP_DIR, { recursive: true, mode: 0o700 });
+    for (const n of fs.readdirSync(KEEP_DIR)) { const p = path.join(KEEP_DIR, n); if (Date.now() - fs.statSync(p).mtimeMs > KEEP_DAYS * 864e5) fs.rmSync(p, { force: true }); }
+    let b = Buffer.from(text);
+    if (b.length > KEEP_MAX) { const mark = Buffer.from(`\n... ${b.length - KEEP_MAX} bytes cut (eng keeps the first ${KEEP_HEAD} and the last ${KEEP_MAX - KEEP_HEAD - 100}) ...\n`); b = Buffer.concat([b.subarray(0, KEEP_HEAD), mark, b.subarray(b.length - (KEEP_MAX - KEEP_HEAD - 100))]); }
+    fs.rmSync(file, { force: true }); fs.writeFileSync(file, b, { mode: 0o600, flag: 'wx' });
+    return file;
+  } catch { return null; }
 }
 // Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
 // the memory free when the gate started and the cores, and a check that does not fit waits for a running one to finish.
@@ -731,7 +786,7 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
   const onSig = [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]].map(([s, n]) => [s, () => { console.error(`eng gate: interrupted by ${s}; stopping the running checks`); process.exit(128 + n); }]);
   for (const [s, f] of onSig) process.on(s, f);
   const runCheck = async s => {
-    const { id, path: p, runs, budget, declared } = s.check, own = fs.mkdtempSync(path.join(t.dir, `${slug(s.name)}-`));
+    const { id, path: p, runs, budget, declared } = s.check, own = stepTmp(t, s.name);
     let passed = 0, text = '', stop = null;
     const w = inner.open();
     for (let i = 0; i < runs && !stop; i++) {
@@ -740,9 +795,9 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
       if (r.stopped) stop = r.why; else if (r.status === 0) passed++;
     }
     const hit = await inner.close(w);
-    if (stop) { fs.rmSync(own, { recursive: true, force: true }); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, []]; }
+    if (stop) { fs.rmSync(own, { recursive: true, force: true }); const kept = keptOutput(s.name, text); return [s.name, 'FAIL', `eng: FAIL check ${id}: ${stop} (${declared ? 'declared' : 'default'} budget ${budgetText(budget)}; ${declared ? 'raise it' : 'declare one'} in its header: # budget: memory=<size> workers=<n> timeout=<duration>)`, kept ? [`full output: ${kept}`] : []]; }
     const summary = passed === runs ? `check ${id}: passed ${runs}/${runs}` : passed === 0 ? `eng: FAIL check ${id}: failed ${runs}/${runs}` : `eng: FAIL check ${id}: FLAKY, passed ${passed}/${runs}`;
-    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, `${text}\n${summary}`, own, keep), hit);
+    return nestedRow(stepResult(s.name, passed === runs ? 0 : 1, text, own, keep, summary), hit);
   };
   await new Promise(resolve => {
     let i = 0;
@@ -766,6 +821,21 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
 // ---------- disk rules (Matt, 30 Oct 2026; Core nd79fdwd1p4hc5nk60j7rmbn518h6tsv). lib/disk-rules.mjs has each rule's default, options and check. ----------
 // Node/Bun module compile cache defaults to TMPDIR/node-compile-cache and is keyed by absolute path, so each worktree
 // writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
+// A step's TMPDIR holds unix sockets (tsx IPC: $TMPDIR/tsx-<uid>/<pid>.pipe), and a socket path is capped at 107 bytes (103 on
+// macOS). ENG_TMP sits under the scratch root and names the repo, so it is as deep as those make it (123 bytes for a Kalsigns
+// check). Each step's TMPDIR is instead a folder in this gate's own socket folder ($HOME/.cache/eng/s/<8 hex>, or inside the
+// enclosing eng run's): 0700, symlink-free, removed on exit, and reaped by the next gate or run if this one is killed. With
+// no usable home it stays inside ENG_TMP.
+let STEP_ROOT;
+function stepTmp(t, name) {
+  if (STEP_ROOT === undefined) {
+    const env = { ...process.env, ENG_SOCK_DIR: PARENT_SOCK_DIR ?? '' };
+    for (const d of staleSockDirs(Infinity, { env })) if (d.stale) fs.rmSync(d.path, { recursive: true, force: true });
+    try { STEP_ROOT = openSockDir(env, `eng-gate-${Date.now().toString(36)}-${process.pid}-0`); } catch { STEP_ROOT = null; }
+    if (STEP_ROOT) process.on('exit', () => fs.rmSync(STEP_ROOT, { recursive: true, force: true }));
+  }
+  return fs.mkdtempSync(STEP_ROOT ? `${STEP_ROOT}/` : path.join(t.dir, `${slug(name)}-`));
+}
 const privateTmpEnv = (env, dir) => ({ ...env, ENG_TMP: dir, TMPDIR: dir, TMP: dir, TEMP: dir, NODE_DISABLE_COMPILE_CACHE: '1' });
 const leftText = left => `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'} in its private TMPDIR: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ', ...' : ''} (tests_leave_nothing: remove what the test creates in an after hook or finally)`;
 // Prints each finding at its rule's mode; returns how many fail.
@@ -812,7 +882,7 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
