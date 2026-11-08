@@ -103,7 +103,7 @@ for (const how of ['systemd', 'watchdog']) for (const via of ['eng gate', 'eng r
     assert.match(r.stdout, /pass\s+check:sock/);
   });
 
-// ---------- 3. a failing check's reason names a failing line, and its whole output is kept ----------
+// ---------- 3. a failing step's reason names a failing line, and the end of its output is printed; eng keeps no file ----------
 const TAP = `TAP version 13
 ok 1 - reports failed uploads
 ok 2 - retries failed jobs
@@ -121,34 +121,78 @@ const NODE_TEST = `✔ reports failed uploads (1.2ms)
 ℹ pass 2
 ℹ fail 1
 `;
-for (const [kind, output, why] of [['TAP', TAP, /not ok 3 - totals the quote/], ['node --test', NODE_TEST, /✖ totals the quote/]])
-  test(`a failing check's reason is a failing line, never a passing test named "failed" (${kind}), and its full output is kept`, () => {
+const COLOR = '\x1b[32m✓ reports Error: upload failure\x1b[0m\n\x1b[31m× totals the quote\x1b[0m\n';
+const TAIL_HEAD = /^eng gate: (\S+) failed; the end of its output \(at most 40 lines, 8 KiB\):$/;
+// The gate's stderr, split into each failed step's printed tail.
+const tails = r => {
+  const outv = {}; let cur = null;
+  for (const l of r.stderr.split('\n')) { const m = l.match(TAIL_HEAD); if (m) outv[cur = m[1]] = []; else if (cur && l.startsWith('eng: FAIL gate:')) cur = null; else if (cur) outv[cur].push(l); }
+  return Object.fromEntries(Object.entries(outv).map(([k, v]) => [k, v.join('\n')]));
+};
+const files = d => { try { return fs.readdirSync(d, { recursive: true }); } catch { return []; } };
+for (const [kind, output, why] of [['TAP', TAP, /not ok 3 - totals the quote/], ['node --test', NODE_TEST, /✖ totals the quote/], ['coloured vitest', COLOR, /× totals the quote/]])
+  test(`a failing check's reason is a failing line, never a passing test (${kind}), and the gate prints the end of its output`, () => {
     const { eng, checks } = repo();
-    checks({ suite: `#!/usr/bin/env bash\ncat <<'EOF'\n${output}EOF\nexit 1\n` });
+    checks({ suite: `#!/usr/bin/env bash\nprintf '%s' '${output.replace(/'/g, "'\\''")}'\nexit 1\n` });
     const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
     assert.equal(r.status, 1, out(r));
     const row = r.stdout.split('\n').find(l => /FAIL\s+check:suite/.test(l));
     assert.ok(row, out(r));
     assert.match(row, why, `the reason is the failing test: ${row}`);
-    assert.doesNotMatch(row, /reports failed uploads|retries failed jobs|marks failed payments/);
-    const kept = r.stdout.match(/full output: (\S+)/)?.[1];
-    assert.ok(kept, `the gate prints where the full output is: ${out(r)}`);
-    assert.equal(fs.statSync(kept).mode & 0o777, 0o600);
-    assert.ok(kept.startsWith(path.join(process.env.XDG_CACHE_HOME, 'eng') + path.sep), `kept in eng's cache, outside the repo: ${kept}`);
-    assert.equal(fs.readFileSync(kept, 'utf8'), output, 'every line of the check\'s output');
-    checks({ suite: '#!/usr/bin/env bash\necho ok 1 - fine\n' });
-    assert.equal(eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' }).status, 0);
-    assert.equal(fs.existsSync(kept), false, 'a pass removes the kept output of the last failure');
+    assert.doesNotMatch(row, /reports failed uploads|retries failed jobs|marks failed payments|upload failure/);
+    assert.equal(tails(r)['check:suite'], output.trimEnd(), out(r));
+    assert.doesNotMatch(out(r), /full output:/);
   });
 
-test('the kept output of a failing check is capped, keeping its start and its end', () => {
+test('a failing step writes no file: none in the cache, and none in the repo when XDG_CACHE_HOME is inside it', () => {
+  const { dir, eng, checks, git } = repo();
+  checks({ suite: '#!/usr/bin/env bash\necho not ok 1 - broke\nexit 1\n' });
+  const before = files(process.env.XDG_CACHE_HOME);
+  let r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 1, out(r));
+  assert.deepEqual(files(process.env.XDG_CACHE_HOME).filter(f => /failed/.test(f)), before.filter(f => /failed/.test(f)), 'no failure log under XDG_CACHE_HOME');
+  r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog', XDG_CACHE_HOME: path.join(dir, '.cache') });
+  assert.equal(r.status, 1, out(r));
+  assert.equal(git('ls-files --others --exclude-standard'), '', 'the failing gate left nothing in the repo');
+});
+
+test('a check that exits 0 but fails for what it left in its TMPDIR prints the end of its output', () => {
   const { eng, checks } = repo();
-  checks({ noisy: '#!/usr/bin/env bash\necho FIRST-LINE\nhead -c 3000000 /dev/zero | tr "\\0" "x"\necho\necho LAST-LINE\nexit 1\n' });
+  checks({ leaky: '#!/usr/bin/env bash\necho DIAGNOSTIC\ntouch "$TMPDIR/leak"\n' });
   const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
   assert.equal(r.status, 1, out(r));
-  const kept = r.stdout.match(/full output: (\S+)/)?.[1], text = fs.readFileSync(kept, 'utf8');
-  assert.ok(fs.statSync(kept).size <= 1024 * 1024 + 200, `capped at 1 MiB: ${fs.statSync(kept).size}`);
-  assert.match(text, /^FIRST-LINE/); assert.match(text, /LAST-LINE/); assert.match(text, /bytes cut/);
+  assert.match(r.stdout, /FAIL\s+check:leaky\s+left 1 entry in its private TMPDIR: leak/);
+  assert.match(tails(r)['check:leaky'] ?? '', /^DIAGNOSTIC$/m, out(r));
+});
+
+test('two failing checks whose names slug alike each print their own output', () => {
+  const { eng, checks } = repo();
+  checks({ 'a+b': '#!/usr/bin/env bash\necho OUT-PLUS\nexit 1\n', 'a-b': '#!/usr/bin/env bash\necho OUT-MINUS\nexit 1\n' });
+  const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' }), t = tails(r);
+  assert.equal(r.status, 1, out(r));
+  assert.match(t['check:a+b'] ?? '', /OUT-PLUS/, out(r)); assert.doesNotMatch(t['check:a+b'], /OUT-MINUS/);
+  assert.match(t['check:a-b'] ?? '', /OUT-MINUS/, out(r)); assert.doesNotMatch(t['check:a-b'], /OUT-PLUS/);
+});
+
+const NOISY = `printf 'FIRST\\n'; head -c 2097152 /dev/zero | tr '\\0' x; printf '\\nLAST\\n'; exit 1`;
+test('a very noisy failing gate command fails as itself (exit 1, not killed) and prints the end of its output, bounded', () => {
+  const { eng } = repo(c => { c.gates.required = ['test']; c.project.commands.test = NOISY; return c; });
+  const r = eng(['gate', 'test'], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 1, out(r));
+  assert.doesNotMatch(r.stderr, /interrupted/);
+  const t = tails(r).test ?? '';
+  assert.match(t, /LAST$/, out(r).slice(-2000)); assert.doesNotMatch(t, /FIRST/);
+  assert.ok(Buffer.byteLength(t) <= 8192, `at most 8 KiB: ${Buffer.byteLength(t)}`);
+});
+
+test('a very noisy failing check prints at most 40 lines and 8 KiB of its end', () => {
+  const { eng, checks } = repo();
+  checks({ noisy: '#!/usr/bin/env bash\necho FIRST-LINE\nseq 1 100000\nhead -c 3000000 /dev/zero | tr "\\0" "x"\necho\necho LAST-LINE\nexit 1\n' });
+  const r = eng(['gate', 'checks'], { ENG_BUDGET_ENFORCER: 'watchdog' });
+  assert.equal(r.status, 1, out(r));
+  const t = tails(r)['check:noisy'] ?? '';
+  assert.match(t, /LAST-LINE$/, out(r).slice(-2000)); assert.doesNotMatch(t, /FIRST-LINE/);
+  assert.ok(Buffer.byteLength(t) <= 8192 && t.split('\n').length <= 40, `bounded: ${Buffer.byteLength(t)} bytes, ${t.split('\n').length} lines`);
 });
 
 // ---------- 4. eng sync never writes per-skill links through a symlinked .claude/skills ----------
@@ -180,6 +224,13 @@ test('eng lint fails a check\'s docker or podman run without both --memory and -
     'docker container run --rm --cpus 2 img true',
     'docker run --rm \\\n  --memory-swap 2g \\\n  --cpus 2 img true',
     'eng run -- docker run --rm img true',
+    'docker run --rm --memory=128m --cpus=1 image true; docker run --rm image true',
+    'docker run --rm --memory=128m --cpus=1 img true && podman run --rm img true',
+    'docker run --rm --memory=128m --cpus=1 img true | docker run --rm img cat',
+    'docker run --rm image echo --memory=128m --cpus=1',
+    'docker run --rm image true # --memory=128m --cpus=1',
+    'docker run --rm --memory=0 --cpus=1 img true',
+    'out=$(docker run --rm img true)',
   ]) {
     const r = lint(bad);
     assert.equal(r.status, 1, `${bad}\n${out(r)}`);
@@ -189,6 +240,11 @@ test('eng lint fails a check\'s docker or podman run without both --memory and -
     'docker run --rm --name tlc-$$ --memory 1536m --cpus 2 tlc:1 true',
     'podman run --rm -m=1g --cpus=1 img true',
     'docker run --rm \\\n  --name "tlc-$$" \\\n  --memory "${ENG_BUDGET_HEAP_MB}m" \\\n  --cpus "$ENG_BUDGET_WORKERS" \\\n  img true',
+    'docker run --rm --memory=128m --cpus .5 image true',
+    'docker run --rm -m128m --cpus=0.5 img true',
+    'docker run --rm --memory 1g --cpus 1.25 img true',
+    'docker run --rm -it -e A=1 -v "$PWD:/w" -m 1g --cpus=1 img sh -c "echo --x"',
+    'docker run --rm --memory=128m --cpus=1 img true; docker run --rm -m 64m --cpus .5 img true',
     '# docker run --rm img (a comment)',
     'docker ps',
   ]) {
@@ -211,4 +267,10 @@ test('the catalog and the rendered budget text give the container pattern, and s
   assert.match(agents, /docker run.*--memory.*--cpus/);
   assert.match(agents, /docker (enforces|applies) (the|those) limits?/i);
   assert.match(agents, /trap 'docker rm -f/);
+  for (const text of [agents, c.why]) {
+    assert.doesNotMatch(text, /a timeout or a cancel removes it|when the check exits or is stopped/, 'no claim that the trap runs on every stop');
+    assert.match(text, /SIGKILL/, 'says when the trap does not run');
+  }
+  assert.match(agents, /--name "\$ENG_BUDGET_UNIT"/, 'names the container with the id eng exports to the check');
+  assert.match(agents, /a wrapper function or a variable hides/, 'states what the lint cannot see');
 });
