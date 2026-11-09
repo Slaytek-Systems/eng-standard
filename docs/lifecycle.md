@@ -52,21 +52,26 @@ links each one into `.claude/skills` and `.claude/agents`. eng manages what is i
 how a developer arranges their skills folders.
 
 The rule: eng writes, links, chmods and prunes a path only when every part of it, from the repo root down, is a real
-folder in the repo. It checks each part with `lstat` and never follows a symlink to write. Many developers point every
+folder in the repo. It checks each part with `lstat` and never follows a symlink to write. One writer,
+`lib/repo-write.mjs`, applies it to every change `eng sync`, `sync --check` and `eng init` make: generated files, modes,
+`.eng/lock.json`, the checks folder, the config migration, baselines, `CODEOWNERS`, links and prunes. A blocked change
+does nothing and adds a notice; it never fails the command. A lock under a symlinked `.eng` is not read, written or
+checked. Many developers point every
 harness's skills folder at one shared folder. When `.claude`, `.claude/skills`, `.claude/agents`, the skills source, or
 a folder above them is a symlink, eng:
 
 - writes, links and deletes nothing through it, and does not fail because of it;
 - prints one line per such folder in `eng sync` and `sync --check`, and as a `WARN` in `eng doctor`: where it points,
-  how many of eng's skills the harnesses find through it now (a read-only check), the names they do not find, and that
+  how many of eng's skills the harnesses find through it now (a read-only check: a skill counts only when
+  `<folder>/<name>/SKILL.md` opens as a file), the names they do not find, and that
   eng's copies are in `.agents/skills` (or `.agents/agents`) for you to add;
 - renders no skills into a skills source that is a link, and renders everything else as usual.
 
 In a real `.claude/skills` or `.claude/agents`, eng creates a link only where nothing is. It never deletes or replaces
-an entry it did not make: a folder, a file, or a link that points somewhere other than eng's skills. It leaves the
-entry and prints its name, and Claude Code sees that entry instead of eng's. eng decides what it made from the entry on
-disk now (the exact link it writes, or a link into its skills folder), never from `.eng/lock.json`, and prunes only
-those links. An entry or folder eng cannot read is a notice. After pruning, eng removes an empty folder under the
+an entry it did not make: a folder, a file, or any link other than the exact one eng writes. It leaves the entry and
+prints its name, and Claude Code sees that entry instead of eng's. A link is eng's only when its target is exactly
+`../../<source>/<name>`; a target that only starts that way is the developer's. eng prunes a name it no longer renders
+only when it holds that exact link and `.eng/lock.json` lists it, or it dangles. An entry or folder eng cannot read is a notice. After pruning, eng removes an empty folder under the
 skills source only when a file it rendered was in it. `sync --check` and `eng doctor` check content and modes only on
 paths eng manages.
 

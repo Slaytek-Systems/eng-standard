@@ -23,6 +23,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { blocked as pathBlocked, readLink, repoWriter } from '../lib/repo-write.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
@@ -123,7 +124,7 @@ function render(cfg) {
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
-  const ours = p => p === ENG_PR_TEMPLATE && (parseLock(readOr('.eng/lock.json')).files.includes(p) || readOr(p) === rendered);
+  const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
   return ['.github', '.', 'docs'].flatMap(d => { try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
     .filter(p => !ours(p));
 }
@@ -140,124 +141,88 @@ function linkGroups(cfg) {
     { dir: claude ? '.claude/agents' : null, source: agentsDir, what: 'subagents', names: subagents }];
 }
 
-// eng manages what is inside the repo only, and does not care how a developer arranges their skills folders (Core
-// decision nd70ke343v7gc0eakdejg7m5f18hx1p9). It writes, links, chmods and prunes a path only when every part of it from
-// the repo root down is a real folder (lstat, never followed) and the path itself is no symlink. blocked() names the
-// first part that is not: a symlink, not a folder, unreadable, or outside the repo. eng follows none of them to write.
-function blocked(rel, folder = false) {
-  const norm = path.normalize(rel);
-  if (path.isAbsolute(norm) || norm === '..' || norm.startsWith(`..${path.sep}`)) return { at: rel, why: 'outside' };
-  const parts = norm.split(path.sep).filter(p => p && p !== '.');
-  for (let i = 1; i <= parts.length; i++) {
-    const at = parts.slice(0, i).join('/');
-    let st; try { st = fs.lstatSync(path.join(ROOT, at)); } catch (e) { return e.code === 'ENOENT' ? null : { at: parts.slice(0, i - 1).join('/') || '.', why: 'unreadable' }; }
-    if (st.isSymbolicLink()) return { at, why: 'link' };
-    if ((i < parts.length || folder) && !st.isDirectory()) return { at, why: 'file' };
-  }
-  if (folder) try { fs.readdirSync(path.join(ROOT, rel)); } catch (e) { if (e.code !== 'ENOENT') return { at: rel, why: 'unreadable' }; }
-  return null;
-}
-const readLink = at => { try { return fs.readlinkSync(at); } catch { return null; } };
+// eng's disk rule and its one writer live in lib/repo-write.mjs; here blocked() reads the same rule for planning.
+const blocked = (rel, folder = false) => pathBlocked(ROOT, rel, folder);
 const managedFiles = all => Object.fromEntries(Object.entries(all).filter(([p]) => !blocked(p)));
+// The lock is read only where eng may write it: a lock reached through a linked .eng is not this repo's.
+const readLock = () => parseLock(blocked('.eng/lock.json') ? null : readOr('.eng/lock.json'));
 
-// One plan per link folder eng manages. Ownership comes from each entry as it is now, never from the lock: ok is eng's
-// link, write is missing or a link into eng's source to fix (was holds it), kept is anything else (eng leaves it).
-function linkPlan(cfg) {
+// One plan per link folder eng manages. A link is eng's only when its target is exactly ../../<source>/<name>, the one
+// eng writes: ok is that link, write is nothing there yet, kept is anything else (eng leaves it and says so).
+function linkPlan(cfg, lockLinks = readLock().links) {
   return linkGroups(cfg).filter(g => g.dir && !blocked(g.dir, true)).map(g => {
-    const target = n => `../../${g.source}/${n}`, intoSource = t => t.startsWith(`../../${g.source}/`);
+    const target = n => `../../${g.source}/${n}`;
     const entries = g.names.map(n => {
-      const l = `${g.dir}/${n}`, at = path.join(ROOT, l), t = target(n);
-      let st; try { st = fs.lstatSync(at); } catch (e) { return e.code === 'ENOENT' ? { l, at, t, state: 'write' } : { l, at, t, state: 'kept', had: `something eng cannot read (${e.code})` }; }
-      if (!st.isSymbolicLink()) return { l, at, t, state: 'kept', had: st.isDirectory() ? 'a folder' : 'a file' };
-      const cur = fs.readlinkSync(at);
-      return cur === t ? { l, at, t, state: 'ok' } : intoSource(cur) ? { l, at, t, state: 'write', was: cur } : { l, at, t, state: 'kept', had: `a link to ${cur}` };
+      const l = `${g.dir}/${n}`, t = target(n);
+      let st; try { st = fs.lstatSync(path.join(ROOT, l)); } catch (e) { return e.code === 'ENOENT' ? { l, t, state: 'write' } : { l, t, state: 'kept', had: `something eng cannot read (${e.code})` }; }
+      if (!st.isSymbolicLink()) return { l, t, state: 'kept', had: st.isDirectory() ? 'a folder' : 'a file' };
+      const cur = readLink(path.join(ROOT, l));
+      return cur === t ? { l, t, state: 'ok' } : { l, t, state: 'kept', had: `a link to ${cur}` };
     });
-    // A name eng no longer wants is pruned only when it holds eng's exact link, or a dangling link into the source.
-    const prunable = n => { const at = path.join(ROOT, g.dir, n), t = readLink(at); return t !== null && (t === target(n) || intoSource(t) && !fs.existsSync(at)); };
-    return { ...g, entries, prunable };
+    // A name eng no longer wants is pruned only when it holds eng's exact link, and eng made it (the lock lists it) or it dangles.
+    const prunable = n => { const at = path.join(ROOT, g.dir, n); return readLink(at) === target(n) && (lockLinks.includes(`${g.dir}/${n}`) || !fs.existsSync(at)); };
+    return { ...g, target, entries, prunable };
   });
 }
 const managedLinks = plan => plan.flatMap(g => g.entries.filter(e => e.state === 'ok' || e.state === 'write').map(e => e.l));
 
+// A harness can use a skill only when <folder>/<name>/SKILL.md opens as a file, and a subagent when <folder>/<name> does.
+const opensAsFile = abs => { try { const fd = fs.openSync(abs, 'r'); try { return fs.fstatSync(fd).isFile(); } finally { fs.closeSync(fd); } } catch { return false; } };
 // What sync and sync --check print, and doctor shows as WARN: one line per folder eng left alone, with what Claude Code
 // and the other harnesses find through it right now (a read-only check), and one per entry eng did not make.
-const WHY = { link: at => `is a symlink to ${readLink(path.join(ROOT, at))}`, file: () => 'is not a folder', unreadable: () => 'cannot be read', outside: () => 'is outside this repo' };
-function leftNotices(cfg, all, plan) {
-  const lines = new Map(), groups = linkGroups(cfg).filter(g => g.names.length);
-  const add = (b, clause) => { if (!lines.has(b.at)) lines.set(b.at, [`${b.at} ${WHY[b.why](b.at)}, so eng writes and deletes nothing through it.`]); if (clause) lines.get(b.at).push(clause); };
-  const found = (base, g) => { const yes = g.names.filter(n => fs.existsSync(path.join(ROOT, base, n))); return [yes, g.names.filter(n => !yes.includes(n))]; };
+function leftNotices(cfg, all, plan, w = repoWriter(ROOT)) {
+  const groups = linkGroups(cfg).filter(g => g.names.length);
+  const found = (base, g) => { const yes = g.names.filter(n => opensAsFile(path.join(ROOT, base, n, ...(g.what === 'skills' ? ['SKILL.md'] : [])))); return [yes, g.names.filter(n => !yes.includes(n))]; };
   for (const g of groups) {
     const s = blocked(g.source, true), d = g.dir && blocked(g.dir, true), [yes, no] = found(d ? g.dir : g.source, g);
     const fix = s ? `eng renders its ${g.what} only into a real ${g.source} folder in this repo, so add them yourself` : `eng's copies are in ${g.source}; add them yourself`;
     const clause = where => !no.length ? `Through ${where} the harnesses find all ${yes.length} of eng's ${g.what}.`
       : !yes.length ? `Through ${where} the harnesses find none of eng's ${no.length} ${g.what} (${fix}).`
       : `Through ${where} the harnesses find ${yes.length} of eng's ${g.names.length} ${g.what}; not ${no.join(', ')} (${fix}).`;
-    if (d) add(d, clause(g.dir));
-    else if (s) add(s, clause(g.source));
+    if (d) w.add(d, clause(g.dir));
+    else if (s) w.add(s, clause(g.source));
   }
   const sources = groups.map(g => g.source);
   for (const p of Object.keys(all)) {
     const b = blocked(p);
-    if (b && !sources.some(s => p.startsWith(`${s}/`))) add(b, `eng did not write ${p}.`);
+    if (b && !sources.some(s => p.startsWith(`${s}/`))) w.add(b, `eng did not write ${p}.`);
   }
-  return [...[...lines.values()].map(l => l.join(' ')),
-    ...plan.flatMap(g => g.entries.filter(e => e.state === 'kept').map(e => `${e.l} is ${e.had} that eng did not make, so eng leaves it; Claude Code sees it, not eng's ${g.source}/${path.basename(e.l)}.`))];
+  for (const g of plan) for (const e of g.entries.filter(e => e.state === 'kept')) w.note(`${e.l} is ${e.had} that eng did not make, so eng leaves it; Claude Code sees it, not eng's ${g.source}/${path.basename(e.l)}.`);
+  return w;
 }
 
-// eng sync is a single actor: a folder swapped for a link while it runs is out of scope. The cheap protections: each
-// folder is checked again just before eng links into it, a link is created only where nothing is (symlinkSync fails on
-// anything there), and only a link eng would have made is ever removed. A failing fs call is a notice, not a crash.
-function writeLinks(plan, left) {
+// eng sync is a single actor: a folder swapped for a link while it runs is out of scope. The writer checks each folder
+// again just before it links into it and creates a link only where nothing is.
+function writeLinks(plan, w) {
   let n = 0;
-  for (const g of plan) {
-    const todo = g.entries.filter(e => e.state === 'write');
-    if (!todo.length) continue;
-    if (blocked(g.dir)) { left.push(`${g.dir} changed while eng sync ran, so eng links nothing there.`); continue; }
-    try { fs.mkdirSync(path.join(ROOT, g.dir), { recursive: true }); } catch (e) { left.push(`${g.dir}: eng cannot make it (${e.code}), so eng links nothing there.`); continue; }
-    for (const e of todo) {
-      if (blocked(g.dir, true)) { left.push(`${g.dir} changed while eng sync ran, so eng links nothing more there.`); break; }
-      try {
-        if (e.was !== undefined) { if (readLink(e.at) !== e.was) { left.push(`${e.l} changed while eng sync ran, so eng leaves it.`); continue; } fs.unlinkSync(e.at); }
-        fs.symlinkSync(e.t, e.at);
-      } catch (err) { if (!err.code) throw err; left.push(err.code === 'EEXIST' ? `${e.l}: something appeared there while eng sync ran, so eng leaves it.` : `${e.l}: eng cannot link it (${err.code}).`); continue; }
-      console.log(`  linked ${e.l}`); n++;
-    }
-  }
+  for (const g of plan) for (const e of g.entries.filter(e => e.state === 'write')) if (w.symlink(e.t, e.l)) { console.log(`  linked ${e.l}`); n++; }
   return n;
 }
-function pruneLinks(plan, left) {
+function pruneLinks(plan, w) {
   let n = 0;
   for (const g of plan) {
     const want = new Set(g.names);
     let names = []; try { names = fs.readdirSync(path.join(ROOT, g.dir)); } catch {}
-    for (const name of names) {
-      if (want.has(name) || !g.prunable(name)) continue;
-      if (blocked(g.dir, true)) break;
-      try { fs.unlinkSync(path.join(ROOT, g.dir, name)); } catch (e) { if (!e.code) throw e; left.push(`${g.dir}/${name}: eng cannot remove it (${e.code}).`); continue; }
-      console.log(`  unlinked ${g.dir}/${name}`); n++;
-    }
+    for (const name of names) if (!want.has(name) && g.prunable(name) && w.unlink(`${g.dir}/${name}`, g.target(name))) { console.log(`  unlinked ${g.dir}/${name}`); n++; }
   }
   return n;
 }
 // Removes the empty folders under the skills source that eng rendered into (a folder of a file in the lock or the render).
-function pruneRenderedDirs(skillsDir, rendered) {
+function pruneRenderedDirs(skillsDir, rendered, w) {
   const dirs = new Set();
   for (const p of rendered) for (let d = path.posix.dirname(p); d.startsWith(`${skillsDir}/`); d = path.posix.dirname(d)) dirs.add(d);
-  for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
-    if (blocked(d, true)) continue;
-    try { if (fs.lstatSync(path.join(ROOT, d)).isDirectory() && !fs.readdirSync(path.join(ROOT, d)).length) fs.rmdirSync(path.join(ROOT, d)); } catch {}
-  }
+  for (const d of [...dirs].sort((a, b) => b.length - a.length)) w.removeEmptyDir(d);
 }
 
 // Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
-function migrateConfig() {
-  const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
+function migrateConfig(w) {
+  const cur = readOr('eng.config.yml');
   if (cur === null) return 0;
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
   if (!changes.length) return 0;
-  fs.writeFileSync(p, added?.text ?? text);
+  if (!w.write('eng.config.yml', added?.text ?? text)) return 0;
   for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
   return changes.length;
 }
@@ -270,37 +235,27 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   ? { ok: false, what: 'git.rewrite_pushed is missing', fix: 'run eng sync: it adds protected when Graphite is set up here, otherwise never, and prints why' }
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
-function sync() {
-  const migrated = migrateConfig();
+// Every disk change goes through w (lib/repo-write.mjs). init passes its own, so its notices print with sync's.
+function sync(w = repoWriter(ROOT)) {
+  const migrated = migrateConfig(w);
   const cfg = loadConfig();
   const all = render(cfg), files = managedFiles(all), exec = executables(cfg);
-  const plan = linkPlan(cfg), left = [];
-  const old = parseLock(readOr('.eng/lock.json'));
+  const old = readLock(), plan = linkPlan(cfg, old.links);
   let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
-    const abs = path.join(ROOT, p);
-    try {
-      if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
-      if (blocked(p)) { left.push(`${p}: a folder above it changed while eng sync ran, so eng does not write it.`); continue; }
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      if (blocked(p)) { left.push(`${p}: a folder above it changed while eng sync ran, so eng does not write it.`); continue; }
-      fs.writeFileSync(abs, content);
-      if (exec.has(p)) fs.chmodSync(abs, 0o755);
-    } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot write it (${e.code}).`); continue; }
+    let same = false; try { same = readOr(p) === content && !(exec.has(p) && !isExec(path.join(ROOT, p))); } catch (e) { if (!e.code) throw e; }
+    if (same || !w.write(p, content, exec.has(p) ? { mode: 0o755 } : {})) continue;
     console.log(`  wrote ${p}`); changed++;
   }
-  changed += writeLinks(plan, left);
-  // Prune files a previous sync generated that the config no longer renders, and links eng made that it no longer wants.
-  for (const p of old.files) {
-    if (p in files || blocked(p) || !onDisk(p)) continue;
-    try { if (!fs.lstatSync(path.join(ROOT, p)).isFile()) continue; fs.rmSync(path.join(ROOT, p)); } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot remove it (${e.code}).`); continue; }
-    console.log(`  removed ${p}`); changed++;
-  }
-  changed += pruneLinks(plan, left);
-  pruneRenderedDirs(cfg.agents.skills_dir, [...old.files, ...Object.keys(files)]);
-  for (const n of [...leftNotices(cfg, all, linkPlan(cfg)), ...left]) console.log(`  left ${n}`);
+  changed += writeLinks(plan, w);
+  // Prune files a previous sync generated that the config no longer renders, the folders they leave empty, and links eng
+  // made that it no longer wants.
+  for (const p of old.files) if (!(p in all) && onDisk(p) && w.removeFile(p)) { console.log(`  removed ${p}`); changed++; }
+  pruneRenderedDirs(cfg.agents.skills_dir, [...old.files, ...Object.keys(files)], w);
+  changed += pruneLinks(plan, w);
   const lock = lockText(pkgVersion(), Object.keys(files), new Set(managedLinks(linkPlan(cfg))));
-  if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
+  if ((blocked('.eng/lock.json') ? null : readOr('.eng/lock.json')) !== lock && w.write('.eng/lock.json', lock)) { console.log('  wrote .eng/lock.json'); changed++; }
+  for (const n of leftNotices(cfg, all, linkPlan(cfg), w).fresh()) console.log(`  left ${n}`);
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
 
@@ -309,15 +264,17 @@ function sync() {
 // gets a CODEOWNERS line and baselines, so the findings it has today pass and only new ones fail. Re-running is safe:
 // an existing config is kept, and a baseline is written only when it is missing.
 function init() {
+  const w = repoWriter(ROOT);
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    if (!shipping) { fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml')); console.log('  seeded eng.config.yml (edit it, then run eng sync)'); }
-    else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
+    if (!shipping) { if (w.copy(path.join(PKG, 'templates/eng.config.yml'), 'eng.config.yml')) console.log('  seeded eng.config.yml (edit it, then run eng sync)'); }
+    else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'), w);
   }
   const cfg = loadConfig();
-  fs.mkdirSync(path.join(ROOT, checksDir(cfg)), { recursive: true });
-  sync();
-  if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
+  w.mkdir(checksDir(cfg));
+  sync(w);
+  if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg, w);
+  for (const n of w.fresh()) console.log(`  left ${n}`);
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
   console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
@@ -328,7 +285,7 @@ function init() {
 }
 const repoName = () => { try { return JSON.parse(readOr('package.json', '{}')).name?.replace(/^@[^/]+\//, '') || null; } catch { return null; } };
 const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/remotes/origin/HEAD').replace(/^origin\//, ''); } catch {} try { sh('git rev-parse --verify -q main'); return 'main'; } catch { return sh('git rev-parse --abbrev-ref HEAD'); } };
-function seedShipping(owner) {
+function seedShipping(owner, w) {
   const doc = YAML.parseDocument(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
   const pj = JSON.parse(readOr('package.json', 'null')), pm = sh('git ls-files').split('\n').some(f => /^bun\.lockb?$/.test(f)) ? 'bun' : 'npm', base = defaultBranch();
   doc.setIn(['project', 'name'], repoName() || path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir')))));
@@ -341,21 +298,18 @@ function seedShipping(owner) {
   doc.setIn(['renovation'], doc.createNode({ version: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version, policy_owner: owner }));
   const text = String(doc), errs = configErrors(YAML.parse(text));
   if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
-  fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
+  if (w.write('eng.config.yml', text)) console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
   const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
   if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
-    fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
-    fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
+    if (w.write(co, `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`)) console.log(`  wrote ${co}`);
   }
 }
 // Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
-function saveBaseline(kind, cfg) {
+function saveBaseline(kind, cfg, w) {
   const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')));
   const pack = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
   const b = makeBaseline(kind, found, { owner: cfg.renovation.policy_owner, reason: 'pre-existing when the repo adopted the standard', pack, prev: null });
-  fs.mkdirSync(path.join(ROOT, 'renovation/baselines'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, baselinePath(kind)), JSON.stringify(b, null, 2) + '\n');
-  console.log(`  wrote ${baselinePath(kind)} (${b.entries.length} pre-existing finding(s))`);
+  if (w.write(baselinePath(kind), JSON.stringify(b, null, 2) + '\n')) console.log(`  wrote ${baselinePath(kind)} (${b.entries.length} pre-existing finding(s))`);
 }
 
 function syncCheck() {
@@ -364,19 +318,21 @@ function syncCheck() {
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
   const all = render(cfg), files = managedFiles(all);
-  const bad = [], left = [], plan = linkPlan(cfg);
+  const bad = [], w = repoWriter(ROOT), plan = linkPlan(cfg);
   for (const [p, c] of Object.entries(files)) {
-    let cur; try { cur = readOr(p); } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot read it (${e.code}).`); continue; }
+    let cur; try { cur = readOr(p); } catch (e) { if (!e.code) throw e; w.note(`${p}: eng cannot read it (${e.code}).`); continue; }
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
   for (const p of executables(cfg)) if (p in files && fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   for (const g of plan) for (const e of g.entries) if (e.state === 'write') bad.push(`${e.l}: symlink missing or wrong`);
-  for (const n of [...leftNotices(cfg, all, plan), ...left]) console.log(`  left ${n}`);
-  // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
-  const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
-  if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(managedLinks(plan)))) bad.push('.eng/lock.json: config changed since last sync');
-  const std = standardProblems();
+  // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due. A lock
+  // eng may not write (under a linked .eng) is not checked, and neither is the version it would record.
+  const lockAt = blocked('.eng/lock.json'), lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
+  if (lockAt) w.add(lockAt, 'eng did not check .eng/lock.json.');
+  else if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(managedLinks(plan)))) bad.push('.eng/lock.json: config changed since last sync');
+  for (const n of leftNotices(cfg, all, plan, w).notices()) console.log(`  left ${n}`);
+  const std = standardProblems().filter(p => !(lockAt && p.startsWith('.eng/lock.json:')));
   if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: edit eng.config.yml, then run eng sync.' : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
@@ -1001,7 +957,7 @@ async function doctor() {
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
-  for (const w of renderErrors(cfg).length ? [] : leftNotices(cfg, render(cfg), linkPlan(cfg))) console.log(`  WARN ${w}`);
+  for (const w of renderErrors(cfg).length ? [] : leftNotices(cfg, render(cfg), linkPlan(cfg)).notices()) console.log(`  WARN ${w}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
