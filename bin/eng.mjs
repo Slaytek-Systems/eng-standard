@@ -108,7 +108,9 @@ function hookArgWarnings(cfg) {
 }
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
-const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
+// A lock eng may not write (under a linked .eng) is not this repo's, so the version it would record is not checked either.
+const standardProblems = () => lifecycleProblems({ lockVersion: readLock().package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) })
+  .filter(p => !(blocked('.eng/lock.json') && p.startsWith('.eng/lock.json:')));
 
 function render(cfg) {
   const errs = renderErrors(cfg);
@@ -187,6 +189,8 @@ function leftNotices(cfg, all, plan, w = repoWriter(ROOT)) {
     const b = blocked(p);
     if (b && !sources.some(s => p.startsWith(`${s}/`))) w.add(b, `eng did not write ${p}.`);
   }
+  const lockAt = blocked('.eng/lock.json');
+  if (lockAt) w.add(lockAt, 'eng did not write .eng/lock.json.');
   for (const g of plan) for (const e of g.entries.filter(e => e.state === 'kept')) w.note(`${e.l} is ${e.had} that eng did not make, so eng leaves it; Claude Code sees it, not eng's ${g.source}/${path.basename(e.l)}.`);
   return w;
 }
@@ -332,7 +336,7 @@ function syncCheck() {
   if (lockAt) w.add(lockAt, 'eng did not check .eng/lock.json.');
   else if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(managedLinks(plan)))) bad.push('.eng/lock.json: config changed since last sync');
   for (const n of leftNotices(cfg, all, plan, w).notices()) console.log(`  left ${n}`);
-  const std = standardProblems().filter(p => !(lockAt && p.startsWith('.eng/lock.json:')));
+  const std = standardProblems();
   if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: edit eng.config.yml, then run eng sync.' : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
