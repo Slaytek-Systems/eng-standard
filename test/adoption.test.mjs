@@ -195,24 +195,142 @@ test('a very noisy failing check prints at most 40 lines and 8 KiB of its end', 
   assert.ok(Buffer.byteLength(t) <= 8192 && t.split('\n').length <= 40, `bounded: ${Buffer.byteLength(t)} bytes, ${t.split('\n').length} lines`);
 });
 
-// ---------- 4. eng sync never writes per-skill links through a symlinked .claude/skills ----------
-for (const where of ['inside', 'outside'])
-  test(`eng sync refuses a .claude/skills that is a symlink to a folder ${where} the repo, and writes nothing`, () => {
+// ---------- 4. a symlinked skills or agents folder: eng follows it inside the repo and leaves it alone outside ----------
+// Core decision nd70ke343v7gc0eakdejg7m5f18hx1p9: eng manages repo-local things only. 0.17.1 refused any symlinked
+// .claude, .claude/skills or .claude/agents; a developer who shares one skills folder across harnesses could not adopt.
+const KINDS = {
+  '.claude/skills': { own: '../.agents/skills', inside: '../tools/codex/skills', real: { skills: 'tools/codex/skills' } },
+  '.claude/agents': { own: '../.agents/agents', inside: '../tools/codex/agents', real: { agents: 'tools/codex/agents' } },
+  '.claude': { own: '.agents', inside: 'tools/claude', real: { skills: 'tools/claude/skills', agents: 'tools/claude/agents' } },
+};
+const SOURCE = { skills: '.agents/skills', agents: '.agents/agents' };
+// The developer's own entries in a shared folder; grilling and poteto-agent.md share a name with eng's.
+const FOREIGN = { skills: ['mine', 'grilling', 'domain-modeling'], agents: ['mine.md', 'poteto-agent.md'] };
+function plantForeign(root, kind) {
+  if (kind === 'skills') {
+    for (const n of ['mine', 'grilling']) { fs.mkdirSync(path.join(root, n), { recursive: true }); fs.writeFileSync(path.join(root, n, 'SKILL.md'), `my ${n}\n`); }
+    fs.symlinkSync('/nonexistent/elsewhere/domain-modeling', path.join(root, 'domain-modeling'));
+  } else {
+    fs.mkdirSync(root, { recursive: true });
+    for (const n of FOREIGN.agents) fs.writeFileSync(path.join(root, n), `my ${n}\n`);
+  }
+}
+const groupsOf = link => link === '.claude' ? ['skills', 'agents'] : [link.split('/')[1]];
+const pick = (snap, prefixes) => Object.fromEntries(Object.entries(snap).filter(([k]) => prefixes.some(p => k === p || k.startsWith(`${p}/`))));
+const reaches = (dir, l, src) => fs.realpathSync(path.join(dir, l)) === fs.realpathSync(path.join(dir, src));
+
+for (const [link, k] of Object.entries(KINDS)) {
+  test(`case 1: ${link} links to eng's own source folder: the ${groupsOf(link).join(' and ')} stay real, eng writes no link into them, and Claude Code reaches each`, () => {
     const { dir, eng } = repo();
-    const target = where === 'inside' ? path.join(dir, '.agents/skills') : fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-skills-elsewhere-'));
-    if (where === 'outside') scratch.push(target);
-    fs.mkdirSync(target, { recursive: true }); fs.writeFileSync(path.join(target, 'keep.md'), 'mine\n');
-    fs.mkdirSync(path.join(dir, '.claude'));
-    fs.symlinkSync(where === 'inside' ? '../.agents/skills' : target, path.join(dir, '.claude/skills'));
-    const before = snapshot(dir), elsewhere = where === 'outside' ? snapshot(target) : null;
+    fs.mkdirSync(path.join(dir, '.agents/skills'), { recursive: true }); fs.mkdirSync(path.join(dir, '.agents/agents'), { recursive: true });
+    fs.mkdirSync(path.join(dir, path.dirname(link)), { recursive: true });
+    fs.symlinkSync(k.own, path.join(dir, link));
     const r = eng(['sync']);
-    assert.equal(r.status, 1, out(r));
-    assert.match(r.stderr, /config error: \.claude\/skills is a symlink/);
-    assert.match(r.stderr, /make \.claude\/skills a real directory/);
-    assert.deepEqual(snapshot(dir), before, 'eng sync wrote nothing in the repo');
-    if (elsewhere) assert.deepEqual(snapshot(target), elsewhere, 'nor where the link points');
-    assert.equal(eng(['sync', '--check']).status, 1);
+    assert.equal(r.status, 0, out(r));
+    for (const g of groupsOf(link)) {
+      const names = fs.readdirSync(path.join(dir, SOURCE[g]));
+      assert.ok(names.length >= 2, `${SOURCE[g]} has eng's ${g}`);
+      for (const n of names) {
+        const st = fs.lstatSync(path.join(dir, SOURCE[g], n));
+        assert.ok(!st.isSymbolicLink() && (g === 'skills' ? st.isDirectory() : st.isFile()), `${SOURCE[g]}/${n} is still a real ${g === 'skills' ? 'folder' : 'file'}`);
+        if (g === 'skills') assert.ok(fs.existsSync(path.join(dir, SOURCE[g], n, 'SKILL.md')), `${n}/SKILL.md intact`);
+        assert.ok(reaches(dir, `.claude/${g}/${n}`, `${SOURCE[g]}/${n}`), `.claude/${g}/${n} reaches ${SOURCE[g]}/${n}`);
+      }
+    }
+    const c = eng(['sync', '--check']);
+    assert.equal(c.status, 0, out(c));
+    assert.match(eng(['sync']).stdout, /eng sync: no changes/);
+    for (const g of groupsOf(link)) assert.match(eng(['doctor']).stdout, new RegExp(`ok   \\.claude/${g} resolves to \\.agents/${g}`));
   });
+
+  test(`case 2: ${link} links to another folder in the repo: eng adds its links beside the folder's own entries, never replaces one, and prunes only its own`, () => {
+    const { dir, eng } = repo();
+    fs.mkdirSync(path.join(dir, k.inside.replace(/^\.\.\//, '')), { recursive: true });
+    for (const [g, real] of Object.entries(k.real)) plantForeign(path.join(dir, real), g);
+    fs.mkdirSync(path.join(dir, path.dirname(link)), { recursive: true });
+    fs.symlinkSync(k.inside, path.join(dir, link));
+    const foreign = Object.entries(k.real).flatMap(([g, real]) => FOREIGN[g].map(n => `${real}/${n}`));
+    const mine = pick(snapshot(dir), foreign);
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    for (const [g, real] of Object.entries(k.real)) {
+      for (const n of fs.readdirSync(path.join(dir, SOURCE[g])).filter(n => !FOREIGN[g].includes(n))) {
+        assert.equal(fs.readlinkSync(path.join(dir, real, n)), `../../../${SOURCE[g]}/${n}`, `${real}/${n} links relative to ${real}`);
+        assert.ok(reaches(dir, `.claude/${g}/${n}`, `${SOURCE[g]}/${n}`), `.claude/${g}/${n} reaches ${SOURCE[g]}/${n}`);
+      }
+      for (const n of FOREIGN[g].filter(n => fs.existsSync(path.join(PKG, 'vendor/pstack/agents', n)) || n === 'grilling'))
+        assert.match(r.stdout, new RegExp(`left \\.claude/${g}/${n}: ${real}/${n} is a (folder|file) that eng did not make, so eng leaves it`));
+    }
+    assert.deepEqual(pick(snapshot(dir), foreign), mine, "the folder's own entries are untouched");
+    const c = eng(['sync', '--check']);
+    assert.equal(c.status, 0, out(c));
+    assert.match(eng(['sync']).stdout, /eng sync: no changes/);
+    const cfg = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8'));
+    cfg.agents.skills = [...cfg.agents.skills.filter(s => s !== 'eng/eng-retro' && s !== 'pstack/*'), 'pstack/statechart', 'pstack/create-formal-verification-skill'];
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(cfg));
+    const p = eng(['sync']);
+    assert.equal(p.status, 0, out(p));
+    for (const [g, real] of Object.entries(k.real)) {
+      const left = fs.readdirSync(path.join(dir, real)).filter(n => !FOREIGN[g].includes(n));
+      assert.deepEqual(left.sort(), fs.readdirSync(path.join(dir, SOURCE[g])).filter(n => !FOREIGN[g].includes(n)).sort(), `${real} holds eng links only for what the config still renders`);
+      if (g === 'skills') assert.ok(!left.includes('eng-retro'), 'eng-retro unlinked');
+      if (g === 'agents') assert.deepEqual(left, [], 'comment-sicko.md unlinked');
+    }
+    assert.deepEqual(pick(snapshot(dir), foreign), mine, 'pruning removed none of them');
+    assert.equal(eng(['sync', '--check']).status, 0);
+  });
+
+  test(`case 3: ${link} links outside the repo: eng writes and deletes nothing there, says where its ${groupsOf(link).join(' and ')} are, and doctor warns`, () => {
+    const { dir, eng } = repo();
+    const shared = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-shared-skills-')); scratch.push(shared);
+    if (link === '.claude') { plantForeign(path.join(shared, 'skills'), 'skills'); plantForeign(path.join(shared, 'agents'), 'agents'); fs.writeFileSync(path.join(shared, 'settings.json'), '{"mine":true}\n'); }
+    else plantForeign(shared, groupsOf(link)[0]);
+    fs.mkdirSync(path.join(dir, path.dirname(link)), { recursive: true });
+    fs.symlinkSync(shared, path.join(dir, link));
+    const before = snapshot(shared);
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    const real = fs.realpathSync(shared);
+    for (const g of groupsOf(link)) {
+      const where = link === '.claude' ? path.join(real, g) : real;
+      assert.ok(r.stdout.includes(`left .claude/${g} resolves to ${where}, outside this repo, so eng writes and deletes nothing there. eng's ${g === 'skills' ? 'skills' : 'subagents'} are in ${SOURCE[g]}`), out(r));
+    }
+    if (link === '.claude') assert.ok(r.stdout.includes(`left .claude/settings.json resolves to ${path.join(real, 'settings.json')}, outside this repo, so eng does not write it.`), out(r));
+    const c = eng(['sync', '--check']);
+    assert.equal(c.status, 0, out(c));
+    const d = eng(['doctor']);
+    for (const g of groupsOf(link)) assert.match(d.stdout, new RegExp(`WARN \\.claude/${g} resolves to .*outside this repo`));
+    assert.doesNotMatch(out(d), /FAIL.*\.claude/);
+    assert.deepEqual(snapshot(shared), before, 'the shared folder: same files, bytes and links after sync, sync --check and doctor');
+  });
+}
+
+test('a real folder or file where eng wants a link is never deleted: eng leaves it, says so, and links the rest', () => {
+  const { dir, eng } = repo();
+  fs.mkdirSync(path.join(dir, '.claude/skills/grilling'), { recursive: true }); fs.writeFileSync(path.join(dir, '.claude/skills/grilling/SKILL.md'), 'my grilling\n');
+  fs.mkdirSync(path.join(dir, '.claude/agents'), { recursive: true }); fs.writeFileSync(path.join(dir, '.claude/agents/poteto-agent.md'), 'my agent\n');
+  const mine = pick(snapshot(dir), ['.claude/skills/grilling', '.claude/agents/poteto-agent.md']);
+  const r = eng(['sync']);
+  assert.equal(r.status, 0, out(r));
+  assert.deepEqual(pick(snapshot(dir), ['.claude/skills/grilling', '.claude/agents/poteto-agent.md']), mine, 'both untouched');
+  assert.match(r.stdout, /left \.claude\/skills\/grilling: \.claude\/skills\/grilling is a folder that eng did not make, so eng leaves it/);
+  assert.match(r.stdout, /left \.claude\/agents\/poteto-agent\.md: \.claude\/agents\/poteto-agent\.md is a file that eng did not make/);
+  assert.equal(fs.readlinkSync(path.join(dir, '.claude/skills/retro')), '../../.agents/skills/retro');
+  assert.equal(eng(['sync', '--check']).status, 0);
+});
+
+test('plain .claude folders link as in 0.17.1: one link per skill and subagent at ../../<source>/<name>, all in the lock, no notice', () => {
+  const { dir, eng } = repo();
+  const r = eng(['sync']);
+  assert.equal(r.status, 0, out(r));
+  assert.doesNotMatch(r.stdout, /\bleft /);
+  const links = [];
+  for (const g of ['skills', 'agents']) for (const n of fs.readdirSync(path.join(dir, SOURCE[g]))) {
+    assert.equal(fs.readlinkSync(path.join(dir, '.claude', g, n)), `../../${SOURCE[g]}/${n}`); links.push(`.claude/${g}/${n}`);
+  }
+  assert.deepEqual(fs.readdirSync(path.join(dir, '.claude/skills')).length + fs.readdirSync(path.join(dir, '.claude/agents')).length, links.length);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.eng/lock.json'), 'utf8')).links, links.sort());
+});
 
 // ---------- 5. a container a check starts is outside eng's budget unless docker is given the limits ----------
 // The container lint is a nudge: a text scan of common shell forms cannot parse shell, so it warns and never fails.
