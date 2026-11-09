@@ -412,6 +412,60 @@ const sl = fs.symlinkSync; fs.symlinkSync = function (t, p, ...a) { plant(p); re
   assert.equal(fs.readlinkSync(path.join(dir, '.claude/skills/retro')), '../../.agents/skills/retro', 'the rest are linked');
 });
 
+// PR #58 verdict 3: each test below is one of its four findings. eng writes only inside real folders in the repo, and a
+// link is eng's only when its target is exactly the one eng writes.
+const ESCAPES = { 'through ..': () => '../../.agents/skills/../../../eng-r4-outside/missing', 'through a linked folder in the source': (dir, ext) => { fs.symlinkSync(ext, path.join(dir, '.agents/skills/bridge')); return '../../.agents/skills/bridge/missing'; } };
+for (const [how, target] of Object.entries(ESCAPES))
+  test(`a developer's link whose target only starts like eng's and escapes ${how} is not eng's: sync neither replaces nor prunes it`, () => {
+    const { dir, eng } = repo();
+    assert.equal(eng(['sync']).status, 0);
+    const t = target(dir, elsewhere());
+    for (const n of ['grilling', 'mine']) { fs.rmSync(path.join(dir, '.claude/skills', n), { force: true }); fs.symlinkSync(t, path.join(dir, '.claude/skills', n)); }
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    for (const n of ['grilling', 'mine']) assert.equal(fs.readlinkSync(path.join(dir, '.claude/skills', n)), t, `.claude/skills/${n} is untouched`);
+    setSkills(dir, FEWER);
+    assert.equal(eng(['sync']).status, 0);
+    for (const n of ['grilling', 'mine']) assert.equal(fs.readlinkSync(path.join(dir, '.claude/skills', n)), t, `.claude/skills/${n} survives dropping grilling`);
+  });
+
+test('a regular file named like a skill in a linked skills folder is not a skill the harnesses find', () => {
+  const { dir, eng } = repo(doctorClean);
+  const ext = elsewhere();
+  fs.mkdirSync(path.join(ext, 'shared')); fs.writeFileSync(path.join(ext, 'shared/grilling'), 'not a skill\n');
+  fs.mkdirSync(path.join(dir, '.claude')); fs.symlinkSync(path.join(ext, 'shared'), path.join(dir, '.claude/skills'));
+  const r = eng(['sync']), c = eng(['sync', '--check']), d = doctor(eng);
+  for (const x of [r, c, d]) { assert.equal(x.status, 0, out(x)); assert.match(x.stdout, /Through \.claude\/skills the harnesses find none of eng's/, out(x)); }
+});
+
+test('eng\'s source under a .eng linked outside the repo: sync writes no lock or anything else there, and says so', () => {
+  const { dir, eng } = repo(c => { c.agents.skills_dir = '.eng/skills'; return c; });
+  const ext = elsewhere();
+  fs.symlinkSync(ext, path.join(dir, '.eng'));
+  const before = deep(ext);
+  const r = eng(['sync']);
+  assert.equal(r.status, 0, out(r));
+  assert.deepEqual(deep(ext), before, 'nothing written outside');
+  assert.match(r.stdout, /left \.eng is a symlink to .*eng did not write \.eng\/lock\.json\./);
+  setSkills(dir, FEWER);
+  assert.equal(eng(['sync']).status, 0);
+  assert.equal(eng(['sync', '--check']).status, 0);
+  assert.deepEqual(deep(ext), before, 'nor on a later sync or check');
+});
+
+for (const parent of ['.claude', '.eng'])
+  test(`eng init with the checks folder under a ${parent} linked outside the repo makes no folder there`, () => {
+    const { dir, eng } = repo(c => { c.agents.skills_dir = `${parent}/skills`; c.verification.checks_dir = `${parent}/checks`; return c; });
+    const ext = elsewhere();
+    fs.symlinkSync(ext, path.join(dir, parent));
+    const before = deep(ext);
+    const r = eng(['init']);
+    assert.equal(r.status, 0, out(r));
+    assert.deepEqual(deep(ext), before, 'nothing made outside');
+    assert.match(r.stdout, re(`left ${parent} is a symlink to ${ext}, so eng writes and deletes nothing through it.`));
+    assert.match(r.stdout, re(`eng did not write ${parent}/checks.`));
+  });
+
 // ---------- 5. a container a check starts is outside eng's budget unless docker is given the limits ----------
 // The container lint is a nudge: a text scan of common shell forms cannot parse shell, so it warns and never fails.
 const CONTAINER_WARN = /WARN \.eng\/checks\/tla\.sh:4: \[container-unbounded\] Container without a memory and CPU limit/;
