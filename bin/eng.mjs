@@ -273,8 +273,8 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
 function sync() {
   const migrated = migrateConfig();
   const cfg = loadConfig();
-  const plan = linkPlan(cfg), left = [];
   const all = render(cfg), files = managedFiles(all), exec = executables(cfg);
+  const plan = linkPlan(cfg), left = [];
   const old = parseLock(readOr('.eng/lock.json'));
   let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
