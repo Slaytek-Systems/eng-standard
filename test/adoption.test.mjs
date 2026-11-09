@@ -332,7 +332,7 @@ test('plain .claude folders link as in 0.17.1: one link per skill and subagent a
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.eng/lock.json'), 'utf8')).links, links.sort());
 });
 
-// PR #58 verdict 1 (gpt-6.1-sol): each test below is one of its reproductions.
+// PR #58 verdict 1: each test below is one of its reproductions.
 const elsewhere = () => { const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-elsewhere-')); scratch.push(d); return d; };
 // A --require hook that changes the disk at one fs call, the way a developer or another process could while sync runs.
 const hook = body => { const f = path.join(elsewhere(), 'hook.cjs'); fs.writeFileSync(f, `const fs = require('fs'), path = require('path'), at = p => path.join(process.cwd(), p);\n${body}\n`); return { NODE_OPTIONS: `--require=${f}` }; };

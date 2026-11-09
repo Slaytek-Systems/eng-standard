@@ -63,6 +63,16 @@ somewhere other than eng's skills. It leaves the entry and prints its name, and 
 eng's. eng prunes only its own links. A generated file whose path resolves outside the repo (`.claude/settings.json`
 when `.claude` is a link out) is not written either.
 
+eng decides what it made from the entry on disk now: a link whose target is the one eng writes, or a link into eng's
+skills folder. `.eng/lock.json` never makes an entry eng's, so a developer's link that replaced one of eng's stays. A
+folder that reaches eng's source through a link out of the repo counts as outside. A link loop or a folder eng cannot
+read gets a notice, and eng writes nothing through it. After pruning, eng removes an empty folder under the skills
+source only when a file it rendered was in it.
+
+eng sync is a single actor. A folder swapped for a link while sync runs is out of scope: eng resolves each path again
+just before each change and creates links only where nothing is, so such a swap can at most leave an empty folder where
+the swapped link points.
+
 ## Upgrade
 
 1. `eng doctor`. Read every CHANGELOG entry it lists. Entries marked **Breaking** or risk:high change gates, CI or
