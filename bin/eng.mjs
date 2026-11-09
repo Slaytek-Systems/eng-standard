@@ -54,6 +54,10 @@ function validate(c) { const errs = configErrors(c); if (errs.length) die('confi
 // A folder eng writes into is checked where it lands, joined to the repo root exactly as eng writes it (so /.claude/skills
 // is the repo's), with .. resolved, so ../<repo>/.claude/skills and .Claude/Skills count too.
 const harnessOut = p => harnessRel(path.relative(ROOT, path.join(ROOT, p)));
+// Every file the repo has (tracked and untracked, not ignored) for eng's scans (doctor, lint, baselines, rule proofs),
+// without .claude/skills and .claude/agents: those are the developer's, so eng never opens them and their state (an
+// unreadable file, a FIFO) can never fail or block a scan.
+const repoFiles = () => sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !harnessOut(f));
 function harnessConfigErrors(c) {
   const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
@@ -262,7 +266,7 @@ function seedShipping(owner) {
 }
 // Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
 function saveBaseline(kind, cfg) {
-  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')));
+  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')));
   const pack = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
   const b = makeBaseline(kind, found, { owner: cfg.renovation.policy_owner, reason: 'pre-existing when the repo adopted the standard', pack, prev: null });
   fs.mkdirSync(path.join(ROOT, 'renovation/baselines'), { recursive: true });
@@ -311,7 +315,7 @@ function builtinRules(cfg) {
   if (cfg.flags?.file) r.push({ id: 'flags-default-off', paths: cfg.flags.file, pattern: ':\\s*true\\b', flags: '',
     message: 'Flags ship off by default. Set it to false; turn it on as a separate release step.', proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/flags-default-off` } });
   if (cfg.hygiene?.tmp_lint !== false) r.push({ ...TMP_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/test-bare-tmpdir` } });
-  let files = []; try { files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean); } catch {} // rules prove runs outside git too
+  let files = []; try { files = repoFiles().filter(Boolean); } catch {} // rules prove runs outside git too
   if (usesHandleRule(treeManifests(files)))
     r.push({ ...CONVEX_HANDLE_RULE, proven_by: { incident: 'builtin', fixture: `${PKG}/fixtures/${CONVEX_HANDLE_RULE.id}` } });
   const cacheMode = diskRules(cfg).no_cache_in_evidence.mode;  // cargo-target-per-run follows its disk rule: off drops it, warn reports it
@@ -343,7 +347,7 @@ function lintFiles(rule, files, base) {
 }
 const hitText = h => `${h.file}:${h.line}: [${h.rule}] ${h.message}`;
 function lintHits(cfg) {
-  const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('.eng/rule-proofs/') && fs.existsSync(path.join(ROOT, f)));
+  const files = repoFiles().filter(f => f && !f.startsWith('.eng/rule-proofs/') && fs.existsSync(path.join(ROOT, f)));
   // Files eng sync writes (drift-tracked: rendered + vendored) are owned by the standard, not this repo. The drift
   // check forbids editing them, so repo lint rules must not flag them either (fix such hits upstream in eng-standard).
   // A config with no stack renders nothing (eng-standard itself: it does not sync its own files).
@@ -365,7 +369,7 @@ function lint() {
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
   // Credential-looking filenames are checked where eng init baselined them (a repo that adopted the standard while shipping).
-  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !f.startsWith('renovation/')))).fresh : [];
+  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')))).fresh : [];
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
@@ -614,7 +618,7 @@ function e2e() {
   const badPins = Object.entries(pins).filter(([n, v]) => deps[n] !== v).map(([n, v]) => `${n} must be pinned exactly to ${v} in package.json (found ${deps[n] ?? 'missing'})`);
   if (badPins.length) die(`e2e: ${badPins.join('; ')}`);
   if (e.model === 'none') {
-    const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => /\.e2e\.ts$/.test(f) || f === 'e2e.config.ts');
+    const files = repoFiles().filter(f => /\.e2e\.ts$/.test(f) || f === 'e2e.config.ts');
     const ai = files.filter(f => /\bagent\.(act|assert|waitFor|extract)\(|^\s*agents\s*:/m.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
     if (ai.length) die(`e2e: e2e.model is none but these files use agent steps or configure agents: ${ai.join(', ')}`);
   }
@@ -905,7 +909,7 @@ async function doctor() {
   // package vendored inside the repo) is not the repo's tooling.
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
-  const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
+  const files = repoFiles().filter(f => f && !installed.has(f) && !ownPkg(f));
   const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);

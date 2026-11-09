@@ -286,3 +286,20 @@ test('a refused config is not migrated: eng.config.yml keeps its bytes', () => {
   const res = r.eng(['sync']); assert.equal(res.status, 1, out(res)); assert.match(out(res), REFUSED);
   assert.equal(fs.readFileSync(r.file('eng.config.yml'), 'utf8'), before);
 });
+
+test("doctor and lint never open the developer's files in .claude/skills or .claude/agents: unreadable files and FIFOs neither crash nor block them", () => {
+  const r = repo(), away = tmp('eng-fifos-');
+  for (const d of ['skills', 'agents']) {
+    const dev = r.file(`.claude/${d}/developer`); fs.mkdirSync(dev, { recursive: true });
+    for (const f of ['health.test.mjs', 'package.json', 'health.test.txt']) { fs.writeFileSync(path.join(dev, f), 'x\n'); fs.chmodSync(path.join(dev, f), 0o000); }
+    for (const f of ['fifo.test.mjs', 'fifo.sh']) { const fifo = path.join(away, `${d}-${f}`); execSync(`mkfifo ${JSON.stringify(fifo)}`); fs.symlinkSync(fifo, path.join(dev, f)); }
+  }
+  const before = claudeFolders(r);
+  for (const args of [['doctor'], ['lint']]) {
+    const res = spawnSync(process.execPath, [ENG, ...args], { cwd: r.dir, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(res.signal, null, `eng ${args} did not block: ${out(res).slice(-1500)}`);
+    assert.equal(res.status, 0, `eng ${args}: ${out(res).slice(-2000)}`);
+    assert.doesNotMatch(out(res), /EACCES|\.claude\/(skills|agents)\/developer/);
+  }
+  assert.deepEqual(claudeFolders(r), before);
+});
