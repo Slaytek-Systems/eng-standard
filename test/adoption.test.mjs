@@ -438,8 +438,8 @@ test('a regular file named like a skill in a linked skills folder is not a skill
   for (const x of [r, c, d]) { assert.equal(x.status, 0, out(x)); assert.match(x.stdout, /Through \.claude\/skills the harnesses find none of eng's/, out(x)); }
 });
 
-test('eng\'s source under a .eng linked outside the repo: sync writes no lock or anything else there, and says so', () => {
-  const { dir, eng } = repo(c => { c.agents.skills_dir = '.eng/skills'; return c; });
+test('eng\'s source under a .eng linked outside the repo: sync writes no lock or anything else there, says so, and doctor passes', () => {
+  const { dir, eng } = repo(c => { c.agents.skills_dir = '.eng/skills'; return doctorClean(c); });
   const ext = elsewhere();
   fs.symlinkSync(ext, path.join(dir, '.eng'));
   const before = deep(ext);
@@ -450,7 +450,10 @@ test('eng\'s source under a .eng linked outside the repo: sync writes no lock or
   setSkills(dir, FEWER);
   assert.equal(eng(['sync']).status, 0);
   assert.equal(eng(['sync', '--check']).status, 0);
-  assert.deepEqual(deep(ext), before, 'nor on a later sync or check');
+  const d = doctor(eng);
+  assert.equal(d.status, 0, out(d));
+  assert.match(d.stdout, /WARN \.eng is a symlink to .*eng did not write \.eng\/lock\.json\./);
+  assert.deepEqual(deep(ext), before, 'nor on a later sync, check or doctor');
 });
 
 for (const parent of ['.claude', '.eng'])
