@@ -59,8 +59,10 @@ function configErrors(c) {
   for (const m of retired(c)) if (m.index !== undefined) errs.push(`${m.what} is not an eng gate any more: ${m.why}. Fix: ${FIX}`);
   for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
   for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
-  const pre = c.hooks?.pre_commit;
-  if (pre !== undefined && !(Array.isArray(pre) && pre.every(x => typeof x === 'string' && x.trim()))) errs.push('hooks.pre_commit must be a list of non-empty commands');
+  for (const k of HOOK_KEYS) {
+    const v = c.hooks?.[k];
+    if (v !== undefined && !(Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim()))) errs.push(`hooks.${k} must be a list of non-empty commands`);
+  }
   const post = c.agents?.post_edit_command;
   if (post !== undefined && !(typeof post === 'string' && post.trim())) errs.push('agents.post_edit_command must be a non-empty command');
   if (c.ship?.log_step !== undefined && typeof c.ship.log_step !== 'string') errs.push('ship.log_step must be a string');
@@ -82,6 +84,26 @@ function configErrors(c) {
 }
 
 const isExec = abs => (fs.statSync(abs).mode & 0o100) !== 0;
+const HOOK_KEYS = ['pre_commit', 'pre_push'];
+// eng doctor: a hook command whose first word is a repo-relative path (scripts/x.sh, ./bin/check) must name an executable file.
+function hookCommandChecks(cfg) {
+  return HOOK_KEYS.flatMap(k => (cfg.hooks?.[k] ?? []).flatMap((cmd, i) => {
+    const p = cmd.trim().split(/\s+/)[0], rel = path.normalize(p);
+    if (!p.includes('/') || path.isAbsolute(p) || /^[$~'"]/.test(p) || rel.startsWith('..')) return [];
+    const abs = path.join(ROOT, rel), file = fs.existsSync(abs) && fs.statSync(abs).isFile(), ok = file && isExec(abs);
+    return [{ ok, what: `hooks.${k}[${i}]: ${p} ${!file ? 'is missing' : ok ? 'is an executable file' : 'is not executable'}`,
+      fix: file ? `chmod +x ${rel} and commit the mode (git update-index --chmod=+x ${rel})` : `add ${rel}, or fix hooks.${k}[${i}] in eng.config.yml` }];
+  }));
+}
+// eng doctor: a hooks.pre_push script receives the hook's arguments ($1 remote name, $2 URL) only when its command passes
+// them on (PR #56 verdict 1 note: a branch-class script that reads them saw none). A warning, not a failure.
+function hookArgWarnings(cfg) {
+  return (cfg.hooks?.pre_push ?? []).flatMap((cmd, i) => {
+    const p = cmd.trim().split(/\s+/)[0];
+    if (!p.includes('/') || path.isAbsolute(p) || /^[$~'"]/.test(p) || path.normalize(p).startsWith('..') || /\$(@|\*|1|2|\{[@*12])/.test(cmd)) return [];
+    return [`hooks.pre_push[${i}]: ${p} gets none of the hook's arguments (remote name, URL); pass them on: ${p} "$@"`];
+  });
+}
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
@@ -812,10 +834,11 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
+  for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }

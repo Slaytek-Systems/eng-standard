@@ -249,6 +249,7 @@ db:
 
 hooks:
   pre_commit: []                  # optional extra commands; .githooks/pre-commit runs each in its own sh -c after sync --check and lint, and stops at the first failure.
+  pre_push: []                    # optional extra commands; .githooks/pre-push runs eng's push checks first, then each in its own sh -c with the hook's arguments as $1 and $2 (remote, URL; pass them on with "$@") and the same ref lines on stdin, and stops at the first failure. git push --no-verify skips them all.
 
 constraints:
   rules:
