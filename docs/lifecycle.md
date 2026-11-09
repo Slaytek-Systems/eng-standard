@@ -45,6 +45,24 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 upgrade is a choice. If it cannot read the latest version, it says `latest UNKNOWN` and why. It never prints that as
 current.
 
+## Skills and subagents for Claude Code
+
+eng renders skills into `agents.skills_dir` (`.agents/skills`) and subagents into `.agents/agents`. For Claude Code it
+links each one into `.claude/skills` and `.claude/agents`. eng manages what is inside the repo only. Many developers
+point every harness's skills folder at one shared folder, so when `.claude`, `.claude/skills` or `.claude/agents` is a
+symlink, eng resolves it and does one of three things:
+
+| It resolves to | eng sync | `sync --check` and `eng doctor` |
+|---|---|---|
+| eng's own folder (`.agents/skills`, `.agents/agents`) | writes no link: Claude Code already sees every entry | pass when each entry resolves to eng's copy |
+| another folder in the repo (`.codex/skills`) | writes its links there, each relative to that folder | as for a real folder |
+| a folder outside the repo | writes and deletes nothing through it, and prints where eng's skills are | do not fail; doctor shows a `WARN` |
+
+In every case eng never deletes or replaces an entry it did not make: a folder, a file, or a link that points
+somewhere other than eng's skills. It leaves the entry and prints its name, and Claude Code sees that entry instead of
+eng's. eng prunes only its own links. A generated file whose path resolves outside the repo (`.claude/settings.json`
+when `.claude` is a link out) is not written either.
+
 ## Upgrade
 
 1. `eng doctor`. Read every CHANGELOG entry it lists. Entries marked **Breaking** or risk:high change gates, CI or

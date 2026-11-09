@@ -2,6 +2,18 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.17.2 (9 Nov 2026)
+
+**eng links skills only inside the repo, and never refuses a shared skills folder** (Core decision nd70ke343v7gc0eakdejg7m5f18hx1p9, Matt, 9 Nov 2026: eng manages repo-local things only, and never writes into or deletes from a machine-global folder). This replaces 0.17.1's refusal of a symlinked `.claude`, `.claude/skills` or `.claude/agents`, which blocked any developer who points every harness's skills folder at one shared folder. No new command and no config change.
+
+- **A symlinked skills or agents folder is resolved, not refused.** When `.claude`, `.claude/skills` or `.claude/agents` is a symlink, eng follows it to its real folder:
+  - **eng's own folder** (`.claude/skills -> ../.agents/skills`, `.claude -> .agents`): Claude Code already sees every skill, so sync writes no link. Before 0.17.1, sync replaced each skill folder with a link to itself. `sync --check` passes when each `.claude/skills/<name>` resolves to `.agents/skills/<name>`.
+  - **another folder in the repo** (`.claude/skills -> ../.codex/skills`): sync writes its links there, each target relative to that folder, beside the folder's own entries.
+  - **a folder outside the repo**: sync writes and deletes nothing through it and prints one line per folder: where it resolves, that it is outside the repo, and that eng's skills are in `.agents/skills` (subagents in `.agents/agents`) for you to add to that folder if you want. `sync --check` does not fail on it; `eng doctor` shows it as a `WARN`. A generated file whose path resolves outside the repo (`.claude/settings.json` under a `.claude` that links out) is not written, with a notice.
+- **eng never deletes or replaces an entry it did not make.** Where eng wants a link and finds a folder, a file, or a link that points somewhere other than eng's skills (a Codex skill of the same name), it leaves it, prints its name, and links the rest; `sync --check` does not fail on it, and `eng doctor` warns. Before, sync deleted it. Pruning removes only links eng made (they point into eng's folder, or a plain folder's `.eng/lock.json` lists them), never a folder or file. `.eng/lock.json` lists only the links eng manages.
+- **Unchanged:** a repo with real `.claude/skills` and `.claude/agents` folders renders and links byte for byte as in 0.17.1, with the same sync output.
+- **Upgrade:** zero manual edits, and no config migration. Move the pin and run `eng sync`. A repo that turned a symlinked folder into a real one for 0.17.1 can keep it, or point it back at its shared folder.
+
 ## 0.17.1 (9 Nov 2026)
 
 **Adoption fixes from Kalsigns** (Core nd7cpb3k1atph5xsgdfzt4nm4d8ht44g: the Kalsigns adoption of v0.16 hit five gaps the next adopter would hit too). No new command and no config change.
