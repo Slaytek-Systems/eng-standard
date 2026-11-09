@@ -50,3 +50,27 @@ tools:
     earns_its_cost_when: "structural or permission models with many relations (access-control graphs, schema invariants) where small-scope counterexamples matter"
     weight: heavy
     budget: "memory=2G workers=1 timeout=10m"
+
+# A check that starts a container. docker (or podman) runs the container in its daemon's cgroup: outside the check's budget
+# scope, outside the watchdog's process tree, and no ENG_BUDGET_UNIT reaches it. eng's budget bounds the docker client only;
+# the container's limits are the ones docker is given, and docker enforces them. eng lint and eng doctor warn
+# (container-unbounded) on a check's docker run or podman run whose own options (before the image) lack --memory or -m, or
+# --cpus; the warning never fails lint, the gate or doctor. It is a text check of common forms in one script, one invocation
+# at a time: a wrapper function, a variable or an unusual construction can hide an invocation from it.
+containers:
+  use: "a check that runs its tool in a container (docker run, podman run)"
+  enforced_by: "docker (or podman), from the --memory, --memory-swap and --cpus flags; eng bounds only the docker client process"
+  earns_its_cost_when: "the tool needs an image the repo cannot install (a pinned JVM toolchain, a database); otherwise run it on the host under the check's budget"
+  pattern: |
+    trap 'docker rm -f "$ENG_BUDGET_UNIT" >/dev/null 2>&1' EXIT
+    docker run --rm --name "$ENG_BUDGET_UNIT" \
+      --memory "${ENG_BUDGET_HEAP_MB}m" --memory-swap "${ENG_BUDGET_HEAP_MB}m" \
+      --cpus "$ENG_BUDGET_WORKERS" \
+      <image> <command>
+  why: >-
+    --memory and --cpus within the check's # budget (ENG_BUDGET_HEAP_MB is 75% of it, which leaves room for the host side);
+    --memory-swap equal to --memory, so swap does not double it. --rm removes the container when it stops. The name is
+    ENG_BUDGET_UNIT, the id eng gives each check run, so it is unique and findable. The EXIT trap removes the container when
+    the check exits on its own. When eng stops a check (a budget timeout or memory stop, or a cancelled gate), eng does not
+    promise the trap runs: the stop can end the shell before it cleans up. Then the container may keep running, and
+    docker rm -f <name> removes it (docker ps --filter name=eng-check- lists them). eng removes no container.

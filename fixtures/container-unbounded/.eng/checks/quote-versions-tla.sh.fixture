@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# weight: heavy
+# budget: memory=2G workers=2 timeout=60m
+# Kalsigns review r2 (8 Nov 2026): TLC in a container. -Xmx1g bounds the heap only; the container ran in the docker daemon's
+# cgroup, outside the check's 2 GiB budget, with no --memory or --cpus.
+docker run --rm --name "tlc-$$" \
+  -v "$PWD:/spec" tlc:1.8 \
+  java -Xmx1g -jar /opt/tla2tools.jar -workers 2 /spec/QuoteVersions.tla

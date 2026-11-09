@@ -32,15 +32,16 @@ before(() => {
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 test('eng gate: children get a per-run ENG_TMP/TMPDIR, removed on failure', () => {
-  setCfg(c => { c.project.commands.test = 'echo "$ENG_TMP" > "$ENG_TMP_BASE/seen"; test "$TMPDIR" = "$ENG_TMP" && mkdir -p "$TMPDIR/big" && exit 3'; });
+  setCfg(c => { c.project.commands.test = 'echo "$ENG_TMP" > "$ENG_TMP_BASE/seen"; stat -c %a "$TMPDIR" > "$ENG_TMP_BASE/mode"; test "$TMPDIR" = "$ENG_TMP" && mkdir -p "$TMPDIR/big" && exit 3'; });
   const r = eng('gate');
   assert.equal(r.status, 1, r.stdout + r.stderr);
   const seen = fs.readFileSync(path.join(base, 'seen'), 'utf8').trim();
-  assert.match(path.basename(path.dirname(seen)), /^eng-hyg-[a-z0-9]+-\d+-/);
-  assert.match(path.basename(seen), /^test-/, 'each gate step gets its own dir inside the per-run dir');
-  assert.equal(path.dirname(path.dirname(seen)), base);
-  assert.ok(!fs.existsSync(path.dirname(seen)), 'per-run dir removed after a failed gate');
-  assert.deepEqual(engDirs(), []);
+  assert.match(r.stdout, new RegExp(`ENG_TMP=${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/eng-hyg-[a-z0-9]+-\\d+-`), 'the per-run dir is in the scratch root');
+  // A step's TMPDIR is its own 0700 dir, short enough for a unix socket in it (lib/hygiene.mjs SOCK_MAX), not inside the per-run dir.
+  assert.equal(fs.readFileSync(path.join(base, 'mode'), 'utf8').trim(), '700');
+  if (!os.homedir().startsWith('/tmp/')) assert.ok(Buffer.byteLength(seen) < 70, `step TMPDIR is short: ${seen}`);
+  assert.ok(!fs.existsSync(seen), 'the step\'s dir is removed after a failed gate');
+  assert.deepEqual(engDirs(), [], 'per-run dir removed after a failed gate');
 });
 
 test('eng gate: per-run dir removed on SIGTERM', async () => {
