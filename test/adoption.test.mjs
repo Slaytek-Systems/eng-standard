@@ -215,7 +215,9 @@ for (const where of ['inside', 'outside'])
   });
 
 // ---------- 5. a container a check starts is outside eng's budget unless docker is given the limits ----------
-test('eng lint fails a check\'s docker or podman run without both --memory and --cpus, and passes one that has them', () => {
+// The container lint is a nudge: a text scan of common shell forms cannot parse shell, so it warns and never fails.
+const CONTAINER_WARN = /WARN \.eng\/checks\/tla\.sh:4: \[container-unbounded\] Container without a memory and CPU limit/;
+test('eng lint warns on a check\'s docker or podman run without both --memory and --cpus, never fails on it, and is quiet on one that has them', () => {
   const { eng, checks, dir } = repo();
   const lint = body => { fs.rmSync(path.join(dir, '.eng/checks'), { recursive: true, force: true }); checks({ tla: `#!/usr/bin/env bash\n# weight: heavy\n# budget: memory=2G workers=2 timeout=10m\n${body}\n` }); return eng(['lint']); };
   for (const bad of [
@@ -231,10 +233,17 @@ test('eng lint fails a check\'s docker or podman run without both --memory and -
     'docker run --rm image true # --memory=128m --cpus=1',
     'docker run --rm --memory=0 --cpus=1 img true',
     'out=$(docker run --rm img true)',
+    'docker run --rm --memory=128m -m0 --cpus=1 img true',
+    'docker run --rm -m128m --memory=0 --cpus=1 img true',
+    'docker run --rm -m 128m -m 0 --cpus=1 img true',
+    'docker run --rm --memory=128m --cpus=1 --cpus=0 img true',
+    'docker run --rm 2>/dev/null img true',
+    'cat <<EOF\nsample\nEOF\ndocker run --rm img true',
   ]) {
     const r = lint(bad);
-    assert.equal(r.status, 1, `${bad}\n${out(r)}`);
-    assert.match(r.stderr, /tla\.sh:4: \[heavy-tool-unbounded\] Container without a memory and CPU limit/, bad);
+    assert.equal(r.status, 0, `a warning, not a failure: ${bad}\n${out(r)}`);
+    assert.match(r.stdout, bad.startsWith('cat') ? /tla\.sh:7: \[container-unbounded\]/ : CONTAINER_WARN, bad);
+    assert.match(r.stdout, /eng lint: PASS .*warning/, bad);
   }
   for (const ok of [
     'docker run --rm --name tlc-$$ --memory 1536m --cpus 2 tlc:1 true',
@@ -247,12 +256,40 @@ test('eng lint fails a check\'s docker or podman run without both --memory and -
     'docker run --rm --memory=128m --cpus=1 img true; docker run --rm -m 64m --cpus .5 img true',
     '# docker run --rm img (a comment)',
     'docker ps',
+    'docker run --rm -m0 --memory=128m --cpus=1 img true',
+    'docker run --rm 2>/dev/null -m128m --cpus=1 img true',
+    'docker run --rm >out.log 2>&1 -m128m --cpus=1 img true',
+    'docker run --rm > out.log 2> err.log < in.txt -m128m --cpus=1 img true',
+    'docker run --rm >>out.log &>all.log -m128m --cpus=1 img true',
+    "cat <<'EOF'\ndocker run --rm img true\nEOF",
+    'cat <<EOF\ndocker run --rm img true\nEOF',
+    'cat <<-END >notes.txt\n\tdocker run --rm img true\n\tEND\ndocker run --rm -m1g --cpus=1 img true',
   ]) {
     const r = lint(ok);
     assert.equal(r.status, 0, `${ok}\n${out(r)}`);
+    assert.doesNotMatch(out(r), /container-unbounded/, ok);
   }
-  const proofs = out(eng(['rules', 'prove'])).match(/heavy-tool-unbounded: \S+/g);
-  assert.deepEqual(proofs, ['heavy-tool-unbounded: bites', 'heavy-tool-unbounded: bites'], 'the built-in fixture proves the java and the container half');
+  const proofs = out(eng(['rules', 'prove'])).match(/(heavy-tool|container)-unbounded: \S+/g);
+  assert.deepEqual(proofs, ['heavy-tool-unbounded: bites', 'container-unbounded: bites'], 'each built-in fixture proves its own rule');
+});
+
+test('the container warning never fails eng gate or eng doctor, and an unbounded java still fails lint and the gate', () => {
+  const { eng, checks } = repo(c => ({ ...c, gates: { ...c.gates, required: ['lint'] } }));
+  checks({ tla: '#!/usr/bin/env bash\n# weight: light\nexit 0\ndocker run --rm img true\n' });
+  const lint = eng(['lint']);
+  assert.equal(lint.status, 0, out(lint)); assert.match(lint.stdout, CONTAINER_WARN);
+  const gate = eng(['gate']);
+  assert.equal(gate.status, 0, out(gate)); assert.match(out(gate), /container-unbounded/);
+  const warned = eng(['doctor']);
+  assert.match(warned.stdout, CONTAINER_WARN, 'doctor reports the container warning');
+  checks({ tla: '#!/usr/bin/env bash\n# weight: light\nexit 0\ndocker run --rm -m1g --cpus=1 img true\n' });
+  const clean = eng(['doctor']);
+  assert.doesNotMatch(out(clean), /container-unbounded/);
+  assert.equal(warned.status, clean.status, `doctor exits the same with and without the warning\n${out(warned)}\n${out(clean)}`);
+  checks({ tla: '#!/usr/bin/env bash\n# weight: light\nexit 0\njava -jar tla2tools.jar Spec.tla\n' });
+  const java = eng(['lint']);
+  assert.equal(java.status, 1, out(java)); assert.match(java.stderr, /tla\.sh:4: \[heavy-tool-unbounded\] Heavy tool without a bound/);
+  assert.equal(eng(['gate']).status, 1, 'the gate still fails on an unbounded JVM');
 });
 
 test('the catalog and the rendered budget text give the container pattern, and say docker enforces it, not eng', () => {
@@ -273,4 +310,6 @@ test('the catalog and the rendered budget text give the container pattern, and s
   }
   assert.match(agents, /--name "\$ENG_BUDGET_UNIT"/, 'names the container with the id eng exports to the check');
   assert.match(agents, /a wrapper function or a variable hides/, 'states what the lint cannot see');
+  assert.match(agents, /`eng lint` and `eng doctor` warn.*never fails? (lint|the gate)/, 'says the container lint only warns');
+  assert.match(agents, /a text check of common forms/, 'says the lint is a text check');
 });
