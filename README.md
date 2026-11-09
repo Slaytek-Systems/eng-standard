@@ -6,6 +6,33 @@ One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md fi
 
 How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `AGENTS.md` carries the short version (section "This standard").
 
+## Profiles
+
+eng-standard is public, so what it renders by default names no person, company, private tool or private note. That
+default is `profile: generic`, and `eng init` writes it into a new `eng.config.yml`.
+
+- **Roles, not people.** Where a rule needs someone to approve (stack choices, `risk:high` PRs, new rules, Bend laws),
+  it names the repo owner. Set `project.owner` (a name, `@handle` or role) and every rendered file uses it. Unset, the
+  text says "the repo owner".
+- **Reasons, not dates.** A rule states why it exists ("a re-run until green hides real failures") instead of who
+  approved it when. Incident evidence stays as a short anonymised reason.
+- **Recommendations.** `STACK.md` lists each pick with its reason for the owner to adopt or replace. A decision is
+  `DRAFT` (not decided yet), `APPROVED` (adopted) or `IN USE` (already in place), the same values as before.
+- **No private defaults.** No model routing note (`models.routing` is optional), no machine path for `e2e.node_bin`
+  (node on `PATH`), cron comments in UTC, and the starter's sample rules (`saveOrder`, the cart laws) are commented
+  examples.
+- **Persist markers.** A permanent dev server is marked with `eng.persist=true` (container label) or `ENG_PERSIST=true`
+  (environment) by default. `slaytek.persist=true` and `SLAYTEK_PERSIST=true` always count too, in every profile.
+
+`profile: slaytek` is Slaytek Systems' own profile. One line restores exactly what eng rendered up to v0.17.2: Matt as
+the approver, the dated attributions and incident names, the persist names above as defaults, the Core routing note,
+and three rules only Slaytek runs (briefs live in Core, the T3 callback contract, hand off by default). For each fixture
+in `test/fixtures/profile/`, that output is byte-identical to v0.17.2 (`test/profile.test.mjs`).
+
+A config with no `profile` line still validates and renders the generic text. `eng sync` and `eng doctor` print one
+line saying the Slaytek rules are now opt-in, with the line to add. eng never adds it itself, because a config may
+belong to someone outside Slaytek.
+
 ## One standard, one contextual init
 
 There is one standard and one init (Matt, 6 Nov 2026; Core nd71bs9kx7rnwphcj0jhp50b1n8hpk4d). `eng init` looks at the repo in front of it and applies the same bar. A new repo gets the checks from the start. A repo that already ships gets baselines for what it has today, so only new findings fail (`renovation/README.md`).
@@ -31,6 +58,7 @@ The CLI is the hallway (Matt, 6 Nov 2026; Core nd756dc09wh4rt0d3bk74g5gv18hqpfe)
 | `eng merge gate\|post` | `merge.auto`: the one required check requires the tooling's PASS for the exact head (`docs/merge-queue.md`). `post` runs the post-merge check on main, opens the exact-inverse revert on red, and tends open PRs |
 | `eng doctor [--launch]` | is this repo on the hallway: config pieces, an enforcer for each `agents.rules` entry, merge settings (and the ruleset to apply), disk rules, a stale lock or floating pin. It prints the installed, rendered and latest eng-standard versions and the CHANGELOG entries in between (latest from GitHub `main` or `ENG_STANDARD_SOURCE`). `--launch` proves the `launch:` contract with two concurrent runs |
 | `ship.log_step`, `hooks.pre_commit`, `hooks.pre_push`, `agents.post_edit_command`, `models.routing`, `models.pstack`, `stack.defaults.agent_activity_ui` | optional config: the SHIPPING.md logging step, extra pre-commit commands (after `sync --check` and `lint`), extra pre-push commands (after eng's push checks, each with the hook's arguments and the same ref lines on stdin; `docs/lifecycle.md`, Git hooks), a Claude Code PostToolUse hook, the model routing note, pstack role models, and the STACK.md default for agent activity UI (shadcn Trace) |
+| `profile`, `project.owner` | `generic` (default) or `slaytek`, and who approves for this repo (README, Profiles) |
 | `npm test` | this package's own tests (`node --test`) |
 
 Dropped in the 0.14.0 cut: `renovate` (into `init`, `lint` and `sync --check`), `launch`, `ephemeral`, `leave-nothing` and `verdict round` (into `run`), `launch-check` and `merge settings` (into `doctor`), `drift-check` (`sync --check`), `e2e-required` (`e2e --required`), `evidence check` (into `verdict check`), `laws` (into `rules prove`), `merge watch` (into `merge post`), `verify create`/`maintain` (the `eng-verify` skill with `run --by`). Gone from the global CLI: `isolation`, `run-service`, `connect`, `stop`, `status`, `stack-check`, `stack-audit`, `fallow`, `conform`, `ci-verdict`, `fetch`, `downloads check`, `find-laws`, `laws --write`, `laws approve`, `mistake`, `retro`, `ship next`, `clean`. A repo's own tool runs as a `project.commands` entry named in `gates.required`.

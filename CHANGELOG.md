@@ -2,6 +2,19 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.18.0 (9 Nov 2026)
+
+**Generic by default; Slaytek's rules are a profile** (Matt, 9 Nov 2026; Core decision nd7f2xgfrcbtg4ghn6f5x2fprn8hwv72: picks are reasoned recommendations any developer can adopt and question, and the repo's human decides). eng-standard is public, but the files it rendered named Matt, Slaytek Systems, Core, T3, AEDT, private note ids and a machine path.
+
+- **`profile: generic` is the default.** The rendered files (`AGENTS.md`, `SHIPPING.md`, `STACK.md`, `.githooks/pre-push`, `.eng/pstack-models.md`, eng's own skills) name roles, not people. A role that was Matt is the repo owner, from the new `project.owner` (unset: "the repo owner"). A rule that cited "Matt, <date>" states its reason. Incident evidence stays as a short anonymised reason. Rules 19-21 (briefs in Core, the T3 callback contract, hand off by default), the company-name line and the T3 send rule are absent. The package's own address (`github.com/Slaytek-Systems/eng-standard`, where the principle and guide live) stays.
+- **`profile: slaytek` restores the v0.17.2 text byte for byte.** One config line. `test/profile.test.mjs` renders each fixture in `test/fixtures/profile/` (the v0.17.2 template, eng-standard's own config and the Motus-shaped config) with the line added and compares every file with the v0.17.2 output hashes (`scripts/render-hashes.mjs`). Seven private repo configs were checked the same way outside the repo.
+- **STACK.md reads as recommendations.** "Each choice below is a recommendation with its reason, for <owner> to adopt or replace." `DRAFT`, `APPROVED` and `IN USE` stay valid, so no config breaks.
+- **Persist markers.** Generic defaults are `eng.persist=true` and `ENG_PERSIST=true`. `slaytek.persist=true` (label) and `SLAYTEK_PERSIST=true` (environment) always count, in every profile, whatever `persist_label` and `persist_env` say: devbox-ops docker-ephemeral relies on them. Before, only the configured `persist_env` counted for a process. The slaytek profile keeps its names as defaults.
+- **Models.** `models.routing` is optional and has no default in generic: AGENTS.md then says the standard names no models and where a routing note goes. The slaytek profile keeps its Core note as the default, and its never-for-coding list (Grok, Cursor) binds that profile only. A bare `models:` with every line commented out is no longer a config error.
+- **Template.** `profile: generic` and a commented `project.owner`; no routing note; `e2e.node_bin` commented out (node on `PATH`); cron comments in UTC; the `saveOrder` rule and the cart laws are commented examples (`agents.rules: []`); the backend reason no longer names Slaytek projects; the disk and run rule `source` lines are gone (they default).
+- **Validation.** `profile` must be `generic` or `slaytek`; `project.owner` must be one non-empty line.
+- **Upgrade:** zero manual edits. A config with no `profile` line validates and syncs, and renders the generic text; `eng sync` and `eng doctor` print one line saying the Slaytek Systems rules are now opt-in: `profile: slaytek` keeps them, `profile: generic` hides the line. eng does not add it itself, because a config may belong to someone outside Slaytek. A Slaytek repo adds `profile: slaytek`, runs `eng sync` (only the lock's version changes) and commits.
+
 ## 0.17.2 (9 Nov 2026)
 
 **eng stops writing into harness skill folders** (Matt, 9 Nov 2026: "this sounds much smoother"; Core nd70ke343v7gc0eakdejg7m5f18hx1p9, Direction change). The five review rounds of PR #58 all came from eng managing per-skill links inside `.claude/skills` and `.claude/agents`, folders that developers and other tools also own. This release removes that work instead of hardening it. No new command and no config change.

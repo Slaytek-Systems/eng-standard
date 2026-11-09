@@ -90,10 +90,13 @@ test('a server left running fails and is stopped; one marked with persist_env ke
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('left')} \\(node -e .*\\): stopped`));
   assert.ok(!running(Number(mark('left'))), 'the leftover server was stopped');
-  r = eng('run', '--here', '--', `SLAYTEK_PERSIST=true ${SERVER} & echo $! > ${marks}/kept`);
-  const kept = Number(mark('kept')); t.after(() => { try { process.kill(kept, 'SIGKILL'); } catch {} });
-  assert.equal(r.status, 0, out(r));
-  assert.ok(running(kept), 'the marked server is still running');
+  // SLAYTEK_PERSIST=true is the devbox-wide marker: it counts whatever persist_env says (generic default ENG_PERSIST=true).
+  for (const [name, marker] of [['kept', 'SLAYTEK_PERSIST=true'], ['kept-eng', 'ENG_PERSIST=true']]) {
+    r = eng('run', '--here', '--', `${marker} ${SERVER} & echo $! > ${marks}/${name}`);
+    const kept = Number(mark(name)); t.after(() => { try { process.kill(kept, 'SIGKILL'); } catch {} });
+    assert.equal(r.status, 0, out(r));
+    assert.ok(running(kept), `the server marked ${marker} is still running`);
+  }
 });
 
 test('a child that drops the run id from its environment and leaves its session is still found and stopped', () => {

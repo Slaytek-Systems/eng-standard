@@ -1,9 +1,11 @@
-# eng.config.yml: every setting and decision for this repo. Owner: Matt. Agents draft changes; Matt approves.
+# eng.config.yml: every setting and decision for this repo. Agents draft changes; the repo owner (project.owner) approves.
 # Run `eng sync` after editing. `eng sync --check` fails if generated files differ from what this renders.
 version: 1
+profile: generic                  # Rendered rules name roles (the repo owner), not people or private tools. Other profiles: README, Profiles.
 
 project:
   name: sandbox-repo
+  # owner: "@your-handle"        # Who approves stack choices, risk:high PRs and new rules. Unset: rendered as "the repo owner".
   default_branch: main
   protected_branches: [main]       # Never rebased, force-pushed or deleted, in either git.rewrite_pushed mode.
   commands:                       # The repo's own commands, unchanged. `eng gate` runs the ones listed in gates.required.
@@ -18,9 +20,9 @@ git:
                                   # protected_branches and tags are locked, so a guarded tool (Graphite's gt restack and gt submit)
                                   # may rewrite feature branches. Agents never force-push with git in either mode (deny list).
 
-# ---------------- STACK: every choice is a DRAFT decision for Matt ----------------
+# ---------------- STACK: recommended choices, each with its reason. The repo owner adopts or replaces each one ----------------
 stack:
-  status: DRAFT                   # DRAFT until Matt marks each decision APPROVED.
+  status: DRAFT                   # DRAFT (not decided yet), APPROVED (adopted) or IN USE (already in place); the same values per decision.
   defaults:
     language:        { use: TypeScript (strict), why: "One language across UI, backend and Convex; agents are strongest in it.", decision: DRAFT }
     runtime:         { use: "Node 24 via vp (vp env); Bun for scripts and the Convex CLI", why: "vp test/check/build are Node-hosted and Confect needs Node >= 24; Bun runs one-off scripts and `bun x convex` fast (Convex Bun quickstart).", decision: DRAFT }
@@ -28,7 +30,7 @@ stack:
     test_runner:     { use: "vp test (Vitest) as the single runner, incl. convex-test (edge-runtime project) and parity/property tests", why: "One runner; convex-test needs Vite (import.meta.glob) and fails under bun test; Vitest 5 + convex-test 0.0.61 proven in proof-log/14.", decision: DRAFT }
     lint_format:     { use: "vp check (Oxfmt + type-aware Oxlint) with ignorePatterns for .agents/.claude/.cursor/.eng/.intent/generated/_generated/fallow-baselines/*.md, + eng lint for custom rules", why: "Oxc is what Vite+ bundles; without ignores vp check formats vendored skill files (106 files in proof-log/14).", decision: DRAFT }
     build_dev:       { use: "vp dev/build for web apps, vp pack for libraries; vp run for tasks, cache only on side-effect-free tasks (cache: false for scripts with effects)", why: "Vite+ unifies Vite/Rolldown/tsdown; vp run cache hits replay output without running the command.", decision: DRAFT }
-    backend:         { use: Convex, why: "Reactive DB + functions with generated types; already used in thinksmart/motus/infotech.", decision: DRAFT }
+    backend:         { use: Convex, why: "Reactive DB + functions with generated types, so the UI and backend share one typed model.", decision: DRAFT }
     effects:         { use: "Effect (with Confect for Convex)", why: "Typed errors/services/schemas; Confect is the maintained Effect<->Convex framework (community, not Convex-official).", decision: DRAFT }
     codebase_analysis: { use: "Fallow (npm fallow, exact pin) for the module graph: unused files/exports/deps, cycles, boundaries, duplication, complexity", why: "Linters see one file; fallow sees the project graph (fallow.tools/docs/explanations/fallow-vs-linters). Rust-native, MIT, zero-config for Vite/Vitest/Convex. Replaces knip and jscpd; complements vp check and eng lint.", decision: DRAFT }
     agent_activity_ui: { use: "shadcn Trace (`pnpm dlx shadcn@latest add trace`; Trace, TraceLine, TraceIcon, TraceTitle, TraceDescription, TraceCollapsible*), with AI Elements and Code Block where relevant", why: "When an app shows agent or AI activity to users (reasoning, tool calls, subagents, queues, plans, sources), use Trace instead of custom UI: one abstraction, AI SDK parts, a11y built in. Published by shadcn 14 Oct 2026. Docs: https://ui.shadcn.com/docs/components/trace", decision: DRAFT }
@@ -36,12 +38,12 @@ stack:
   languages:
     allowed: [typescript, javascript, bend]
     justified_when:               # DRAFT. A new language needs a stack.exceptions entry with one of these reasons.
-      rust: "Hot path where measured CPU/memory cost of TS is the bottleneck, a native/systems boundary (e.g. core-edge), or a library only available in Rust. Not for preference."
+      rust: "Hot path where measured CPU/memory cost of TS is the bottleneck, a native/systems boundary, or a library only available in Rust. Not for preference."
       python: "Data/ML work that depends on a Python-only library, kept behind a service boundary."
       other: "Only with a measured reason TS cannot meet, an owner, and a rollback plan."
   frameworks:
     allowed: [convex, effect, "@confect/server", vite, vite-plus, vitest, oxlint, fallow]
-  exceptions: []                  # e.g. {kind: language|framework|package_manager, name: rust, reason: "...", approved_by: Mattslayga}
+  exceptions: []                  # e.g. {kind: language|framework|package_manager, name: rust, reason: "...", approved_by: "@owner"}
   notes:
     - "Bun vs Vite+: vp test/check/build run on Node (vp manages Node); bun is the package manager under vp (viteplus.dev/guide, llms-full.txt). Bun runtime is for scripts and the Convex CLI, run via `vp run` or `bun`."
     - "Confect needs Node >= 24 for its CLI, TS strict:true, and only a subset of Effect Schema (confect.dev quickstart)."
@@ -52,8 +54,8 @@ agents:
   harnesses: [claude-code, codex, cursor]   # AGENTS.md is read by Codex and Cursor; CLAUDE.md imports it.
   skills_dir: .agents/skills
   # post_edit_command: "npm run lint:changed -- --hook"   # optional; rendered as a Claude Code PostToolUse hook (Edit|MultiEdit|Write) in .claude/settings.json. Exit 2 feeds stderr back to the agent.
-  rules:                          # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng doctor fails on a rule with nothing enforcing it.
-    - { rule: "Orders are written only through saveOrder()", enforced_by: gate-only-writes }
+  rules: []                       # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng doctor fails on a rule with nothing enforcing it.
+    # Example, not policy: - { rule: "Orders are written only through saveOrder()", enforced_by: gate-only-writes }
   skills:                         # <source>/<name>. Vendored copies at pins in pkg/vendor/PINS.txt; eng/* are ours.
     - pstack/*                     # the full pstack set (61 skills + 2 subagents), pinned in pkg/vendor/PINS.txt
     - pocock/grilling
@@ -75,8 +77,8 @@ agents:
     - fallow/fallow                 # official, version-matched to the pinned CLI (pkg/vendor/PINS.txt)
     - fallow/fallow-setup
 
-models:                           # Which model does which job. The standard names none: AGENTS.md points agents to the routing note.
-  routing: core:nd77rx5dhdt899w2np5kjknqdd8g8y2d   # Core note 'Model routing: who uses which model'. Matt edits routing there. Default: this note.
+models:                           # Which model does which job. The standard names none.
+  # routing: docs/model-routing.md   # Optional: the note or doc where this repo decides which model does which job. AGENTS.md points agents to it.
   pstack:                         # Per-role picks for pstack skills; eng sync renders .eng/pstack-models.md. Roles: setup-pstack step 5.
     feature, refactoring: inherit-parent   # inherit-parent: the role runs on the launching agent's model. Every role is set,
     bug-fix: inherit-parent                # so no pstack skill falls back to its own default model.
@@ -106,18 +108,18 @@ merge:                            # Per repo. There is no global merge rule. Onl
   command: gh pr merge <n> --squash --delete-branch --match-head-commit <sha>   # step 4 of the serial loop (SHIPPING.md)
   method: squash
 
-ship:                             # Shipping model (approved by Matt, 13 Oct 2026).
+ship:                             # Shipping model: one actor merges, so merges, reverts and reorders never race.
   manager: lead agent             # One per repo. Never authors code. Only actor that merges, reverts and reorders.
   manager_also: [releases, deploys]   # optional extra duties; [] if a human or another job owns them
   author: merge-ready only        # The author agent gets its PR to merge-ready and never merges.
   verifier: verification tooling # Verdict bound to the exact head SHA (eng verdict). It runs the change (eng run --by <id> -- <cmd>); the builder may run it.
   # log_step: "Record the merge in the delivery ledger."   # Optional string, rendered verbatim as loop step 6 in SHIPPING.md.
-  # Unset: log the PR number, merge SHA and main's post-merge result on the PR's Core task; decisions get their own notes. Never write to the repo's Core status note.
+  # Unset: record the PR number, merge SHA and main's post-merge result where the repo tracks its work; decisions get their own records.
   # merge_queue: off. GitHub merge queue needs Enterprise Cloud for private repos. The shipping manager runs the serial loop
   # in SHIPPING.md instead. Set merge_queue: { provider, max_group_size, ci_trigger } only to opt in (eng then warns if CI lacks merge_group).
   # v0.10.0 no-human-merge rule (reference config and workflows: templates/merge-auto/): merge.auto { check, high_risk_paths, high_risk_verifiers, post_merge.check, stuck_minutes,
   # verdict_wait_minutes } plus eng merge gate|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
-  high_risk:                      # Matt approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
+  high_risk:                      # The repo owner approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
     label: risk:high
     reasons: [auth, payments, schema/migrations, public APIs, CI, production data]
     paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**"]
@@ -127,7 +129,7 @@ verification:
   checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present. eng gate runs every one first, whatever gates.required says. Each declares '# weight: light|heavy' and '# budget: memory=<size> workers=<n> timeout=<duration>' in its header (defaults: light, 2G, 2, 30m); see standard/checks.yml.
   # parallel: false               # Default false: checks run one after another, as before 0.16.0. true: side by side while their budgets fit free memory and cores (only for checks that share no state).
   flake_runs: 3                   # eng gate runs each check this many times; any failure (FLAKY included) fails the gate. A missing `# covers:` path fails it too.
-  # Verification first (Matt, 3 Nov 2026): a PASS needs passing `eng run --by` runs on its commit. A review (eng verdict --review)
+  # Verification first: a PASS needs passing `eng run --by` runs on its commit. A review (eng verdict --review)
   # counts only when every changed file matches these globs: text no check can run. Default below; unknown files count as testable.
   review_only_paths: ["**/*.md", "**/*.mdx", "**/*.txt", "**/LICENSE*"]
 
@@ -161,30 +163,31 @@ audits:
   maintain_verification:          # Daily audit: pstack maintain-verification-skill, unchanged. eng renders .eng/ci/audit.yml; a human creates the schedule.
     target: verify-app            # the repo's verify-<app> skill
     schedule: daily
-    cron: "0 19 * * *"            # 06:00 AEDT
+    cron: "0 19 * * *"            # 19:00 UTC
     agent_command: "claude -p --permission-mode bypassPermissions 'Follow {skill} exactly. Target: {target}. Report the outcome (clean / changed / blocked).'"
 
 laws:
   enabled: true
   dir: laws
-  laws_file: LAWS.bend            # Human-owned: agents draft, Matt approves the change in review.
+  laws_file: LAWS.bend            # Human-owned: agents draft, the repo owner approves the change in review.
   proof_file: PROOF.bend          # Agent-owned. `bend PROOF.bend` must print ALL PROOFS CHECK (eng rules prove runs it).
   bend_version: 2.0.36            # Exact; `bend version` must match (pi-fabric pins the same).
-  parity: vp test run src/cart.parity.test.ts # prism pattern: TS reference vs Bend kernel, random inputs; skip = fail.
-  mutations:                      # pi-fabric pattern: each planted bug must break the proofs, or the laws are too weak.
-    - { name: discount ignored, file: cart.bend, from: "  sub(subtotal, discount)", to: "  subtotal" }
-    - { name: discount applied twice, file: cart.bend, from: "  sub(subtotal, discount)", to: "  sub(sub(subtotal, discount), discount)" }
-    - { name: off by one cent, file: cart.bend, from: "  Nat.sub(a, b)", to: "  Nat.sub(a, 1n+b)" }
+  # Examples, not policy (a cart's discount law). Set your own once the repo has laws:
+  # parity: vp test run src/cart.parity.test.ts # prism pattern: TS reference vs Bend kernel, random inputs; skip = fail.
+  # mutations:                    # pi-fabric pattern: each planted bug must break the proofs, or the laws are too weak.
+  #   - { name: discount ignored, file: cart.bend, from: "  sub(subtotal, discount)", to: "  subtotal" }
+  #   - { name: discount applied twice, file: cart.bend, from: "  sub(subtotal, discount)", to: "  sub(sub(subtotal, discount), discount)" }
+  #   - { name: off by one cent, file: cart.bend, from: "  Nat.sub(a, b)", to: "  Nat.sub(a, 1n+b)" }
 
 e2e:
   provider: e2e                   # tester-army/e2e: open source (Apache-2.0), Playwright-based, runs locally/CI, no TesterArmy account.
   version: 0.19.0                 # Pre-1.0: pinned exactly; eng e2e fails on a caret range.
   web_version: 0.14.0             # @e2e-dev/web (pins playwright-core 1.63.0).
   model: none                     # none = exact locators only, no key. Else an AI SDK model in e2e.config.ts agents, e.g. ollama('qwen3:4b') via ollama-ai-provider-v2 (local).
-  node_bin: /workspace/eng-standard/.tools/node24/bin   # e2e CLI needs Node >=24.8 (or ^22.22.3); box default is Node 20.
+  # node_bin: /path/to/node24/bin  # Optional, put first on PATH for the e2e CLI (Node >=24.8 or ^22.22.3). Unset: node on PATH.
   evidence_dir: .eng/evidence     # Video, screenshots, trace.md, junit.xml land in <evidence_dir>/<sha>/e2e/.
   flake_runs: 3                   # A new or changed e2e test must pass this many consecutive runs (eng e2e --flake-check) before it may block. Mixed = quarantine + issue.
-  policy:                         # When e2e runs (approved by Matt, 13 Oct 2026). `eng e2e --required` prints the decision for a diff.
+  policy:                         # When e2e runs: only where a PR can change what users see, so docs and test PRs stay fast. `eng e2e --required` prints the decision for a diff.
     mode: path_based              # path_based: PRs run e2e only when needed (below). always: every PR runs it (the old rule).
     labels: [risk:high]           # a PR with any of these labels always runs e2e
     unmatched: run                # a changed file no list below matches: run (safe default) or skip
@@ -201,7 +204,7 @@ e2e:
       config: ["**/*.json", "**/*.yml", "**/*.yaml", "**/*.toml", "**/.*rc", "**/.*rc.*", "**/.gitignore", "**/.editorconfig", ".githooks/**", "fallow-baselines/**", "**/.env.example"]
     main:                         # The backstop. Always full e2e on main; a red run there = shipping manager reverts at once (SHIPPING.md).
       on_merge: full              # schema constant: full e2e after every merge to main
-      nightly: { enabled: false, cron: "0 16 * * *" }   # optional; true renders .eng/ci/e2e-nightly.yml (03:00 AEDT). Create the schedule by hand.
+      nightly: { enabled: false, cron: "0 16 * * *" }   # optional; true renders .eng/ci/e2e-nightly.yml (16:00 UTC). Create the schedule by hand.
 
 hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / eng e2e always run with a per-run $ENG_TMP removed on exit.
   tmp_lint: true                  # eng lint rule test-bare-tmpdir: test code may not write to bare os.tmpdir() or /tmp. false = off (say why).
@@ -215,30 +218,25 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
   containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>). Never docker volume prune -a.
   evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; cleared when the PR merges or closes.
   evidence_roots: [.eng/evidence]  # where run evidence lands (default: e2e.evidence_dir). Add a proof harness's root, e.g. "~/.local/state/<repo>-proof".
-  disk_rules:                     # Four disk rules (Matt, 30 Oct 2026). Every mode: fail | warn | off (eng doctor fails on off). SHIPPING.md §5.
+  disk_rules:                     # Four disk rules: most disk writes were private copies nothing read again. Every mode: fail | warn | off (eng doctor fails on off). SHIPPING.md §5.
     tests_leave_nothing:          # Tests and proofs leave nothing behind.
       mode: fail                  # eng gate gives each step its own TMPDIR/ENG_TMP; an entry left in it fails the step. eng run <name> does the same for one declared run.
-      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     no_cache_in_evidence:         # No build caches inside evidence folders.
       mode: fail                  # eng verdict check and eng e2e fail on a marker file under an evidence run dir; eng lint rule cargo-target-per-run.
       markers: [CACHEDIR.TAG]     # file names that mark a cache dir (Cargo writes CACHEDIR.TAG in every target and build dir). Non-empty list.
-      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     pinned_downloads:             # Pinned downloads are fetched once into a shared, checksummed cache.
       mode: fail                  # no built-in check since 0.14.0; a repo that pins downloads checks them with its own command.
       cache: "${XDG_CACHE_HOME}/eng/downloads"   # absolute, not under a temp dir; shared by every repo. eng exports it as ENG_DOWNLOAD_CACHE.
       prepare: null               # command that fetches every pinned download into ENG_DOWNLOAD_CACHE; null = the repo has none.
-      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
     evidence_budget:              # Evidence folders have a size budget.
       mode: fail                  # eng verdict check and eng e2e fail when a run dir is over max_mb. They report; they never delete.
       max_mb: 100                 # positive number. A run dir is <root>/<run> or <root>/pr-<n>/<sha>.
-      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
-  run_rules:                      # Runs are ephemeral by default (Matt, 30 Oct 2026). SHIPPING.md §5. eng doctor fails mode: off.
-    ephemeral_runs:               # Every local test, review and probe run is thrown away when it ends, like a Boat sandbox.
+  run_rules:                      # Runs are ephemeral by default: leftover containers and volumes filled a shared disk. SHIPPING.md §5. eng doctor fails mode: off.
+    ephemeral_runs:               # Every local test, review and probe run is thrown away when it ends, like a throwaway sandbox.
       mode: fail                  # fail | warn | off. eng run <name> runs a run (eng gate runs each one), then fails on a container, network, volume, temp entry or process it left; removes what carries the run's label, reports volumes. eng gate wraps those steps.
       runs: null                  # null = test, plus launch (up then down) when launch.up and launch.down are declared. Or a list of project.commands names and launch.
-      persist_label: slaytek.persist=true   # a container or volume with this label may outlive the run (a permanent dev server), as may a container with a restart policy. slaytek.persist=true always counts too. Same rule the devbox keeps.
-      persist_env: SLAYTEK_PERSIST=true     # a process with this in its environment may keep running, e.g. SLAYTEK_PERSIST=true pnpm dev.
-      source: core:nd78q9vjkp392tp223ng7g6ydx8h9vcn
+      persist_label: eng.persist=true   # a container or volume with this label may outlive the run (a permanent dev server), as may a container with a restart policy.
+      persist_env: ENG_PERSIST=true     # a process with this in its environment may keep running, e.g. ENG_PERSIST=true pnpm dev.
   # Clean up on merge or close (SHIPPING.md rule 18, §5): delete the PR's worktrees and evidence; one worktree per PR; no installs in review-only worktrees; shared package store and build cache; media off the box.
 
 flags:

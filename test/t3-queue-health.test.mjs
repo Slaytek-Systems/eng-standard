@@ -44,8 +44,9 @@ test('rejects incomplete snapshots and invalid age limits', () => {
   assert.throws(() => findStaleQueueItems({ threads: [{ threadId: 'one', items: [{ queuedRunId: 'run-1', createdAt: '2026-10-27T12:00:01Z' }] }] }, { now }), /future createdAt/);
 });
 
-test('rendered thread guidance treats queued as stored and requires run confirmation', () => {
-  const guidance = spawnText();
+test('rendered thread guidance (slaytek profile) treats queued as stored and requires run confirmation; generic names no T3', () => {
+  assert.doesNotMatch(spawnText({}), /T3|t3_thread/);
+  const guidance = spawnText({ profile: 'slaytek' });
   assert.match(guidance, /`queued` result from `t3_thread_send` confirms only that T3 stored the message/);
   assert.match(guidance, /`t3_thread_read` activity or `t3_thread_wait`/);
   assert.match(guidance, /Use `mode: "auto"` for time-critical or approved sends/);

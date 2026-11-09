@@ -1,0 +1,97 @@
+# eng.config.yml for eng-standard ITSELF (v0.10.0 keeps the v0.9.1 merge path; Design A approved by Matt, 19 Oct 2026, 3:55 PM AEDT).
+# eng-standard does not render its own AGENTS.md or SHIPPING.md (do not run `eng sync` here). This file feeds only
+# `eng verdict`, scripts/pr-gate.mjs (risk labels and self-merge) and the workflows. Changing it is risk:high.
+version: 1
+
+project:
+  name: eng-standard
+  default_branch: main
+  protected_branches: [main]      # Never rebased, force-pushed or deleted. Feature branches may be rebased.
+  commands:
+    test: npm test
+
+merge:                            # The merge rule (AGENTS.md "Merge rule"). Nobody bypasses anything, Matt included.
+  owner: "self-merge.yml: risk:low after one counted PASS, risk:high after counted PASSes from N distinct verifiers, all on the exact head"
+  command: "self-merge: PUT pulls/<n>/merge {merge_method: squash, sha: <head>}. Matt: gh pr merge <n> --squash --delete-branch --match-head-commit <sha>"
+  method: squash
+
+ship:
+  verifier: verification tooling (the builder may run it) runs the change on the exact head (eng run --by <id> -- <cmd>), then eng verdict --by <id> --pr <n>
+  high_risk:                      # Any changed path here (or a rename's old path) = risk:high: N distinct verifiers must PASS. Else risk:low.
+    label: risk:high
+    low_label: risk:low
+    verifiers: 2                  # N: distinct verifiers (by name) whose counted PASS a risk:high head needs
+    reasons: [CI, merge setup, executable CLI, package scripts and dependencies, vendored third-party code]
+    paths:
+      - ".github/**"              # workflows (CI, risk-label, self-merge), CODEOWNERS, actions
+      - ".buildkite/**"
+      - ".eng/ci/**"
+      - ".eng/checks/**"           # the checks eng gate runs first: the wall
+      - ".githooks/**"
+      - "eng.config.yml"          # this file: the high-risk list and merge rule
+      - "AGENTS.md"               # the merge rule
+      - "CLAUDE.md"
+      - "docs/self-merge.md"      # checker command, undo, settings
+      - "bin/**"                  # the eng CLI: verdict, gate and ship logic every repo's merges rely on
+      - "scripts/**"              # pr-gate.mjs: labeller and self-merge
+      - "lib/risk.mjs"
+      - "lib/self-merge.mjs"
+      - "lib/verification.mjs"    # which verdicts count: verification evidence, review-only paths
+      - "lib/budget.mjs"          # check weights and budgets, imported by lib/verification.mjs
+      - "lib/run.mjs"             # eng run --by: writes the verdict evidence runs
+      - "lib/nested.mjs"          # a gate inside a gate: the signal that makes the enclosing gate or run incomplete
+      - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
+      - "lib/merge-cli.mjs"
+      - "docs/merge-queue.md"
+      - "templates/merge-auto/**" # reference gate workflows and config consuming repos copy
+      - "lib/e2e-policy.mjs"      # glob2re, which the risk matcher uses
+      - "package.json"            # scripts, deps, bin (see version_only)
+      - "package-lock.json"
+      - "**/.npmrc"
+      - "vendor/**"               # third-party skills and kit code at pinned versions
+      - "**/auth/**"              # auth and billing code (none in this repo yet): risk:high, like any gate path
+      - "**/auth.*"
+      - "**/billing/**"
+      - "**/billing.*"
+    version_only: [package.json, package-lock.json]   # risk:low when the version field is the only change
+  self_merge:                     # .github/workflows/self-merge.yml: events only (ci done, verdict, label, ready, retarget) + dispatch. No wait.
+    base: main
+    hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go. There is no hold window.
+    check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
+    status: verdict               # commit status eng verdict ... --pr <n> posts
+    # verifier_logins: [<login>, <login>]   # with a dedicated verifier login: only these logins'
+    #                               verdict comments count; guards against forged comments (docs/self-merge.md)
+
+hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs npm test through eng run test (.github/workflows/ci.yml).
+  disk_rules:
+    tests_leave_nothing:          # CI: eng run test (the suite leaves its private TMPDIR empty)
+      mode: fail
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    no_cache_in_evidence:         # eng verdict check (this repo keeps no run evidence; the check passes on none)
+      mode: fail
+      markers: [CACHEDIR.TAG]
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    pinned_downloads:             # this repo pins no downloads: prepare is null
+      mode: fail
+      cache: "${XDG_CACHE_HOME}/eng/downloads"
+      prepare: null
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+    evidence_budget:
+      mode: fail
+      max_mb: 100
+      source: core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv
+  run_rules:
+    ephemeral_runs:               # CI: eng run test (npm test runs, then nothing it made may be left)
+      mode: fail
+      runs: [test]
+      persist_label: slaytek.persist=true
+      persist_env: SLAYTEK_PERSIST=true
+      source: core:nd78q9vjkp392tp223ng7g6ydx8h9vcn
+
+verification:                     # eng gate runs every script here first, whatever gates.required says. CI: eng gate checks.
+  checks_dir: .eng/checks
+  flake_runs: 1
+
+gates:
+  skipped_is_failed: true
+  required: [test, verdict]

@@ -53,7 +53,9 @@ current.
 3. `eng sync`. It rewrites the generated files and `.eng/lock.json`, and migrates retired config entries in place
    (it prints each one). From 0.15.0 it also adds `git.rewrite_pushed` when the config lacks it: `protected` when the
    checkout has `.git/.graphite_repo_config` (with a comment that `never` is recommended), otherwise `never`. It prints
-   which and why. Review the diff.
+   which and why. Review the diff. From 0.18.0 a config with no `profile` line renders the generic text and sync prints
+   one line about it: add `profile: slaytek` to keep Slaytek Systems' rules exactly as before, or `profile: generic`
+   to hide the line (README, Profiles). Sync never adds it for you.
 4. `eng sync --check`, then `eng gate`.
 5. One PR, titled `eng-standard X.Y.Z`. It goes through the repo's own gates and verification like any PR.
 
