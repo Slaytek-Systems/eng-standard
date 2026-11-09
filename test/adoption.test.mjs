@@ -305,8 +305,8 @@ test('the catalog and the rendered budget text give the container pattern, and s
   assert.match(agents, /docker (enforces|applies) (the|those) limits?/i);
   assert.match(agents, /trap 'docker rm -f/);
   for (const text of [agents, c.why]) {
-    assert.doesNotMatch(text, /a timeout or a cancel removes it|when the check exits or is stopped/, 'no claim that the trap runs on every stop');
-    assert.match(text, /SIGKILL/, 'says when the trap does not run');
+    assert.doesNotMatch(text, /a timeout or a cancel removes it|when the check exits or is stopped|on a TERM or INT/, 'no claim that the trap runs when eng stops the check (PR #57 verdict 3)');
+    assert.match(text, /eng does not\s+promise the trap runs/, 'says eng does not promise cleanup when it stops a check');
   }
   assert.match(agents, /--name "\$ENG_BUDGET_UNIT"/, 'names the container with the id eng exports to the check');
   assert.match(agents, /a wrapper function or a variable hides/, 'states what the lint cannot see');

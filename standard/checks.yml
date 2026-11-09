@@ -71,6 +71,6 @@ containers:
     --memory and --cpus within the check's # budget (ENG_BUDGET_HEAP_MB is 75% of it, which leaves room for the host side);
     --memory-swap equal to --memory, so swap does not double it. --rm removes the container when it stops. The name is
     ENG_BUDGET_UNIT, the id eng gives each check run, so it is unique and findable. The EXIT trap removes the container when
-    the check exits and on a TERM or INT the shell gets (a budget timeout sends TERM, then SIGKILL 5s later). It does not run
-    on SIGKILL: a budget memory stop, or a cancelled gate killing its checks. Then the container may keep running, and
+    the check exits on its own. When eng stops a check (a budget timeout or memory stop, or a cancelled gate), eng does not
+    promise the trap runs: the stop can end the shell before it cleans up. Then the container may keep running, and
     docker rm -f <name> removes it (docker ps --filter name=eng-check- lists them). eng removes no container.
