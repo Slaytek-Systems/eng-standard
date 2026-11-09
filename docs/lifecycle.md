@@ -37,7 +37,7 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 
 | Check | Fails when | Where it runs |
 |---|---|---|
-| `eng sync --check` | a generated file, symlink or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one or names no valid version; the pin floats; the config has entries this release retired or lacks `git.rewrite_pushed`. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
+| `eng sync --check` | a generated file or lock path differs from what `eng.config.yml` renders; `.eng/lock.json` was rendered by another eng version than the installed one or names no valid version; the pin floats; the config has entries this release retired or lacks `git.rewrite_pushed`. Each failure names its fix | `.githooks/pre-commit`, CI, the gate where listed |
 | `eng doctor` | a config piece, an enforcer, the merge settings or a disk rule is wrong; the lock is stale or the pin floats. It also prints the `git.rewrite_pushed` mode and the installed, rendered and latest versions | on demand; the gate where listed |
 
 `eng doctor` reads the latest version and CHANGELOG from eng-standard `main` on GitHub, or from `ENG_STANDARD_SOURCE`
@@ -66,6 +66,14 @@ current.
   baselines, so findings it has today pass and only new ones fail. Details: [renovation/README.md](../renovation/README.md).
 - Either way it renders every generated file, sets `core.hooksPath .githooks`, and prints the branch ruleset to apply by
   hand. eng never edits rulesets.
+- Skills render into `agents.skills_dir` (`.agents/skills`), subagents into the folder beside it (`.agents/agents`). The
+  rendered `AGENTS.md` tells every agent to read `.agents/skills/<name>/SKILL.md` directly. eng never creates, changes or
+  deletes anything in `.claude/skills` or `.claude/agents`: developers and other tools own those folders. A
+  setting that would make eng write into either one (`agents.skills_dir: .claude/skills` or `.claude/custom`,
+  `verification.checks_dir: .claude/skills`) is a config error, and an old lock's files there are never pruned. For Claude Code's own skill discovery, link each folder once:
+  `ln -s ../.agents/skills .claude/skills` and `ln -s ../.agents/agents .claude/agents`. `eng sync` and `eng doctor`
+  print one line saying whether Claude Code can see every eng skill and subagent there, and the fix when it cannot,
+  quoted and relative to the real `.claude` folder when `.claude` is itself a link. It is a warning, never a failure.
 
 ## Joining agent
 
@@ -123,7 +131,8 @@ PR.
 
 1. `eng sync --check`. A file it reports as differing from the render was edited by hand. Keep it, or move the edits
    somewhere else first.
-2. List what eng manages: `node -p "const l=require('./.eng/lock.json'); [...l.files, ...l.links].join('\n')"`.
+2. List what eng manages: `node -p "require('./.eng/lock.json').files.join('\n')"`. Links in `.claude/skills` or
+   `.claude/agents` are yours: eng before 0.17.2 made per-skill links there, and none is listed.
 3. `git rm` each listed path except the hand-edited ones and `AGENTS.md`. In `AGENTS.md`, delete only the lines from
    `<!-- eng:begin -->` to `<!-- eng:end -->`. Your own text stays. Keep `CLAUDE.md` if `AGENTS.md` still has text.
 4. `git rm .eng/lock.json`, then `git config --unset core.hooksPath`.
