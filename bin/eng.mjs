@@ -131,108 +131,110 @@ const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLA
 // The exact name is on disk: on a case-insensitive disk existsSync would also find another file whose name differs in case.
 const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch { return false; } };
 
-// Claude Code reads skills from .claude/skills and subagents from .claude/agents; eng links each into its source folder.
+// eng's skills and subagents: rendered into their source folder, and linked one by one from .claude/skills and
+// .claude/agents when Claude Code is a harness (dir is null otherwise).
 function linkGroups(cfg) {
-  if (!cfg.agents?.harnesses?.includes('claude-code')) return [];
-  const agentsDir = `${path.dirname(cfg.agents.skills_dir)}/agents`;
+  const agentsDir = `${path.dirname(cfg.agents.skills_dir)}/agents`, claude = cfg.agents?.harnesses?.includes('claude-code');
   const subagents = cfg.agents.skills.filter(s => s.endsWith('/*')).flatMap(s => { const d = path.join(PKG, 'vendor', s.split('/')[0], 'agents'); return fs.existsSync(d) ? fs.readdirSync(d) : []; });
-  return [{ dir: '.claude/skills', source: cfg.agents.skills_dir, what: 'skills', names: expandSkills(cfg).map(s => s.split('/')[1]) },
-    { dir: '.claude/agents', source: agentsDir, what: 'subagents', names: subagents }];
+  return [{ dir: claude ? '.claude/skills' : null, source: cfg.agents.skills_dir, what: 'skills', names: expandSkills(cfg).map(s => s.split('/')[1]) },
+    { dir: claude ? '.claude/agents' : null, source: agentsDir, what: 'subagents', names: subagents }];
 }
 
-// eng manages what is inside the repo only (Core decision nd70ke343v7gc0eakdejg7m5f18hx1p9). A path is resolved through
-// every symlink on the way, so a write or a delete that would land outside the repo is seen before it happens. A path
-// that does not exist yet resolves to where it would be made; a link loop or a folder eng cannot read resolves to null.
-let REAL_ROOT;
-const realRoot = () => REAL_ROOT ??= fs.realpathSync(ROOT);
-function resolveAbs(abs, hops = 0) {
-  let cur = path.parse(abs).root;
-  const parts = abs.slice(cur.length).split(path.sep).filter(Boolean);
-  for (let i = 0; i < parts.length; i++) {
-    const next = path.join(cur, parts[i]);
-    let st; try { st = fs.lstatSync(next); } catch (e) { return e.code === 'ENOENT' ? path.join(next, ...parts.slice(i + 1)) : null; }
-    if (!st.isSymbolicLink()) { cur = next; continue; }
-    if (hops > 40) return null;
-    cur = resolveAbs(path.resolve(cur, fs.readlinkSync(next)), hops + 1);
-    if (cur === null) return null;
+// eng manages what is inside the repo only, and does not care how a developer arranges their skills folders (Core
+// decision nd70ke343v7gc0eakdejg7m5f18hx1p9). It writes, links, chmods and prunes a path only when every part of it from
+// the repo root down is a real folder (lstat, never followed) and the path itself is no symlink. blocked() names the
+// first part that is not: a symlink, not a folder, unreadable, or outside the repo. eng follows none of them to write.
+function blocked(rel, folder = false) {
+  const norm = path.normalize(rel);
+  if (path.isAbsolute(norm) || norm === '..' || norm.startsWith(`..${path.sep}`)) return { at: rel, why: 'outside' };
+  const parts = norm.split(path.sep).filter(p => p && p !== '.');
+  for (let i = 1; i <= parts.length; i++) {
+    const at = parts.slice(0, i).join('/');
+    let st; try { st = fs.lstatSync(path.join(ROOT, at)); } catch (e) { return e.code === 'ENOENT' ? null : { at: parts.slice(0, i - 1).join('/') || '.', why: 'unreadable' }; }
+    if (st.isSymbolicLink()) return { at, why: 'link' };
+    if ((i < parts.length || folder) && !st.isDirectory()) return { at, why: 'file' };
   }
-  return cur;
+  if (folder) try { fs.readdirSync(path.join(ROOT, rel)); } catch (e) { if (e.code !== 'ENOENT') return { at: rel, why: 'unreadable' }; }
+  return null;
 }
-const realOf = rel => resolveAbs(path.join(realRoot(), rel));
-const inRepo = real => real !== null && (real === realRoot() || real.startsWith(realRoot() + path.sep));
-const shown = real => inRepo(real) ? path.relative(realRoot(), real) || '.' : real;
-const UNRESOLVED = 'cannot be resolved (a link loop, or a folder eng cannot read)';
 const readLink = at => { try { return fs.readlinkSync(at); } catch { return null; } };
+const managedFiles = all => Object.fromEntries(Object.entries(all).filter(([p]) => !blocked(p)));
 
-// One plan per link folder. Its mode says where the folder really is; outside is decided before source, so a folder
-// that reaches eng's source through a link out of the repo is outside:
-//   plain      a real folder at its own path: eng links each entry there, as in 0.17.1;
-//   unresolved a link loop or an unreadable folder: eng writes and deletes nothing through it;
-//   outside    it resolves outside the repo: eng writes and deletes nothing through it;
-//   source     it resolves to the source folder itself: Claude Code already sees every entry, eng writes no link;
-//   inside     it resolves to another folder in the repo: eng links each entry there, relative to that folder.
-// eng owns an entry only by what is on disk now, never by the lock: a link whose target is the one eng writes, or one
-// into eng's source. Each entry's state: ok (eng's link, right target), write (missing, or eng's link to fix; `was` holds
-// its target), kept (anything else holds the name, so eng leaves it), reached and unreached (source mode).
+// One plan per link folder eng manages. Ownership comes from each entry as it is now, never from the lock: ok is eng's
+// link, write is missing or a link into eng's source to fix (was holds it), kept is anything else (eng leaves it).
 function linkPlan(cfg) {
-  return linkGroups(cfg).map(g => {
-    const real = realOf(g.dir), src = path.join(realRoot(), g.source), plain = real === path.join(realRoot(), g.dir);
-    const mode = real === null ? 'unresolved' : plain ? 'plain' : !inRepo(real) ? 'outside' : real === realOf(g.source) ? 'source' : 'inside';
-    const target = n => plain ? `../../${g.source}/${n}` : path.relative(real, path.join(src, n));
-    const intoSource = (at, t) => path.resolve(path.dirname(at), t).startsWith(src + path.sep);
-    // A name eng no longer wants is pruned only when it holds eng's exact link, or a dangling link into the source.
-    const prunable = n => { const at = path.join(real, n), t = readLink(at); return t !== null && (t === target(n) || intoSource(at, t) && !fs.existsSync(at)) ? t : null; };
-    const entries = mode === 'outside' || mode === 'unresolved' ? [] : g.names.map(n => {
-      const l = `${g.dir}/${n}`, at = path.join(real, n);
-      if (mode === 'source') { let r = null; try { r = fs.realpathSync(at); } catch {} return { l, at, state: r && r === realOf(`${g.source}/${n}`) ? 'reached' : 'unreached' }; }
-      const t = target(n);
-      let st = null; try { st = fs.lstatSync(at); } catch {}
-      if (!st) return { l, at, t, state: 'write' };
+  return linkGroups(cfg).filter(g => g.dir && !blocked(g.dir, true)).map(g => {
+    const target = n => `../../${g.source}/${n}`, intoSource = t => t.startsWith(`../../${g.source}/`);
+    const entries = g.names.map(n => {
+      const l = `${g.dir}/${n}`, at = path.join(ROOT, l), t = target(n);
+      let st; try { st = fs.lstatSync(at); } catch (e) { return e.code === 'ENOENT' ? { l, at, t, state: 'write' } : { l, at, t, state: 'kept', had: `something eng cannot read (${e.code})` }; }
       if (!st.isSymbolicLink()) return { l, at, t, state: 'kept', had: st.isDirectory() ? 'a folder' : 'a file' };
       const cur = fs.readlinkSync(at);
-      if (cur === t) return { l, at, t, state: 'ok' };
-      return intoSource(at, cur) ? { l, at, t, state: 'write', was: cur } : { l, at, t, state: 'kept', had: `a link to ${cur}` };
+      return cur === t ? { l, at, t, state: 'ok' } : intoSource(cur) ? { l, at, t, state: 'write', was: cur } : { l, at, t, state: 'kept', had: `a link to ${cur}` };
     });
-    return { ...g, real, mode, entries, prunable };
+    // A name eng no longer wants is pruned only when it holds eng's exact link, or a dangling link into the source.
+    const prunable = n => { const at = path.join(ROOT, g.dir, n), t = readLink(at); return t !== null && (t === target(n) || intoSource(t) && !fs.existsSync(at)); };
+    return { ...g, entries, prunable };
   });
 }
 const managedLinks = plan => plan.flatMap(g => g.entries.filter(e => e.state === 'ok' || e.state === 'write').map(e => e.l));
-// What sync and sync --check print, and doctor shows as WARN: eng left something alone, so the developer knows where it is.
-const linkNotices = plan => plan.flatMap(g => [
-  ...(g.mode === 'outside' && g.names.length ? [`${g.dir} resolves to ${g.real}, outside this repo, so eng writes and deletes nothing there. eng's ${g.what} are in ${g.source}; add them to that shared folder yourself if you want them there.`] : []),
-  ...(g.mode === 'unresolved' && g.names.length ? [`${g.dir} ${UNRESOLVED}, so eng writes and deletes nothing through it. eng's ${g.what} are in ${g.source}.`] : []),
-  ...g.entries.filter(e => e.state === 'kept').map(e => `${e.l}: ${shown(e.at)} is ${e.had} that eng did not make, so eng leaves it; Claude Code sees it, not eng's ${g.source}/${path.basename(e.l)}.`)]);
-const fileNotice = (p, real) => real === null ? `${p} ${UNRESOLVED}, so eng does not write it.` : `${p} resolves to ${real}, outside this repo, so eng does not write it.`;
-const fileNotices = files => Object.keys(files).flatMap(p => { const r = realOf(p); return inRepo(r) ? [] : [fileNotice(p, r)]; });
-const unwritable = files => new Set(Object.keys(files).filter(p => !inRepo(realOf(p))));
+
+// What sync and sync --check print, and doctor shows as WARN: one line per folder eng left alone, with what Claude Code
+// and the other harnesses find through it right now (a read-only check), and one per entry eng did not make.
+const WHY = { link: at => `is a symlink to ${readLink(path.join(ROOT, at))}`, file: () => 'is not a folder', unreadable: () => 'cannot be read', outside: () => 'is outside this repo' };
+function leftNotices(cfg, all, plan) {
+  const lines = new Map(), groups = linkGroups(cfg).filter(g => g.names.length);
+  const add = (b, clause) => { if (!lines.has(b.at)) lines.set(b.at, [`${b.at} ${WHY[b.why](b.at)}, so eng writes and deletes nothing through it.`]); if (clause) lines.get(b.at).push(clause); };
+  const found = (base, g) => { const yes = g.names.filter(n => fs.existsSync(path.join(ROOT, base, n))); return [yes, g.names.filter(n => !yes.includes(n))]; };
+  for (const g of groups) {
+    const s = blocked(g.source, true), d = g.dir && blocked(g.dir, true), [yes, no] = found(d ? g.dir : g.source, g);
+    const fix = s ? `eng renders its ${g.what} only into a real ${g.source} folder in this repo, so add them yourself` : `eng's copies are in ${g.source}; add them yourself`;
+    const clause = where => !no.length ? `Through ${where} the harnesses find all ${yes.length} of eng's ${g.what}.`
+      : !yes.length ? `Through ${where} the harnesses find none of eng's ${no.length} ${g.what} (${fix}).`
+      : `Through ${where} the harnesses find ${yes.length} of eng's ${g.names.length} ${g.what}; not ${no.join(', ')} (${fix}).`;
+    if (d) add(d, clause(g.dir));
+    else if (s) add(s, clause(g.source));
+  }
+  const sources = groups.map(g => g.source);
+  for (const p of Object.keys(all)) {
+    const b = blocked(p);
+    if (b && !sources.some(s => p.startsWith(`${s}/`))) add(b, `eng did not write ${p}.`);
+  }
+  return [...[...lines.values()].map(l => l.join(' ')),
+    ...plan.flatMap(g => g.entries.filter(e => e.state === 'kept').map(e => `${e.l} is ${e.had} that eng did not make, so eng leaves it; Claude Code sees it, not eng's ${g.source}/${path.basename(e.l)}.`))];
+}
 
 // eng sync is a single actor: a folder swapped for a link while it runs is out of scope. The cheap protections: each
-// change is made at a path resolved again just before it, a link is created only where nothing is (symlinkSync fails on
-// anything there), and only a link is ever removed to make room.
+// folder is checked again just before eng links into it, a link is created only where nothing is (symlinkSync fails on
+// anything there), and only a link eng would have made is ever removed. A failing fs call is a notice, not a crash.
 function writeLinks(plan, left) {
   let n = 0;
   for (const g of plan) {
     const todo = g.entries.filter(e => e.state === 'write');
     if (!todo.length) continue;
-    fs.mkdirSync(g.real, { recursive: true });
+    if (blocked(g.dir)) { left.push(`${g.dir} changed while eng sync ran, so eng links nothing there.`); continue; }
+    try { fs.mkdirSync(path.join(ROOT, g.dir), { recursive: true }); } catch (e) { left.push(`${g.dir}: eng cannot make it (${e.code}), so eng links nothing there.`); continue; }
     for (const e of todo) {
-      if (realOf(g.dir) !== g.real) { left.push(`${g.dir} no longer resolves to ${shown(g.real)}; it changed while eng sync ran, so eng links nothing more through it.`); break; }
-      if (e.was !== undefined) { if (readLink(e.at) !== e.was) { left.push(`${e.l}: ${shown(e.at)} changed while eng sync ran, so eng leaves it.`); continue; } fs.unlinkSync(e.at); }
-      try { fs.symlinkSync(e.t, e.at); } catch (err) { if (err.code !== 'EEXIST') throw err; left.push(`${e.l}: something appeared at ${shown(e.at)} while eng sync ran, so eng leaves it.`); continue; }
+      if (blocked(g.dir, true)) { left.push(`${g.dir} changed while eng sync ran, so eng links nothing more there.`); break; }
+      try {
+        if (e.was !== undefined) { if (readLink(e.at) !== e.was) { left.push(`${e.l} changed while eng sync ran, so eng leaves it.`); continue; } fs.unlinkSync(e.at); }
+        fs.symlinkSync(e.t, e.at);
+      } catch (err) { if (!err.code) throw err; left.push(err.code === 'EEXIST' ? `${e.l}: something appeared there while eng sync ran, so eng leaves it.` : `${e.l}: eng cannot link it (${err.code}).`); continue; }
       console.log(`  linked ${e.l}`); n++;
     }
   }
   return n;
 }
-function pruneLinks(plan) {
+function pruneLinks(plan, left) {
   let n = 0;
-  for (const g of plan.filter(g => (g.mode === 'plain' || g.mode === 'inside') && fs.existsSync(g.real))) {
+  for (const g of plan) {
     const want = new Set(g.names);
-    for (const name of fs.readdirSync(g.real)) {
-      if (realOf(g.dir) !== g.real) break;
-      if (want.has(name)) continue;
-      if (g.prunable(name) === null) continue;
-      fs.unlinkSync(path.join(g.real, name)); console.log(`  unlinked ${g.dir}/${name}`); n++;
+    let names = []; try { names = fs.readdirSync(path.join(ROOT, g.dir)); } catch {}
+    for (const name of names) {
+      if (want.has(name) || !g.prunable(name)) continue;
+      if (blocked(g.dir, true)) break;
+      try { fs.unlinkSync(path.join(ROOT, g.dir, name)); } catch (e) { if (!e.code) throw e; left.push(`${g.dir}/${name}: eng cannot remove it (${e.code}).`); continue; }
+      console.log(`  unlinked ${g.dir}/${name}`); n++;
     }
   }
   return n;
@@ -242,9 +244,8 @@ function pruneRenderedDirs(skillsDir, rendered) {
   const dirs = new Set();
   for (const p of rendered) for (let d = path.posix.dirname(p); d.startsWith(`${skillsDir}/`); d = path.posix.dirname(d)) dirs.add(d);
   for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
-    const r = realOf(d);
-    if (!inRepo(r)) continue;
-    try { if (fs.lstatSync(r).isDirectory() && !fs.readdirSync(r).length) fs.rmdirSync(r); } catch {}
+    if (blocked(d, true)) continue;
+    try { if (fs.lstatSync(path.join(ROOT, d)).isDirectory() && !fs.readdirSync(path.join(ROOT, d)).length) fs.rmdirSync(path.join(ROOT, d)); } catch {}
   }
 }
 
@@ -273,27 +274,32 @@ function sync() {
   const migrated = migrateConfig();
   const cfg = loadConfig();
   const plan = linkPlan(cfg), left = [];
-  const files = render(cfg), exec = executables(cfg), outside = unwritable(files);
+  const all = render(cfg), files = managedFiles(all), exec = executables(cfg);
   const old = parseLock(readOr('.eng/lock.json'));
   let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
-    if (outside.has(p) || readOr(p) === content && !(exec.has(p) && !isExec(path.join(ROOT, p)))) continue;
-    const real = realOf(p);
-    if (!inRepo(real)) { left.push(fileNotice(p, real)); continue; }
-    fs.mkdirSync(path.dirname(real), { recursive: true });
-    if (realOf(p) !== real) { left.push(`${p}: where it resolves changed while eng sync ran, so eng does not write it.`); continue; }
-    fs.writeFileSync(real, content);
-    if (exec.has(p)) fs.chmodSync(real, 0o755);
+    const abs = path.join(ROOT, p);
+    try {
+      if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
+      if (blocked(p)) { left.push(`${p}: a folder above it changed while eng sync ran, so eng does not write it.`); continue; }
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      if (blocked(p)) { left.push(`${p}: a folder above it changed while eng sync ran, so eng does not write it.`); continue; }
+      fs.writeFileSync(abs, content);
+      if (exec.has(p)) fs.chmodSync(abs, 0o755);
+    } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot write it (${e.code}).`); continue; }
     console.log(`  wrote ${p}`); changed++;
   }
   changed += writeLinks(plan, left);
-  for (const n of [...linkNotices(plan), ...fileNotices(files), ...left]) console.log(`  left ${n}`);
   // Prune files a previous sync generated that the config no longer renders, and links eng made that it no longer wants.
-  for (const p of old.files) if (!(p in files) && onDisk(p) && inRepo(realOf(p)) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
-  changed += pruneLinks(plan);
+  for (const p of old.files) {
+    if (p in files || blocked(p) || !onDisk(p)) continue;
+    try { if (!fs.lstatSync(path.join(ROOT, p)).isFile()) continue; fs.rmSync(path.join(ROOT, p)); } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot remove it (${e.code}).`); continue; }
+    console.log(`  removed ${p}`); changed++;
+  }
+  changed += pruneLinks(plan, left);
   pruneRenderedDirs(cfg.agents.skills_dir, [...old.files, ...Object.keys(files)]);
-  const links = new Set(managedLinks(linkPlan(cfg)));
-  const lock = lockText(pkgVersion(), Object.keys(files), links);
+  for (const n of [...leftNotices(cfg, all, linkPlan(cfg)), ...left]) console.log(`  left ${n}`);
+  const lock = lockText(pkgVersion(), Object.keys(files), new Set(managedLinks(linkPlan(cfg))));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
@@ -357,20 +363,16 @@ function syncCheck() {
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();
-  const files = render(cfg);
-  const bad = [], outside = unwritable(files), plan = linkPlan(cfg);
+  const all = render(cfg), files = managedFiles(all);
+  const bad = [], left = [], plan = linkPlan(cfg);
   for (const [p, c] of Object.entries(files)) {
-    if (outside.has(p)) continue;
-    const cur = readOr(p);
+    let cur; try { cur = readOr(p); } catch (e) { if (!e.code) throw e; left.push(`${p}: eng cannot read it (${e.code}).`); continue; }
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
-  for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
-  for (const g of plan) for (const e of g.entries) {
-    if (e.state === 'write') bad.push(`${e.l}: symlink missing or wrong`);
-    if (e.state === 'unreached') bad.push(`${e.l}: does not resolve to ${g.source}/${path.basename(e.l)}`);
-  }
-  for (const n of [...linkNotices(plan), ...fileNotices(files)]) console.log(`  left ${n}`);
+  for (const p of executables(cfg)) if (p in files && fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
+  for (const g of plan) for (const e of g.entries) if (e.state === 'write') bad.push(`${e.l}: symlink missing or wrong`);
+  for (const n of [...leftNotices(cfg, all, plan), ...left]) console.log(`  left ${n}`);
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files)) || !same(lock.links, new Set(managedLinks(plan)))) bad.push('.eng/lock.json: config changed since last sync');
@@ -999,9 +1001,7 @@ async function doctor() {
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
-  const plan = linkPlan(cfg);
-  for (const g of plan.filter(g => g.names.length && (g.mode === 'source' || g.mode === 'inside'))) console.log(`  ok   ${g.dir} resolves to ${shown(g.real)}${g.mode === 'source' ? `, eng's ${g.what} folder, so Claude Code sees them through it` : ' in this repo; eng links its ' + g.what + ' there'}`);
-  for (const w of [...linkNotices(plan), ...(renderErrors(cfg).length ? [] : fileNotices(render(cfg)))]) console.log(`  WARN ${w}`);
+  for (const w of renderErrors(cfg).length ? [] : leftNotices(cfg, render(cfg), linkPlan(cfg))) console.log(`  WARN ${w}`);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }

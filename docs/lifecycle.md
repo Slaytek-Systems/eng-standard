@@ -48,30 +48,30 @@ current.
 ## Skills and subagents for Claude Code
 
 eng renders skills into `agents.skills_dir` (`.agents/skills`) and subagents into `.agents/agents`. For Claude Code it
-links each one into `.claude/skills` and `.claude/agents`. eng manages what is inside the repo only. Many developers
-point every harness's skills folder at one shared folder, so when `.claude`, `.claude/skills` or `.claude/agents` is a
-symlink, eng resolves it and does one of three things:
+links each one into `.claude/skills` and `.claude/agents`. eng manages what is inside the repo only, and does not care
+how a developer arranges their skills folders.
 
-| It resolves to | eng sync | `sync --check` and `eng doctor` |
-|---|---|---|
-| eng's own folder (`.agents/skills`, `.agents/agents`) | writes no link: Claude Code already sees every entry | pass when each entry resolves to eng's copy |
-| another folder in the repo (`.codex/skills`) | writes its links there, each relative to that folder | as for a real folder |
-| a folder outside the repo | writes and deletes nothing through it, and prints where eng's skills are | do not fail; doctor shows a `WARN` |
+The rule: eng writes, links, chmods and prunes a path only when every part of it, from the repo root down, is a real
+folder in the repo. It checks each part with `lstat` and never follows a symlink to write. Many developers point every
+harness's skills folder at one shared folder. When `.claude`, `.claude/skills`, `.claude/agents`, the skills source, or
+a folder above them is a symlink, eng:
 
-In every case eng never deletes or replaces an entry it did not make: a folder, a file, or a link that points
-somewhere other than eng's skills. It leaves the entry and prints its name, and Claude Code sees that entry instead of
-eng's. eng prunes only its own links. A generated file whose path resolves outside the repo (`.claude/settings.json`
-when `.claude` is a link out) is not written either.
+- writes, links and deletes nothing through it, and does not fail because of it;
+- prints one line per such folder in `eng sync` and `sync --check`, and as a `WARN` in `eng doctor`: where it points,
+  how many of eng's skills the harnesses find through it now (a read-only check), the names they do not find, and that
+  eng's copies are in `.agents/skills` (or `.agents/agents`) for you to add;
+- renders no skills into a skills source that is a link, and renders everything else as usual.
 
-eng decides what it made from the entry on disk now: a link whose target is the one eng writes, or a link into eng's
-skills folder. `.eng/lock.json` never makes an entry eng's, so a developer's link that replaced one of eng's stays. A
-folder that reaches eng's source through a link out of the repo counts as outside. A link loop or a folder eng cannot
-read gets a notice, and eng writes nothing through it. After pruning, eng removes an empty folder under the skills
-source only when a file it rendered was in it.
+In a real `.claude/skills` or `.claude/agents`, eng creates a link only where nothing is. It never deletes or replaces
+an entry it did not make: a folder, a file, or a link that points somewhere other than eng's skills. It leaves the
+entry and prints its name, and Claude Code sees that entry instead of eng's. eng decides what it made from the entry on
+disk now (the exact link it writes, or a link into its skills folder), never from `.eng/lock.json`, and prunes only
+those links. An entry or folder eng cannot read is a notice. After pruning, eng removes an empty folder under the
+skills source only when a file it rendered was in it. `sync --check` and `eng doctor` check content and modes only on
+paths eng manages.
 
-eng sync is a single actor. A folder swapped for a link while sync runs is out of scope: eng resolves each path again
-just before each change and creates links only where nothing is, so such a swap can at most leave an empty folder where
-the swapped link points.
+eng sync is a single actor. A folder changed while sync runs is out of scope: eng checks a folder again just before it
+writes or links into it, and creates links only where nothing is.
 
 ## Upgrade
 
