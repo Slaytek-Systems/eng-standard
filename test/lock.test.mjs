@@ -41,7 +41,7 @@ test('two branches that each edit a managed file merge without a lock conflict, 
   assert.match(r.read('AGENTS.md'), /Team A owns the deploy notes[\s\S]*Team B owns the runbook/);
   const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
   const lock = r.read('.eng/lock.json');
-  assert.equal(r.eng('sync').stdout.trim(), 'eng sync: no changes');
+  assert.match(r.eng('sync').stdout, /^eng sync: no changes\n$/m);
   assert.equal(r.read('.eng/lock.json'), lock);
 });
 
@@ -52,7 +52,7 @@ test('the lock holds the standard version and sorted managed paths, with no cont
   assert.equal(lock.package, version);
   assert.ok(Array.isArray(lock.files) && lock.files.includes('AGENTS.md') && lock.files.includes('SHIPPING.md'));
   assert.deepEqual(lock.files, [...lock.files].sort());
-  assert.ok(Array.isArray(lock.links)); assert.deepEqual(lock.links, [...lock.links].sort());
+  assert.deepEqual(Object.keys(lock).sort(), ['files', 'package'], 'the lock records no links (0.17.2)');
   assert.doesNotMatch(r.read('.eng/lock.json'), /[0-9a-f]{64}/);
 });
 
@@ -60,8 +60,22 @@ test('eng sync on unchanged inputs leaves the lock byte-identical', () => {
   const r = repo();
   const lock = r.read('.eng/lock.json');
   const s = r.eng('sync');
-  assert.equal(s.stdout.trim(), 'eng sync: no changes');
+  assert.match(s.stdout, /^eng sync: no changes\n$/m); assert.doesNotMatch(s.stdout, /wrote|removed/);
   assert.equal(r.read('.eng/lock.json'), lock);
+});
+
+test('a 0.17.1 lock that lists .claude/skills links is read fine; sync drops the field and leaves the links alone', () => {
+  const r = repo();
+  const now = JSON.parse(r.read('.eng/lock.json')), links = ['.claude/skills/grilling', '.claude/agents/poteto-agent.md'];
+  fs.mkdirSync(r.file('.claude/skills'), { recursive: true }); fs.mkdirSync(r.file('.claude/agents'), { recursive: true });
+  fs.symlinkSync('../../.agents/skills/grilling', r.file(links[0])); fs.symlinkSync('../../.agents/agents/poteto-agent.md', r.file(links[1]));
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ package: now.package, files: now.files, links: [...links].sort() }, null, 2) + '\n');
+  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stdout + d.stderr);
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.match(s.stdout, /wrote \.eng\/lock\.json/);
+  assert.deepEqual(JSON.parse(r.read('.eng/lock.json')), { package: now.package, files: now.files });
+  assert.equal(fs.readlinkSync(r.file(links[0])), '../../.agents/skills/grilling');
+  assert.equal(fs.readlinkSync(r.file(links[1])), '../../.agents/agents/poteto-agent.md');
 });
 
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -69,7 +83,7 @@ const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 function writeOldLock(r, extra = []) {
   const now = JSON.parse(r.read('.eng/lock.json')), paths = Array.isArray(now.files) ? now.files : Object.keys(now.files);
   const files = Object.fromEntries([...paths, ...extra].sort().map(p => [p, sha256(p)]));
-  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ links: now.links, config_hash: sha256(r.read('eng.config.yml')), package: '0.11.0', files }, null, 2) + '\n');
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ config_hash: sha256(r.read('eng.config.yml')), package: '0.11.0', files }, null, 2) + '\n');
   return paths;
 }
 
@@ -118,7 +132,7 @@ test('sync --check still fails when the config changes what eng sync manages, un
   assert.equal(r.eng('sync', '--check').status, 0);
 });
 
-test('a skill listed twice (pstack/* and pstack/how) is one managed link, and sync --check passes after sync', () => {
+test('a skill listed twice (pstack/* and pstack/how) renders once, and sync --check passes after sync', () => {
   const r = repo();
   r.edit('eng.config.yml', s => s.replace(/^( +)- pstack\/\*.*$/m, '$&\n$1- pstack/how'));
   assert.match(r.read('eng.config.yml'), /^ +- pstack\/how$/m);

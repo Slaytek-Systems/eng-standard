@@ -37,22 +37,6 @@ function repo(edit = c => c) {
   };
   return { dir, git, eng, checks };
 }
-// Every file under dir (symlinks as links), with its bytes or link target: what "wrote nothing" compares.
-function snapshot(dir) {
-  const out = {};
-  const walk = rel => {
-    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
-      const p = path.join(rel, e.name), abs = path.join(dir, p);
-      if (p === '.git') continue;
-      if (e.isSymbolicLink()) out[p] = `-> ${fs.readlinkSync(abs)}`;
-      else if (e.isDirectory()) { out[`${p}/`] = 'dir'; walk(p); }
-      else out[p] = fs.readFileSync(abs, 'utf8');
-    }
-  };
-  walk('.');
-  return out;
-}
-
 // ---------- 1. PR template: GitHub reads .github/, the root or docs/, any case, and a PULL_REQUEST_TEMPLATE/ folder ----------
 const ENG_TEMPLATE = '.github/pull_request_template.md';
 for (const own of ['.github/PULL_REQUEST_TEMPLATE.md', 'PULL_REQUEST_TEMPLATE.md', 'docs/pull_request_template.md', '.github/PULL_REQUEST_TEMPLATE/feature.md'])
@@ -195,24 +179,7 @@ test('a very noisy failing check prints at most 40 lines and 8 KiB of its end', 
   assert.ok(Buffer.byteLength(t) <= 8192 && t.split('\n').length <= 40, `bounded: ${Buffer.byteLength(t)} bytes, ${t.split('\n').length} lines`);
 });
 
-// ---------- 4. eng sync never writes per-skill links through a symlinked .claude/skills ----------
-for (const where of ['inside', 'outside'])
-  test(`eng sync refuses a .claude/skills that is a symlink to a folder ${where} the repo, and writes nothing`, () => {
-    const { dir, eng } = repo();
-    const target = where === 'inside' ? path.join(dir, '.agents/skills') : fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-skills-elsewhere-'));
-    if (where === 'outside') scratch.push(target);
-    fs.mkdirSync(target, { recursive: true }); fs.writeFileSync(path.join(target, 'keep.md'), 'mine\n');
-    fs.mkdirSync(path.join(dir, '.claude'));
-    fs.symlinkSync(where === 'inside' ? '../.agents/skills' : target, path.join(dir, '.claude/skills'));
-    const before = snapshot(dir), elsewhere = where === 'outside' ? snapshot(target) : null;
-    const r = eng(['sync']);
-    assert.equal(r.status, 1, out(r));
-    assert.match(r.stderr, /config error: \.claude\/skills is a symlink/);
-    assert.match(r.stderr, /make \.claude\/skills a real directory/);
-    assert.deepEqual(snapshot(dir), before, 'eng sync wrote nothing in the repo');
-    if (elsewhere) assert.deepEqual(snapshot(target), elsewhere, 'nor where the link points');
-    assert.equal(eng(['sync', '--check']).status, 1);
-  });
+// ---------- 4. (0.17.1 refused a symlinked .claude/skills; since 0.17.2 eng never writes there: test/harness-folders.test.mjs) ----------
 
 // ---------- 5. a container a check starts is outside eng's budget unless docker is given the limits ----------
 // The container lint is a nudge: a text scan of common shell forms cannot parse shell, so it warns and never fails.

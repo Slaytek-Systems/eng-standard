@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.17.2 (9 Nov 2026)
+
+**eng stops writing into harness skill folders** (Matt, 9 Nov 2026: "this sounds much smoother"; Core nd70ke343v7gc0eakdejg7m5f18hx1p9, Direction change). The five review rounds of PR #58 all came from eng managing per-skill links inside `.claude/skills` and `.claude/agents`, folders that developers and other tools also own. This release removes that work instead of hardening it. No new command and no config change.
+
+- **eng never creates, changes or deletes anything in `.claude/skills` or `.claude/agents`.** `eng sync`, `eng sync --check`, `eng init` and `eng doctor` only read them, whatever they are: real folders, symlinks into or out of the repo, loops, dangling links, unreadable entries or FIFOs. Skills still render into `agents.skills_dir` (`.agents/skills`) and subagents into the folder beside it (`.agents/agents`), byte for byte as in 0.17.1. Every other file eng renders, `.claude/settings.json` included, is unchanged.
+- **The 0.17.1 refusal is gone.** A symlinked `.claude`, `.claude/skills` or `.claude/agents` is no longer a config error: with nothing to write there, there is nothing to refuse. `.claude/skills -> ../.agents/skills` is now the simplest layout.
+- **`eng sync --check` no longer checks links.** A missing or different link in `.claude/skills` is not drift.
+- **Visibility report.** With `claude-code` in `agents.harnesses`, `eng sync` and `eng doctor` print one line: `ok` when every eng skill is at `.claude/skills/<name>/SKILL.md` and every subagent at `.claude/agents/<file>`, else a `WARN` with the count and the one-step fix. A path counts only when it stats as a readable regular file; eng never opens it, so a FIFO cannot block it, and an error counts as not visible. The fix is `ln -s ../.agents/skills .claude/skills` (and `ln -s ../.agents/agents .claude/agents`) when the folder does not exist, otherwise "add the missing entries, or point it at `.agents/skills`". It is a warning: doctor never fails on it and `--check` never reads it. The rendered `AGENTS.md` already tells agents to read `.agents/skills/<name>/SKILL.md` directly, so this matters only for Claude Code's own skill discovery.
+- **The lock stops recording `links`.** `.eng/lock.json` lists `package` and `files` only. A 0.17.1 lock with `links` reads fine, and the next `eng sync` rewrites it without them.
+- **Upgrade:** zero manual edits, and no config migration (no key changes). Move the pin, run `eng sync` (the lock loses `links`), commit. The per-skill links an earlier eng made in `.claude/skills` and `.claude/agents` stay exactly as they are, and Claude Code keeps seeing those skills. eng no longer prunes or repairs them, so a skill added later is not linked: the doctor line says so, and `ln -s ../.agents/skills .claude/skills` in place of the per-skill folder (after removing it yourself) covers every future skill.
+
 ## 0.17.1 (9 Nov 2026)
 
 **Adoption fixes from Kalsigns** (Core nd7cpb3k1atph5xsgdfzt4nm4d8ht44g: the Kalsigns adoption of v0.16 hit five gaps the next adopter would hit too). No new command and no config change.
