@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, harnessRel, harnessDirErrors, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -137,14 +137,19 @@ const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p
 function claudeVisibility(cfg) {
   if (!cfg.agents.harnesses.includes('claude-code')) return null;
   const subagents = cfg.agents.skills.filter(s => s.endsWith('/*')).flatMap(s => { const d = path.join(PKG, 'vendor', s.split('/')[0], 'agents'); return fs.existsSync(d) ? fs.readdirSync(d) : []; });
-  const dirs = [['.claude/skills', cfg.agents.skills_dir, expandSkills(cfg).map(s => `${s.split('/')[1]}/SKILL.md`)],
-    ['.claude/agents', `${path.dirname(cfg.agents.skills_dir)}/agents`, subagents]];
+  // A skill or subagent selected twice (pstack/* plus pstack/how) renders once, so it counts once.
+  const dirs = [['.claude/skills', cfg.agents.skills_dir, [...new Set(expandSkills(cfg).map(s => `${s.split('/')[1]}/SKILL.md`))]],
+    ['.claude/agents', `${path.dirname(cfg.agents.skills_dir)}/agents`, [...new Set(subagents)]]];
   const visible = rel => { try { const abs = path.join(ROOT, rel); if (!fs.statSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
   const present = rel => { try { fs.lstatSync(path.join(ROOT, rel)); return true; } catch { return false; } };
   const missing = dirs.map(([d, src, names]) => ({ d, src, n: names.filter(f => !visible(`${d}/${f}`)).length })).filter(m => m.n);
   const total = dirs.reduce((n, [, , names]) => n + names.length, 0), lost = missing.reduce((n, m) => n + m.n, 0);
   if (!lost) return { ok: true, what: `claude-code: all ${total} eng skills and subagents are visible in .claude/skills and .claude/agents` };
-  const fix = missing.map(({ d, src }) => present(d) ? `add the missing entries to ${d}, or point ${d} at ${src}` : `ln -s ../${src} ${d}`).join('; ');
+  // A link's target is read from the folder it sits in, after symlinks: when .claude is itself a link, ../<src> would
+  // point beside the link's target, not into this repo. So the target is relative to the real .claude folder.
+  const target = (d, src) => { let root = ROOT; try { root = fs.realpathSync(ROOT); } catch {} let real = path.join(root, path.dirname(d)); try { real = fs.realpathSync(path.join(ROOT, path.dirname(d))); } catch {} return path.relative(real, path.join(root, src)); };
+  const q = s => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
+  const fix = missing.map(({ d, src }) => present(d) ? `add the missing entries to ${d}, or point ${d} at ${src}` : `ln -s ${q(target(d, src))} ${q(d)}`).join('; ');
   return { ok: false, what: `claude-code: ${lost} of ${total} eng skills and subagents are not visible in .claude/skills or .claude/agents (eng renders them into ${dirs.map(([, src]) => src).join(' and ')}, and never writes into .claude/skills or .claude/agents). Fix: ${fix}` };
 }
 const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
@@ -183,9 +188,10 @@ function sync() {
     if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
-  // Prune files a previous sync generated that the config no longer renders.
+  // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
+  // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  for (const p of old.files) if (!(p in files) && !harnessRel(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
   for (const d of [cfg.agents.skills_dir]) { const walk = x => { if (!fs.existsSync(x)) return; for (const e of fs.readdirSync(x, { withFileTypes: true })) if (e.isDirectory()) { walk(path.join(x, e.name)); if (!fs.readdirSync(path.join(x, e.name)).length) fs.rmdirSync(path.join(x, e.name)); } }; walk(path.join(ROOT, d)); }
   const lock = lockText(pkgVersion(), Object.keys(files));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
@@ -884,7 +890,7 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(typeof cfg?.agents?.skills_dir === 'string' ? harnessDirErrors(cfg.agents.skills_dir) : []).map(what => ({ ok: false, what, fix: 'set agents.skills_dir outside .claude/skills and .claude/agents, then run eng sync' })), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);

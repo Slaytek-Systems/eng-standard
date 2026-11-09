@@ -68,10 +68,12 @@ current.
   hand. eng never edits rulesets.
 - Skills render into `agents.skills_dir` (`.agents/skills`), subagents into the folder beside it (`.agents/agents`). The
   rendered `AGENTS.md` tells every agent to read `.agents/skills/<name>/SKILL.md` directly. eng never creates, changes or
-  deletes anything in `.claude/skills` or `.claude/agents`: developers and other tools own those folders. For Claude
-  Code's own skill discovery, link each folder once: `ln -s ../.agents/skills .claude/skills` and
-  `ln -s ../.agents/agents .claude/agents`. `eng sync` and `eng doctor` print one line saying whether Claude Code can see
-  every eng skill and subagent there, and the fix when it cannot. It is a warning, never a failure.
+  deletes anything in `.claude/skills` or `.claude/agents`: developers and other tools own those folders. An
+  `agents.skills_dir` that would put skills or subagents in either one (`.claude/skills`, `.claude/custom`) is a config
+  error, and an old lock's files there are never pruned. For Claude Code's own skill discovery, link each folder once:
+  `ln -s ../.agents/skills .claude/skills` and `ln -s ../.agents/agents .claude/agents`. `eng sync` and `eng doctor`
+  print one line saying whether Claude Code can see every eng skill and subagent there, and the fix when it cannot,
+  quoted and relative to the real `.claude` folder when `.claude` is itself a link. It is a warning, never a failure.
 
 ## Joining agent
 

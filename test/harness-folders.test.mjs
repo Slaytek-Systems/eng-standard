@@ -138,3 +138,83 @@ test('without claude-code in agents.harnesses there is no visibility line', () =
   for (const args of [['sync'], ['doctor']]) { const res = r.eng(args); assert.equal(res.status, 0, out(res)); assert.equal(report(res), '', args.join(' ')); }
   assert.ok(!fs.existsSync(r.file('.claude/skills')));
 });
+
+const setSkillsDir = (r, dir) => { const c = YAML.parse(fs.readFileSync(r.file('eng.config.yml'), 'utf8')); c.agents.skills_dir = dir; fs.writeFileSync(r.file('eng.config.yml'), YAML.stringify(c)); };
+
+test('agents.skills_dir inside .claude/skills or .claude/agents is a config error: nothing there is written, read or pruned', () => {
+  for (const dir of ['.claude/skills', './.claude/skills/', '.Claude/Skills', '.claude/skills/eng', '.claude/agents/x', '.claude/custom']) {
+    const r = repo();
+    fs.mkdirSync(r.file('.claude/skills/how'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/how/SKILL.md'), 'mine\n');
+    fs.mkdirSync(r.file('.claude/agents')); fs.writeFileSync(r.file('.claude/agents/poteto-agent.md'), 'mine\n');
+    execSync(`mkfifo ${JSON.stringify(r.file('.claude/skills/how/fifo'))}`);
+    setSkillsDir(r, dir);
+    const before = claudeFolders(r);
+    for (const args of [['sync'], ['sync', '--check'], ['init']]) {
+      const res = r.eng(args);
+      assert.equal(res.signal, null, `${dir}: eng ${args.join(' ')} did not hang`);
+      assert.equal(res.status, 1, `${dir}: eng ${args.join(' ')} refuses: ${out(res).slice(-2000)}`);
+      assert.match(out(res), /agents\.skills_dir: .* in \.claude\/(skills|agents), which eng never writes into/, `${dir}: ${out(res).slice(-2000)}`);
+      assert.deepEqual(claudeFolders(r), before, `${dir}: eng ${args.join(' ')} left .claude/skills and .claude/agents untouched`);
+    }
+    const doc = r.eng(['doctor']);
+    assert.equal(doc.signal, null); assert.notEqual(doc.status, 0, `${dir}: doctor fails on it`);
+    assert.match(doc.stdout, /FAIL agents\.skills_dir: .*which eng never writes into/, `${dir}: ${out(doc).slice(-2000)}`);
+    assert.deepEqual(claudeFolders(r), before, `${dir}: doctor left them untouched`);
+  }
+});
+
+test('.claude/foo/skills is allowed: its subagent folder .claude/foo/agents is not a harness folder', () => {
+  const r = repo(); setSkillsDir(r, '.claude/foo/skills');
+  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
+  assert.ok(fs.existsSync(r.file(`.claude/foo/skills/${r.skills[0]}/SKILL.md`)));
+  assert.ok(!fs.existsSync(r.file('.claude/skills')) && !fs.existsSync(r.file('.claude/agents')));
+});
+
+test('files an older config rendered into .claude/skills or .claude/agents are never pruned', () => {
+  const r = repo();
+  const lock = JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8'));
+  lock.files.push('.claude/skills/how/SKILL.md', '.claude/agents/poteto-agent.md');
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  fs.mkdirSync(r.file('.claude/skills/how'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/how/SKILL.md'), 'old render\n');
+  fs.mkdirSync(r.file('.claude/agents')); fs.writeFileSync(r.file('.claude/agents/poteto-agent.md'), 'old render\n');
+  const before = claudeFolders(r);
+  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
+  assert.doesNotMatch(out(res), /removed \.claude/);
+  assert.deepEqual(claudeFolders(r), before);
+  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.some(f => f.startsWith('.claude/skills') || f.startsWith('.claude/agents')), 'the new lock lists them no longer');
+});
+
+test('a skill selected twice counts once in the report', () => {
+  const r = repo();
+  const c = YAML.parse(fs.readFileSync(r.file('eng.config.yml'), 'utf8'));
+  const wild = c.agents.skills.find(s => s.endsWith('/*')), pack = wild.split('/')[0];
+  const one = fs.readdirSync(path.join(PKG, 'vendor', pack, 'skills')).find(n => fs.existsSync(path.join(PKG, 'vendor', pack, 'skills', n, 'SKILL.md')));
+  c.agents.skills.push(`${pack}/${one}`, wild);
+  fs.writeFileSync(r.file('eng.config.yml'), YAML.stringify(c));
+  for (const args of [['sync'], ['doctor']]) { const res = r.eng(args); assert.equal(res.status, 0, out(res)); assert.match(report(res), notVisible(r, r.total), args.join(' ')); }
+});
+
+// The printed fix, run as printed from the repo root, makes every skill and subagent visible.
+function applyFix(r) {
+  const fix = report(r.eng(['sync'])).split('Fix: ')[1];
+  assert.ok(fix, 'a fix is printed');
+  for (const cmd of fix.split('; ')) execSync(cmd, { cwd: r.dir, shell: '/bin/sh', stdio: 'pipe' });
+  assert.match(report(r.eng(['sync'])), allVisible(r), fix);
+  return fix;
+}
+
+test('the printed link fix works when .claude is a symlink, inside or outside the repo', () => {
+  const inside = repo();
+  fs.mkdirSync(inside.file('config/nested'), { recursive: true });
+  fs.renameSync(inside.file('.claude'), inside.file('config/nested/claude')); fs.symlinkSync('config/nested/claude', inside.file('.claude'));
+  assert.match(applyFix(inside), /^ln -s \.\.\/\.\.\/\.\.\/\.agents\/skills \.claude\/skills; /);
+  const outside = repo(), away = tmp('eng-harness-parent-');
+  fs.renameSync(outside.file('.claude'), path.join(away, 'claude')); fs.symlinkSync(path.join(away, 'claude'), outside.file('.claude'));
+  applyFix(outside);
+});
+
+test('the printed link fix quotes a source path with spaces', () => {
+  const r = repo(); setSkillsDir(r, "my skills/it's/skills");
+  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
+  assert.match(applyFix(r), /^ln -s '\.\.\/my skills\/it'\\''s\/skills' \.claude\/skills; /);
+});
