@@ -87,6 +87,35 @@ current.
      get the git hooks and the rendered text; the rendered rules and `eng doctor` name each one's gaps.
 5. Never hand-edit a generated file. Edit `eng.config.yml` and run `eng sync`.
 
+## Git hooks
+
+`eng sync` renders `.githooks/pre-commit`, `.githooks/pre-push` and `.githooks/pre-rebase`. `eng init` points
+`core.hooksPath` at `.githooks`. That setting is shared by every worktree of a clone, so a repo keeps its own hook rules
+as commands in `eng.config.yml`, not in another hooks directory.
+
+- `hooks.pre_commit`. `.githooks/pre-commit` runs `eng sync --check` and `eng lint`, then each command in its own
+  `sh -c`, in order. It stops at the first failure.
+- `hooks.pre_push` (0.17.0). `.githooks/pre-push` runs eng's push checks first, unchanged (`git.rewrite_pushed`). When
+  they refuse, the push fails and no command runs. Then it runs each command in its own `sh -c`, in order, with the
+  hook's arguments (`$1` the remote name, `$2` its URL) and the same ref lines on stdin that git gave the hook, byte for
+  byte, an empty stdin included. Inside the command they are `$1` and `$2`, so a script gets them only when the command
+  passes them on: `scripts/check-push.sh "$@"`. `eng doctor` warns when a repo script is listed without them. The push fails at the first command that exits non-zero. The hook prints
+  `eng: hooks.pre_push command <i> of <n> failed (exit <code>): <command>` and exits with that code. The hook runs
+  from the top of the work tree, so `scripts/check-push.sh` names a file in the repo.
+- A command can refuse more pushes. It cannot let through a push that eng's checks refuse, because they run first.
+- `eng doctor` fails when a command in either list starts with a repo-relative path (`scripts/x.sh`, `./bin/check`)
+  that is missing or not executable.
+- `git push --no-verify` and `git commit --no-verify` skip the whole hook, eng's checks and the repo's commands alike.
+  This is git's behaviour and eng does not change it. The Claude Code deny list blocks the common forms for agents, and
+  a server ruleset is the real wall for protected branches.
+
+Example. A repo that refuses new refs and fast-forwards to its release branches moves those rules into a script:
+
+```yaml
+hooks:
+  pre_push: ['scripts/git-hooks/branch-classes.sh "$@"']
+```
+
 ## Uninstall
 
 There is no uninstall command. These steps remove what `eng sync` manages and keep anything edited by hand. Do it in one
@@ -122,6 +151,11 @@ output. Fix it upstream in eng-standard, never by editing generated files in the
   `vendor/pstack/REWRITES.tsv`; the vendored copy stays byte-identical.
 - `test/rewrite-mode.test.mjs`. It drives the rendered pre-push and pre-rebase hooks against a bare remote in both
   `git.rewrite_pushed` modes, and proves the `eng sync` migration, `eng init` and the config error.
+- `test/pre-push.test.mjs`. It pushes for real to a bare remote through the rendered `.githooks/pre-push`, 144 rows:
+  six ref shapes, three targets, four `hooks.pre_push` commands (none, Kalsigns-shaped, passing, failing) and both
+  `git.rewrite_pushed` modes. It checks each outcome, the arguments and stdin each command saw, that eng refuses first,
+  and that `--no-verify` skips the hook. It also proves the Kalsigns-shaped 12 refusals and that a config without the key
+  renders the 0.16.2 hook byte for byte.
 - `test/standard.test.mjs`. It proves the rendered "This standard" section, the `sync --check` pin and lock checks, and
   the `eng doctor` version lines in a scratch repo.
 - `test/release.test.mjs`. It covers the release-tag rule and the `release-tag` job in `ci.yml`.
