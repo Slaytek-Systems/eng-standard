@@ -53,9 +53,10 @@ tools:
 
 # A check that starts a container. docker (or podman) runs the container in its daemon's cgroup: outside the check's budget
 # scope, outside the watchdog's process tree, and no ENG_BUDGET_UNIT reaches it. eng's budget bounds the docker client only;
-# the container's limits are the ones docker is given, and docker enforces them. eng lint (heavy-tool-unbounded) fails a
-# check's docker run or podman run whose own options (before the image) lack --memory or -m, or --cpus. It reads the
-# script's text, one invocation at a time: a wrapper function or a variable hides an invocation from it.
+# the container's limits are the ones docker is given, and docker enforces them. eng lint and eng doctor warn
+# (container-unbounded) on a check's docker run or podman run whose own options (before the image) lack --memory or -m, or
+# --cpus; the warning never fails lint, the gate or doctor. It is a text check of common forms in one script, one invocation
+# at a time: a wrapper function, a variable or an unusual construction can hide an invocation from it.
 containers:
   use: "a check that runs its tool in a container (docker run, podman run)"
   enforced_by: "docker (or podman), from the --memory, --memory-swap and --cpus flags; eng bounds only the docker client process"

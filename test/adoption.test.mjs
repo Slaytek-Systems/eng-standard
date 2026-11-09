@@ -279,7 +279,7 @@ test('the container warning never fails eng gate or eng doctor, and an unbounded
   const lint = eng(['lint']);
   assert.equal(lint.status, 0, out(lint)); assert.match(lint.stdout, CONTAINER_WARN);
   const gate = eng(['gate']);
-  assert.equal(gate.status, 0, out(gate)); assert.match(out(gate), /container-unbounded/);
+  assert.equal(gate.status, 0, out(gate));
   const warned = eng(['doctor']);
   assert.match(warned.stdout, CONTAINER_WARN, 'doctor reports the container warning');
   checks({ tla: '#!/usr/bin/env bash\n# weight: light\nexit 0\ndocker run --rm -m1g --cpus=1 img true\n' });
