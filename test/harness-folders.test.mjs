@@ -139,10 +139,11 @@ test('without claude-code in agents.harnesses there is no visibility line', () =
   assert.ok(!fs.existsSync(r.file('.claude/skills')));
 });
 
+const REFUSED = /\(.*\) is in \.claude\/(skills|agents), which eng never writes into/;
 const setSkillsDir = (r, dir) => { const c = YAML.parse(fs.readFileSync(r.file('eng.config.yml'), 'utf8')); c.agents.skills_dir = dir; fs.writeFileSync(r.file('eng.config.yml'), YAML.stringify(c)); };
 
 test('agents.skills_dir inside .claude/skills or .claude/agents is a config error: nothing there is written, read or pruned', () => {
-  for (const dir of ['.claude/skills', './.claude/skills/', '.Claude/Skills', '.claude/skills/eng', '.claude/agents/x', '.claude/custom']) {
+  for (const dir of ['.claude/skills', './.claude/skills/', '/.claude/skills', '.Claude/Skills', '.claude/skills/eng', '.claude/agents/x', '.claude/custom']) {
     const r = repo();
     fs.mkdirSync(r.file('.claude/skills/how'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/how/SKILL.md'), 'mine\n');
     fs.mkdirSync(r.file('.claude/agents')); fs.writeFileSync(r.file('.claude/agents/poteto-agent.md'), 'mine\n');
@@ -153,12 +154,12 @@ test('agents.skills_dir inside .claude/skills or .claude/agents is a config erro
       const res = r.eng(args);
       assert.equal(res.signal, null, `${dir}: eng ${args.join(' ')} did not hang`);
       assert.equal(res.status, 1, `${dir}: eng ${args.join(' ')} refuses: ${out(res).slice(-2000)}`);
-      assert.match(out(res), /agents\.skills_dir: .* in \.claude\/(skills|agents), which eng never writes into/, `${dir}: ${out(res).slice(-2000)}`);
+      assert.match(out(res), REFUSED, `${dir}: ${out(res).slice(-2000)}`);
       assert.deepEqual(claudeFolders(r), before, `${dir}: eng ${args.join(' ')} left .claude/skills and .claude/agents untouched`);
     }
     const doc = r.eng(['doctor']);
     assert.equal(doc.signal, null); assert.notEqual(doc.status, 0, `${dir}: doctor fails on it`);
-    assert.match(doc.stdout, /FAIL agents\.skills_dir: .*which eng never writes into/, `${dir}: ${out(doc).slice(-2000)}`);
+    assert.match(out(doc), REFUSED, `${dir}: ${out(doc).slice(-2000)}`);
     assert.deepEqual(claudeFolders(r), before, `${dir}: doctor left them untouched`);
   }
 });
@@ -217,4 +218,71 @@ test('the printed link fix quotes a source path with spaces', () => {
   const r = repo(); setSkillsDir(r, "my skills/it's/skills");
   const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
   assert.match(applyFix(r), /^ln -s '\.\.\/my skills\/it'\\''s\/skills' \.claude\/skills; /);
+});
+
+const editConfig = (r, edit) => { const c = YAML.parse(fs.readFileSync(r.file('eng.config.yml'), 'utf8')); edit(c); fs.writeFileSync(r.file('eng.config.yml'), YAML.stringify(c)); };
+// Every file under the repo except .git, read with lstat: what a refused command must leave as it was.
+const repoShot = r => { const s = snapshot(r.dir); for (const k of Object.keys(s)) if (k === './.git' || k.startsWith('./.git/')) delete s[k]; return s; };
+const seedHarness = r => {
+  fs.mkdirSync(r.file('.claude/skills/how'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/how/SKILL.md'), 'mine\n');
+  fs.writeFileSync(r.file('.claude/skills/.gitkeep'), 'mine\n');
+  fs.mkdirSync(r.file('.claude/agents/x'), { recursive: true }); fs.writeFileSync(r.file('.claude/agents/poteto-agent.md'), 'mine\n');
+  execSync(`mkfifo ${JSON.stringify(r.file('.claude/agents/x/.gitkeep'))}`);
+};
+// sync, sync --check, init and doctor refuse it, within the timeout, and nothing in the repo changes.
+function proveRefused(r, why) {
+  const before = repoShot(r);
+  for (const args of [['sync'], ['sync', '--check'], ['init'], ['doctor']]) {
+    const res = r.eng(args);
+    assert.equal(res.signal, null, `${why}: eng ${args.join(' ')} did not hang`);
+    assert.equal(res.status, 1, `${why}: eng ${args.join(' ')} refuses: ${out(res).slice(-2000)}`);
+    assert.match(out(res), REFUSED, `${why}: ${out(res).slice(-2000)}`);
+    assert.deepEqual(repoShot(r), before, `${why}: eng ${args.join(' ')} changed nothing in the repo`);
+  }
+}
+
+test('verification.checks_dir inside .claude/skills or .claude/agents is refused too, before anything is read or written', () => {
+  for (const dir of ['.claude/skills', '.claude/agents/x', './.Claude/Skills/']) {
+    const r = repo(); seedHarness(r); editConfig(r, c => { c.verification = { ...c.verification, checks_dir: dir }; });
+    proveRefused(r, `checks_dir ${dir}`);
+  }
+});
+
+test('a path that leaves the repo and comes back in (../<repo>/.claude/skills) is refused like the plain one', () => {
+  for (const dir of ['skills', 'custom']) {
+    const r = repo(); seedHarness(r); setSkillsDir(r, `../${path.basename(r.dir)}/.claude/${dir}`);
+    proveRefused(r, `skills_dir ../<repo>/.claude/${dir}`);
+  }
+});
+
+test('an old lock entry that names .claude/skills through ../<repo> is never pruned', () => {
+  const r = repo(), back = `../${path.basename(r.dir)}`;
+  const lock = JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8'));
+  lock.files.push(`${back}/.claude/skills/developer.md`, `${back}/.claude/agents/developer.md`);
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  fs.mkdirSync(r.file('.claude/skills'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/developer.md'), 'mine\n');
+  fs.mkdirSync(r.file('.claude/agents'), { recursive: true }); fs.writeFileSync(r.file('.claude/agents/developer.md'), 'mine\n');
+  const before = claudeFolders(r);
+  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
+  assert.deepEqual(claudeFolders(r), before);
+});
+
+test('agents.skills_dir .claude: sync keeps empty and unreadable folders in .claude/skills, and the printed fix works', () => {
+  const r = repo(); setSkillsDir(r, '.claude');
+  fs.mkdirSync(r.file('.claude/skills/empty'), { recursive: true }); fs.mkdirSync(r.file('.claude/agents'));
+  const first = r.eng(['sync']); assert.equal(first.status, 0, out(first));
+  assert.ok(fs.existsSync(r.file('.claude/skills/empty')) && fs.existsSync(r.file('.claude/agents')), 'empty harness folders stay');
+  fs.rmSync(r.file('.claude/skills'), { recursive: true }); fs.rmdirSync(r.file('.claude/agents'));
+  assert.match(applyFix(r), /^ln -s \. \.claude\/skills; /);
+  const locked = repo(); setSkillsDir(locked, '.claude'); fs.mkdirSync(locked.file('.claude/skills/x'), { recursive: true }); fs.chmodSync(locked.file('.claude/skills'), 0o000);
+  for (const args of [['sync'], ['init']]) { const res = locked.eng(args); assert.equal(res.status, 0, `${args}: ${out(res).slice(-2000)}`); }
+  fs.chmodSync(locked.file('.claude/skills'), 0o755);
+  assert.ok(fs.existsSync(locked.file('.claude/skills/x')));
+});
+
+test('a refused config is not migrated: eng.config.yml keeps its bytes', () => {
+  const r = repo(); editConfig(r, c => { c.agents.skills_dir = '.claude/skills'; delete c.git?.rewrite_pushed; });
+  const before = fs.readFileSync(r.file('eng.config.yml'), 'utf8');
+  const res = r.eng(['sync']); assert.equal(res.status, 1, out(res)); assert.match(out(res), REFUSED);
+  assert.equal(fs.readFileSync(r.file('eng.config.yml'), 'utf8'), before);
 });

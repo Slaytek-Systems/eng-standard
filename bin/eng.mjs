@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, harnessRel, harnessDirErrors, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -50,9 +50,19 @@ function loadConfig() {
 
 // Cross-field rules that stop loosening (design §1.2, the parts v0 implements).
 function validate(c) { const errs = configErrors(c); if (errs.length) die('config invalid:\n  ' + errs.join('\n  ')); }
+// Developers and other tools own .claude/skills and .claude/agents, so eng never writes into them (Matt, 9 Nov 2026).
+// A folder eng writes into is checked where it lands, joined to the repo root exactly as eng writes it (so /.claude/skills
+// is the repo's), with .. resolved, so ../<repo>/.claude/skills and .Claude/Skills count too.
+const harnessOut = p => harnessRel(path.relative(ROOT, path.join(ROOT, p)));
+function harnessConfigErrors(c) {
+  const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
+  if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
+  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
+}
 function configErrors(c) {
   const errs = [];
   if (!c || typeof c !== 'object') return ['eng.config.yml is not a mapping'];
+  errs.push(...harnessConfigErrors(c));
   if (c.version !== 1) errs.push('version must be 1');
   if (!c.merge?.owner || !c.merge?.command) errs.push('merge.owner and merge.command are required (no global merge rule)');
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
@@ -113,6 +123,8 @@ function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
+  const inHarness = Object.keys(files).filter(harnessOut);
+  if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
   try { if (fs.readlinkSync(path.join(ROOT, 'CLAUDE.md')) === 'AGENTS.md') delete files['CLAUDE.md']; } catch {}
   if (ownPrTemplates(files[ENG_PR_TEMPLATE]).length) delete files[ENG_PR_TEMPLATE];
@@ -147,7 +159,7 @@ function claudeVisibility(cfg) {
   if (!lost) return { ok: true, what: `claude-code: all ${total} eng skills and subagents are visible in .claude/skills and .claude/agents` };
   // A link's target is read from the folder it sits in, after symlinks: when .claude is itself a link, ../<src> would
   // point beside the link's target, not into this repo. So the target is relative to the real .claude folder.
-  const target = (d, src) => { let root = ROOT; try { root = fs.realpathSync(ROOT); } catch {} let real = path.join(root, path.dirname(d)); try { real = fs.realpathSync(path.join(ROOT, path.dirname(d))); } catch {} return path.relative(real, path.join(root, src)); };
+  const target = (d, src) => { let root = ROOT; try { root = fs.realpathSync(ROOT); } catch {} let real = path.join(root, path.dirname(d)); try { real = fs.realpathSync(path.join(ROOT, path.dirname(d))); } catch {} return path.relative(real, path.join(root, src)) || '.'; };
   const q = s => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
   const fix = missing.map(({ d, src }) => present(d) ? `add the missing entries to ${d}, or point ${d} at ${src}` : `ln -s ${q(target(d, src))} ${q(d)}`).join('; ');
   return { ok: false, what: `claude-code: ${lost} of ${total} eng skills and subagents are not visible in .claude/skills or .claude/agents (eng renders them into ${dirs.map(([, src]) => src).join(' and ')}, and never writes into .claude/skills or .claude/agents). Fix: ${fix}` };
@@ -162,6 +174,7 @@ function migrateConfig() {
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
   if (!changes.length) return 0;
+  validate(YAML.parse(added?.text ?? text));
   fs.writeFileSync(p, added?.text ?? text);
   for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
   return changes.length;
@@ -191,8 +204,11 @@ function sync() {
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && !harnessRel(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
-  for (const d of [cfg.agents.skills_dir]) { const walk = x => { if (!fs.existsSync(x)) return; for (const e of fs.readdirSync(x, { withFileTypes: true })) if (e.isDirectory()) { walk(path.join(x, e.name)); if (!fs.readdirSync(path.join(x, e.name)).length) fs.rmdirSync(path.join(x, e.name)); } }; walk(path.join(ROOT, d)); }
+  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
+  // their parent), and skip a folder that cannot be read.
+  const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
+  walk(path.join(ROOT, cfg.agents.skills_dir));
   const lock = lockText(pkgVersion(), Object.keys(files));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   const v = claudeVisibility(cfg);
@@ -890,7 +906,7 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(typeof cfg?.agents?.skills_dir === 'string' ? harnessDirErrors(cfg.agents.skills_dir) : []).map(what => ({ ok: false, what, fix: 'set agents.skills_dir outside .claude/skills and .claude/agents, then run eng sync' })), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
