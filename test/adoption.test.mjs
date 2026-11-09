@@ -332,6 +332,114 @@ test('plain .claude folders link as in 0.17.1: one link per skill and subagent a
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, '.eng/lock.json'), 'utf8')).links, links.sort());
 });
 
+// PR #58 verdict 1 (gpt-6.1-sol): each test below is one of its reproductions.
+const elsewhere = () => { const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-elsewhere-')); scratch.push(d); return d; };
+// A --require hook that changes the disk at one fs call, the way a developer or another process could while sync runs.
+const hook = body => { const f = path.join(elsewhere(), 'hook.cjs'); fs.writeFileSync(f, `const fs = require('fs'), path = require('path'), at = p => path.join(process.cwd(), p);\n${body}\n`); return { NODE_OPTIONS: `--require=${f}` }; };
+const FEWER = ['eng/eng-retro', 'pstack/statechart', 'pstack/create-formal-verification-skill'];
+const setSkills = (dir, skills) => { const c = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')); c.agents.skills = skills; fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c)); };
+
+test('a link folder swapped for a link outside the repo while sync runs: eng checks again before each link and writes nothing there', () => {
+  const { dir, eng } = repo();
+  const shared = elsewhere();
+  fs.mkdirSync(path.join(dir, 'harness/skills'), { recursive: true }); fs.mkdirSync(path.join(shared, 'skills'));
+  fs.writeFileSync(path.join(shared, 'skills/grilling'), 'mine\n');
+  fs.mkdirSync(path.join(dir, '.claude')); fs.symlinkSync('../harness/skills', path.join(dir, '.claude/skills'));
+  const env = hook(`const mk = fs.mkdirSync; let done = false;
+fs.mkdirSync = function (p, ...a) { if (!done && String(p) === at('harness/skills')) { done = true; fs.renameSync(at('harness'), at('saved-harness')); fs.symlinkSync(process.env.PROBE_OUTSIDE, at('harness')); process.stderr.write('PROBE switched\\n'); } return mk.call(this, p, ...a); };`);
+  const before = snapshot(shared);
+  const r = eng(['sync'], { ...env, PROBE_OUTSIDE: shared });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stderr, /PROBE switched/, 'the swap happened after eng planned');
+  assert.deepEqual(snapshot(shared), before, 'nothing written, replaced or deleted outside');
+});
+
+test('a source folder swapped for a link outside the repo while sync runs: eng writes no file there', () => {
+  const { dir, eng } = repo();
+  const shared = elsewhere();
+  fs.mkdirSync(path.join(dir, '.agents/skills'), { recursive: true }); fs.mkdirSync(path.join(shared, 'skills'));
+  const env = hook(`const mk = fs.mkdirSync; let done = false;
+fs.mkdirSync = function (p, ...a) { if (!done && String(p).startsWith(at('.agents/skills') + path.sep)) { done = true; fs.renameSync(at('.agents'), at('saved-source')); fs.symlinkSync(process.env.PROBE_OUTSIDE, at('.agents')); process.stderr.write('PROBE switched\\n'); } return mk.call(this, p, ...a); };`);
+  const r = eng(['sync'], { ...env, PROBE_OUTSIDE: shared });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stderr, /PROBE switched/);
+  assert.deepEqual(Object.entries(snapshot(shared)).filter(([, v]) => v !== 'dir'), [], 'no file or link outside (the folder the swapped mkdir itself made is the stated concurrency limit)');
+});
+
+test('an entry that appears after eng planned a link there is left alone: eng creates links exclusively', () => {
+  const { dir, eng } = repo();
+  const env = hook(`let done = false; const plant = p => { if (!done && String(p) === at('.claude/skills/grilling')) { done = true; fs.writeFileSync(p, 'developer racing file\\n'); } };
+for (const f of ['rmSync', 'unlinkSync']) { const o = fs[f]; fs[f] = function (p, ...a) { plant(p); return o.call(this, p, ...a); }; }
+const sl = fs.symlinkSync; fs.symlinkSync = function (t, p, ...a) { plant(p); return sl.call(this, t, p, ...a); };`);
+  const r = eng(['sync'], env);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(fs.lstatSync(path.join(dir, '.claude/skills/grilling')).isFile(), 'the developer file is still there, not a link');
+  assert.equal(fs.readFileSync(path.join(dir, '.claude/skills/grilling'), 'utf8'), 'developer racing file\n');
+  assert.match(r.stdout, /left \.claude\/skills\/grilling: /);
+  assert.equal(fs.readlinkSync(path.join(dir, '.claude/skills/retro')), '../../.agents/skills/retro', 'the rest are linked');
+});
+
+for (const l of ['.claude/skills/grilling', '.claude/agents/poteto-agent.md']) for (const remove of [false, true])
+  test(`a developer's link at ${l} where eng's was: the lock does not make it eng's, so sync ${remove ? 'with it dropped from the config prunes' : 'replaces'} nothing`, () => {
+    const { dir, eng } = repo();
+    assert.equal(eng(['sync']).status, 0);
+    const mine = elsewhere(), at = path.join(dir, l);
+    fs.unlinkSync(at); fs.symlinkSync(mine, at);
+    if (remove) setSkills(dir, FEWER);
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    assert.equal(fs.readlinkSync(at), mine, `${l} still points at the developer's folder`);
+    if (!remove) assert.match(r.stdout, new RegExp(`left ${l.replace(/[./]/g, '\\$&')}: .* is a link to ${mine.replace(/[./]/g, '\\$&')} that eng did not make`));
+    assert.equal(eng(['sync', '--check']).status, 0);
+  });
+
+for (const g of ['skills', 'agents'])
+  test(`.claude/${g} links to .agents/${g}, which links outside the repo: outside wins, so sync, --check and doctor agree it is case 3`, () => {
+    const { dir, eng } = repo();
+    const shared = elsewhere();
+    plantForeign(shared, g);
+    fs.mkdirSync(path.join(dir, '.agents')); fs.mkdirSync(path.join(dir, '.claude'));
+    fs.symlinkSync(shared, path.join(dir, `.agents/${g}`)); fs.symlinkSync(`../.agents/${g}`, path.join(dir, `.claude/${g}`));
+    const before = snapshot(shared);
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stdout, new RegExp(`left \\.claude/${g} resolves to .*, outside this repo`));
+    const c = eng(['sync', '--check']);
+    assert.equal(c.status, 0, out(c));
+    const d = eng(['doctor']);
+    assert.match(d.stdout, new RegExp(`WARN \\.claude/${g} resolves to .*outside this repo`));
+    assert.doesNotMatch(d.stdout, /sees them through it/, 'doctor claims no reachability');
+    assert.deepEqual(snapshot(shared), before);
+  });
+
+for (const [folder, kind] of [['.claude', 'loop'], ['.claude/skills', 'loop'], ['.claude/agents', 'loop'], ['.claude', 'dangling']])
+  test(`${folder} as a ${kind === 'loop' ? 'link to itself' : 'dangling link into the repo'}: sync says so and finishes, with no crash`, () => {
+    const { dir, eng } = repo();
+    fs.mkdirSync(path.join(dir, path.dirname(folder)), { recursive: true });
+    fs.symlinkSync(kind === 'loop' ? path.basename(folder) : 'missing', path.join(dir, folder));
+    const r = eng(['sync']);
+    assert.equal(r.status, 0, out(r));
+    assert.ok(fs.existsSync(path.join(dir, '.eng/lock.json')), 'sync wrote its lock');
+    if (kind === 'loop') assert.match(r.stdout, new RegExp(`left ${folder.replace(/[./]/g, '\\$&')}.* cannot be resolved`));
+    else assert.ok(fs.existsSync(path.join(dir, 'missing/settings.json')), '.claude/settings.json is written where .claude resolves');
+    const c = eng(['sync', '--check']);
+    assert.equal(c.status, 0, out(c));
+    assert.doesNotMatch(out(eng(['doctor'])), /\n\s+at .*\.m?js:\d+/, 'doctor does not crash');
+  });
+
+test("an empty folder the developer made in eng's skills source is kept: cleanup removes only folders eng rendered", () => {
+  const { dir, eng } = repo();
+  fs.mkdirSync(path.join(dir, '.agents/skills/mine'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.claude')); fs.symlinkSync('../.agents/skills', path.join(dir, '.claude/skills'));
+  const r = eng(['sync']);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(fs.lstatSync(path.join(dir, '.agents/skills/mine')).isDirectory(), '.agents/skills/mine is still there');
+  setSkills(dir, FEWER);
+  assert.equal(eng(['sync']).status, 0);
+  assert.ok(!fs.existsSync(path.join(dir, '.agents/skills/grilling')), 'a skill folder eng rendered and pruned is removed');
+  assert.ok(fs.existsSync(path.join(dir, '.agents/skills/mine')));
+});
+
 // ---------- 5. a container a check starts is outside eng's budget unless docker is given the limits ----------
 // The container lint is a nudge: a text scan of common shell forms cannot parse shell, so it warns and never fails.
 const CONTAINER_WARN = /WARN \.eng\/checks\/tla\.sh:4: \[container-unbounded\] Container without a memory and CPU limit/;
