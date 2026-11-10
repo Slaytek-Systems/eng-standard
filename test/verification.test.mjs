@@ -214,7 +214,16 @@ test('eng verdict check: the risk:high count follows the config (1, 3, no ship b
   branchWith('noship', 'bin/noship.mjs', c => { delete c.ship; });
   verify('builder-1');
   r = eng('verdict', 'check');
-  assert.equal(r.status, 0, `no ship block: one PASS, as before 0.18.1: ${out(r)}`);
+  assert.equal(r.status, 1, `removing the ship block is a change to ship.high_risk: ${out(r)}`);
+  assert.match(r.stdout, /ship\.high_risk changed in this change/);
+  verify('verifier-2');
+  assert.equal(eng('verdict', 'check').status, 0, 'the default 2 verifiers');
+
+  git('checkout -qb noship-later'); fs.writeFileSync(path.join(dir, 'bin/later.mjs'), 'export const later = 1;\n'); git('add -A'); git('commit -qm later');
+  assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
+  assert.equal(eng('verdict', 'PASS', '--by', 'builder-1', '--base', 'noship').status, 0);
+  r = eng('verdict', 'check', '--base', 'noship');
+  assert.equal(r.status, 0, `no ship block at base or head: one PASS, as before 0.18.1: ${out(r)}`);
 });
 
 // PR #42 review, finding 1: a PASS counts only for the exact commit it ran on. Patch-id ignores the message and whitespace.
