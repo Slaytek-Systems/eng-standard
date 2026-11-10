@@ -25,7 +25,7 @@ import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwa
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { DEFAULTS as SELF_MERGE_DEFAULTS } from '../lib/self-merge.mjs';
+import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
@@ -687,9 +687,9 @@ function verdictRecord(result) {
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
-// ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (a counted PASS for
-// this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers); failure otherwise. Local HEAD
-// must be the PR's live head: the status binds to that SHA.
+// ruleset and the self-merge workflow can see it. success only when `eng verdict check --pr <n>` passes (a counted PASS
+// for this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers, counting the PR's verdict
+// comments); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
   const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
@@ -698,7 +698,7 @@ function prHead(n) {
 function verdictStatus(n) {
   if (!/^\d+$/.test(n || '')) die('usage: eng verdict status --pr <n>');
   loadConfig(); clean(); prHead(n);
-  const H = head(), r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'verdict', 'check', ...(arg('--base') ? ['--base', arg('--base')] : [])], { cwd: ROOT, encoding: 'utf8' });
+  const H = head(), r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'verdict', 'check', '--pr', n, ...(arg('--base') ? ['--base', arg('--base')] : [])], { cwd: ROOT, encoding: 'utf8' });
   const out = (r.stdout + r.stderr).trim(), state = r.status === 0 ? 'success' : 'failure';
   if (out) console.log(out);
   const desc = (out.split('\n').filter(Boolean).at(-1) || '').replace(/^eng(: FAIL)?:? */, '').slice(0, 140);
@@ -706,6 +706,17 @@ function verdictStatus(n) {
   if (p.status !== 0) die(`verdict status: could not post: ${(p.stderr || p.stdout).trim()}`);
   console.log(`eng verdict status: posted ${state} (context verdict) on ${H} for PR #${n}`);
   if (state !== 'success') process.exit(1);
+}
+// The PR's eng-verdict/v1 comments for exact head H, through self-merge's parse and trust rules (verifier_logins). git notes
+// do not travel with fetch or clone, so verifiers in separate clones share their verdicts only through these comments.
+function prVerdicts(cfg, n, H) {
+  if (!/^\d+$/.test(n)) die('usage: eng verdict check [--pr <n>]');
+  const logins = cfg.ship?.self_merge?.verifier_logins ?? cfg.merge?.auto?.verifier_logins ?? null;
+  if (logins !== null && !validLogins(logins)) die('verdict: verifier_logins lists the GitHub logins whose verdict comments count');
+  const r = spawnSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY || '{owner}/{repo}'}/issues/${n}/comments?per_page=100`], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
+  let pages = null; try { pages = JSON.parse(r.stdout); } catch {}
+  if (r.status !== 0 || !Array.isArray(pages)) die(`verdict: could not read PR #${n}'s verdict comments: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
+  return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
 }
 function verdictCheck() {
   const cfg = loadConfig();
@@ -719,8 +730,10 @@ function verdictCheck() {
   }
   // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
   // another SHA with the same patch-id is reported and never carried.
-  const others = patchVerdicts(pid), all = others.filter(x => x.sha === H);
-  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}`);
+  // --pr: this clone's records plus the PR's trusted comments for HEAD, ordered as self-merge orders them (an edit is latest).
+  const others = patchVerdicts(pid), pr = arg('--pr'), posted = pr ? prVerdicts(cfg, pr, H) : [];
+  const at = x => Date.parse(x.comment_at || x.at) || 0, all = [...others.filter(x => x.sha === H), ...posted].sort((x, y) => at(x) - at(y));
+  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}${pr ? `; PR #${pr}: ${posted.length} trusted verdict comment${posted.length === 1 ? '' : 's'} for HEAD` : ''}`);
   for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
   if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng run --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
@@ -970,7 +983,7 @@ const COMMANDS = [
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
   ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
-  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
+  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],
