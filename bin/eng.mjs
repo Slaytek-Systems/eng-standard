@@ -31,6 +31,7 @@ import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
+import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -1001,13 +1002,23 @@ function runCmd() {
   if (opts.length === 1) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', opts[0]]);
   die(RUN_USAGE);
 }
+// One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
+async function updateNotice() {
+  try {
+    if (noticeOff(process.env)) return;
+    const pj = readOr('package.json'), pin = declaredPin(pj);
+    if (!pin) return;
+    const line = noticeFor({ installed: pkgVersion(), latest: await latestVersion(), pin, pm: packageManager(fs.readdirSync(ROOT), pj) });
+    if (line) console.error(line);
+  } catch {}
+}
 function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig }; }
 const found = COMMANDS.find(([n]) => n === cmd);
 // Help never runs the command: `eng <cmd> --help`, `-h` (before any `--`, whose tail belongs to the command eng runs) and `eng help <cmd>`.
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
-else if (found) found[3]();
+else if (found) { if (cmd !== 'doctor') await updateNotice(); found[3](); }
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);

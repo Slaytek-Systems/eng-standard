@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.0 (10 Nov 2026)
+
+**eng says when a newer version is available** (Matt, 10 Nov 2026: "new version available, run [this command] to update"). Agents saw a new release only if they ran `eng doctor`.
+
+- **One stderr line on every eng command except `eng doctor`**, when the repo pins eng-standard and a newer release exists: `eng: eng-standard X is available (this repo runs Y). To update: <command>, then eng sync and eng gate, and commit it all in one PR.` The command uses the repo's package manager (bun, pnpm, yarn or npm, from the lockfile or `packageManager`) and keeps the pin's form: a `#vX.Y.Z` tag, or a plain version saved exactly (`--save-exact` or `--exact`, so the package manager does not write `^X.Y.Z`, which `eng sync --check` refuses). It adds `-D` only for a dev dependency.
+- **It never changes a command.** Its output on stdout and its exit code are the same with or without the line.
+- **One read a day.** The latest version comes from eng-standard main on GitHub (or `ENG_STANDARD_SOURCE`). The read runs in a child process that is killed at 2 seconds and also ends itself at 2 seconds, so it never outlives an eng that was killed while it ran. Whatever the network does (no answer, an unreachable address, a reply cut off, a stalled DNS lookup), the command waits at most 2 seconds, once, and then runs as it would have. It is cached in `$XDG_CACHE_HOME/eng/latest-version.json` for a day, and a failed read is retried after an hour, so an offline machine never waits on every command.
+- **Versions compare in semver order**, prereleases included, in the reminder and in `eng doctor`: a `0.20.2-beta.1` install is not offered `0.20.1`. A version eng cannot read is never reported as behind.
+- **Off** in CI (`CI` set), under `node --test`, in a repo that does not pin the package (eng-standard itself), and with `ENG_NO_UPDATE_CHECK=1`.
+- `docs/lifecycle.md` (Upgrade) describes it. **Upgrade:** zero manual edits.
+
 ## 0.19.2 (10 Nov 2026)
 
 **Skills no longer tell agents to rewrite pushed work.** Since 0.19.0 the AGENTS.md block no longer carries "never follow a skill that says to rebase pushed commits", so the skills themselves must not say it. The AGENTS.md study found vendored pstack playbooks that did.
