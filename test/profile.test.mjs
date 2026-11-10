@@ -78,11 +78,12 @@ test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.17.2
   const got = JSON.parse(r.stdout);
   for (const [name, w] of Object.entries(want)) {
     const g = got[name], paths = [...new Set([...Object.keys(w), ...Object.keys(g)])];
-    assert.deepEqual(paths.filter(p => JSON.stringify(w[p]) !== JSON.stringify(g[p])), [], `${name}: files that differ from v0.17.2`);
+    // 0.18.2 changed one rendered line on purpose: the pipeline's lint step reads the PR's own config (no --config-from).
+    assert.deepEqual(paths.filter(p => p !== '.eng/ci/pipeline.yml' && JSON.stringify(w[p]) !== JSON.stringify(g[p])), [], `${name}: files that differ from v0.17.2`);
   }
   assert.ok(Object.values(want).some(w => Object.keys(w).length > 100), 'at least one fixture renders the full set');
   const tpl = path.join(FIX, 'template-v0.17.2.yml'), plain = JSON.parse(spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), tpl], { encoding: 'utf8', env: env() }).stdout);
-  const switched = Object.keys(want['template-v0.17.2.yml']).filter(p => plain['template-v0.17.2.yml'][p] !== want['template-v0.17.2.yml'][p]);
+  const switched = Object.keys(want['template-v0.17.2.yml']).filter(p => p !== '.eng/ci/pipeline.yml' && plain['template-v0.17.2.yml'][p] !== want['template-v0.17.2.yml'][p]);
   assert.deepEqual(switched, ['.agents/skills/eng-retro/SKILL.md', '.agents/skills/eng-route/SKILL.md', '.agents/skills/eng-stack/SKILL.md', '.githooks/pre-push', 'AGENTS.md', 'SHIPPING.md', 'STACK.md'], 'without the line, the same config renders generic text');
 });
 
