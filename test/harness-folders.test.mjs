@@ -287,19 +287,49 @@ test('a refused config is not migrated: eng.config.yml keeps its bytes', () => {
   assert.equal(fs.readFileSync(r.file('eng.config.yml'), 'utf8'), before);
 });
 
-test("doctor and lint never open the developer's files in .claude/skills or .claude/agents: unreadable files and FIFOs neither crash nor block them", () => {
+// v0.17.2 dropped these folders from every scan; 0.18.1 scans them again (eng only never writes there). An unreadable
+// file, a FIFO or a link to one there is tolerated: doctor, lint and gate do not crash or hang, and exit as without them.
+test("doctor, lint and gate tolerate unreadable files and FIFOs in .claude/skills and .claude/agents", () => {
   const r = repo(), away = tmp('eng-fifos-');
+  editConfig(r, c => { c.gates.required = ['lint']; });
+  const run = args => spawnSync(process.execPath, [ENG, ...args], { cwd: r.dir, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+  const cmds = [['doctor'], ['lint'], ['gate', 'lint']], without = cmds.map(args => run(args).status);
   for (const d of ['skills', 'agents']) {
     const dev = r.file(`.claude/${d}/developer`); fs.mkdirSync(dev, { recursive: true });
     for (const f of ['health.test.mjs', 'package.json', 'health.test.txt']) { fs.writeFileSync(path.join(dev, f), 'x\n'); fs.chmodSync(path.join(dev, f), 0o000); }
+    execSync(`mkfifo ${JSON.stringify(path.join(dev, 'pipe.test.mjs'))}`);
     for (const f of ['fifo.test.mjs', 'fifo.sh']) { const fifo = path.join(away, `${d}-${f}`); execSync(`mkfifo ${JSON.stringify(fifo)}`); fs.symlinkSync(fifo, path.join(dev, f)); }
   }
   const before = claudeFolders(r);
-  for (const args of [['doctor'], ['lint']]) {
-    const res = spawnSync(process.execPath, [ENG, ...args], { cwd: r.dir, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+  cmds.forEach((args, i) => {
+    const res = run(args);
     assert.equal(res.signal, null, `eng ${args} did not block: ${out(res).slice(-1500)}`);
-    assert.equal(res.status, 0, `eng ${args}: ${out(res).slice(-2000)}`);
-    assert.doesNotMatch(out(res), /EACCES|\.claude\/(skills|agents)\/developer/);
-  }
+    assert.equal(res.status, without[i], `eng ${args} exits as it does without them: ${out(res).slice(-2000)}`);
+    assert.doesNotMatch(out(res), /EACCES/);
+  });
+  assert.deepEqual(without, [0, 0, 0]);
   assert.deepEqual(claudeFolders(r), before);
+});
+
+// lint checks credential-looking names where eng init baselined them; an empty baseline stands for a repo that adopted.
+const secretBaseline = r => { fs.mkdirSync(r.file('renovation/baselines'), { recursive: true }); fs.writeFileSync(r.file('renovation/baselines/secret-filename.json'), JSON.stringify({ kind: 'secret-filename', entries: [] })); };
+test('a tracked id_rsa in .claude/skills or .Claude/Skills is caught by the secret-filename check', () => {
+  for (const d of ['.claude/skills', '.Claude/Skills']) {
+    const r = repo(); secretBaseline(r);
+    fs.mkdirSync(r.file(`${d}/x`), { recursive: true }); fs.writeFileSync(r.file(`${d}/x/id_rsa`), 'not a key\n');
+    execSync('git add -A', { cwd: r.dir });
+    const res = r.eng(['lint']);
+    assert.equal(res.status, 1, `${d}: ${out(res).slice(-2000)}`);
+    assert.match(out(res), new RegExp(`${d.replace('.', '\\.')}/x/id_rsa:0: \\[secret-filename\\]`), d);
+  }
+});
+
+test('a lint rule hit inside .claude/agents is reported', () => {
+  const r = repo();
+  editConfig(r, c => { c.constraints.rules = [{ id: 'no-todo', paths: '**/*.md', pattern: 'TODO-NEVER', message: 'no TODO-NEVER', proven_by: { incident: 'test', fixture: 'none' } }]; });
+  fs.mkdirSync(r.file('.claude/agents'), { recursive: true }); fs.writeFileSync(r.file('.claude/agents/helper.md'), 'line\nTODO-NEVER\n');
+  execSync('git add -A', { cwd: r.dir });
+  const res = r.eng(['lint']);
+  assert.equal(res.status, 1, out(res).slice(-2000));
+  assert.match(out(res), /\.claude\/agents\/helper\.md:2: \[no-todo\]/);
 });

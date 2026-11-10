@@ -24,6 +24,8 @@ import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profil
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
@@ -55,10 +57,14 @@ function validate(c) { const errs = configErrors(c); if (errs.length) die('confi
 // A folder eng writes into is checked where it lands, joined to the repo root exactly as eng writes it (so /.claude/skills
 // is the repo's), with .. resolved, so ../<repo>/.claude/skills and .Claude/Skills count too.
 const harnessOut = p => harnessRel(path.relative(ROOT, path.join(ROOT, p)));
-// Every file the repo has (tracked and untracked, not ignored) for eng's scans (doctor, lint, baselines, rule proofs),
-// without .claude/skills and .claude/agents: those are the developer's, so eng never opens them and their state (an
-// unreadable file, a FIFO) can never fail or block a scan.
-const repoFiles = () => sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !harnessOut(f));
+// Every path the repo has (tracked and untracked, not ignored). The secret-filename check needs names only, so it sees
+// .claude/skills and .claude/agents too: eng never writes there, but it does scan them (v0.17.2 had dropped them).
+const repoPaths = () => sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
+// The files eng's content scans read (doctor, lint, rule proofs, e2e). In .claude/skills and .claude/agents, which the
+// developer owns, a path counts only when it is a readable regular file: a link is not followed, and an unreadable file
+// or a FIFO is skipped, so it can never fail or block a scan.
+const readableFile = f => { try { const abs = path.join(ROOT, f); if (!fs.lstatSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
+const repoFiles = () => repoPaths().filter(f => !harnessOut(f) || readableFile(f));
 function harnessConfigErrors(c) {
   const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
@@ -269,7 +275,7 @@ function seedShipping(owner) {
 }
 // Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
 function saveBaseline(kind, cfg) {
-  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')));
+  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(repoPaths().filter(f => !f.startsWith('renovation/')));
   const pack = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
   const b = makeBaseline(kind, found, { owner: cfg.renovation.policy_owner, reason: 'pre-existing when the repo adopted the standard', pack, prev: null });
   fs.mkdirSync(path.join(ROOT, 'renovation/baselines'), { recursive: true });
@@ -372,7 +378,7 @@ function lint() {
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
   // Credential-looking filenames are checked where eng init baselined them (a repo that adopted the standard while shipping).
-  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')))).fresh : [];
+  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(repoPaths().filter(f => !f.startsWith('renovation/')))).fresh : [];
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
@@ -681,8 +687,9 @@ function verdictRecord(result) {
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
-// ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (a counted PASS for
-// this exact commit); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
+// ruleset and the self-merge workflow can see it. success only when `eng verdict check --pr <n>` passes (a counted PASS
+// for this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers, counting the PR's verdict
+// comments); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
   const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
@@ -691,7 +698,7 @@ function prHead(n) {
 function verdictStatus(n) {
   if (!/^\d+$/.test(n || '')) die('usage: eng verdict status --pr <n>');
   loadConfig(); clean(); prHead(n);
-  const H = head(), r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'verdict', 'check', ...(arg('--base') ? ['--base', arg('--base')] : [])], { cwd: ROOT, encoding: 'utf8' });
+  const H = head(), r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'verdict', 'check', '--pr', n, ...(arg('--base') ? ['--base', arg('--base')] : [])], { cwd: ROOT, encoding: 'utf8' });
   const out = (r.stdout + r.stderr).trim(), state = r.status === 0 ? 'success' : 'failure';
   if (out) console.log(out);
   const desc = (out.split('\n').filter(Boolean).at(-1) || '').replace(/^eng(: FAIL)?:? */, '').slice(0, 140);
@@ -699,6 +706,17 @@ function verdictStatus(n) {
   if (p.status !== 0) die(`verdict status: could not post: ${(p.stderr || p.stdout).trim()}`);
   console.log(`eng verdict status: posted ${state} (context verdict) on ${H} for PR #${n}`);
   if (state !== 'success') process.exit(1);
+}
+// The PR's eng-verdict/v1 comments for exact head H, through self-merge's parse and trust rules (verifier_logins). git notes
+// do not travel with fetch or clone, so verifiers in separate clones share their verdicts only through these comments.
+function prVerdicts(cfg, n, H) {
+  if (!/^\d+$/.test(n)) die('usage: eng verdict check [--pr <n>]');
+  const logins = cfg.ship?.self_merge?.verifier_logins ?? cfg.merge?.auto?.verifier_logins ?? null;
+  if (logins !== null && !validLogins(logins)) die('verdict: verifier_logins lists the GitHub logins whose verdict comments count');
+  const r = spawnSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY || '{owner}/{repo}'}/issues/${n}/comments?per_page=100`], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
+  let pages = null; try { pages = JSON.parse(r.stdout); } catch {}
+  if (r.status !== 0 || !Array.isArray(pages)) die(`verdict: could not read PR #${n}'s verdict comments: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
+  return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
 }
 function verdictCheck() {
   const cfg = loadConfig();
@@ -712,18 +730,44 @@ function verdictCheck() {
   }
   // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
   // another SHA with the same patch-id is reported and never carried.
-  const others = patchVerdicts(pid), all = others.filter(x => x.sha === H);
-  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}`);
+  // --pr: this clone's records plus the PR's trusted comments for HEAD, ordered as self-merge orders them (an edit is latest).
+  const others = patchVerdicts(pid), pr = arg('--pr'), posted = pr ? prVerdicts(cfg, pr, H) : [];
+  const at = x => Date.parse(x.comment_at || x.at) || 0, all = [...others.filter(x => x.sha === H), ...posted].sort((x, y) => at(x) - at(y));
+  console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}${pr ? `; PR #${pr}: ${posted.length} trusted verdict comment${posted.length === 1 ? '' : 's'} for HEAD` : ''}`);
   for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
   if (!all.length) die(`verdict: no verdict for HEAD ${H.slice(0, 8)}. Run the change on this commit with eng run --by <id> -- <cmd>, then record: eng verdict PASS --by <id>`);
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
   const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
   if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
-  const testable = testableFiles(sh(`git diff --no-renames --name-only ${sh(`git merge-base ${baseRef(cfg)} HEAD`)} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
+  const mb = sh(`git merge-base ${baseRef(cfg)} HEAD`);
+  const testable = testableFiles(sh(`git diff --no-renames --name-only ${mb} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
   for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
-  const v = latest.filter(x => !passProblem(x, testable)).at(-1);
+  const counted = latest.filter(x => !passProblem(x, testable)), v = counted.at(-1);
   if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng run --by <id> -- <cmd>), then eng verdict PASS --by <id>');
+  // risk:high (ship.high_risk, the rule self-merge and the risk label apply) needs ship.high_risk.verifiers distinct verifiers.
+  const risk = riskOf(cfg, mb), need = cfg.ship?.high_risk?.verifiers ?? SELF_MERGE_DEFAULTS.high_verifiers;
+  if (risk.risk === 'high') {
+    if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
+    console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
+    if (counted.length < need) die(`verdict: risk:high needs ${need} distinct verifiers on ${H.slice(0, 8)}; have ${counted.length} (${counted.map(x => x.by).join(', ')})`);
+    return console.log(`eng verdict: PASS (risk:high, ${counted.length} of ${need} verifiers: ${counted.map(x => `${x.result} ${methodOf(x)} by ${x.by}`).join(', ')} on ${H.slice(0, 8)})`);
+  }
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
+}
+// The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
+// No ship.high_risk block: low, as before 0.18.1.
+function riskOf(cfg, mb) {
+  const hr = cfg.ship?.high_risk;
+  if (!hr) return { risk: 'low', hits: [] };
+  const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
+  for (let i = 0; i < z.length && z[i];) {
+    const k = z[i][0];
+    if (k === 'R' || k === 'C') { files.push({ filename: z[i + 2], previous_filename: k === 'R' ? z[i + 1] : undefined, status: k === 'R' ? 'renamed' : 'added' }); i += 3; }
+    else { files.push({ filename: z[i + 1], status: status[k] || 'modified' }); i += 2; }
+  }
+  const show = (ref, f) => { const r = spawnSync('git', ['show', `${ref}:${f}`], { cwd: ROOT, encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
+  const bump = new Set((hr.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
+  return classifyRisk(files, hr, bump);
 }
 
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
@@ -939,7 +983,7 @@ const COMMANDS = [
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
   ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
-  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
+  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],
