@@ -86,7 +86,17 @@ test('a broken link is reported as broken and sees nothing', () => {
 test('an unreadable SKILL.md is not visible, and the first fix makes it readable (eng sync would fail on it)', { skip: ROOT_USER && 'root reads every file' }, () => {
   const r = fixture(); fs.chmodSync(r.f('.agents/skills/alpha/SKILL.md'), 0o000);
   assert.deepEqual(r.seen(), { codex: '2/3', cursor: '2/3', 'claude-code': '0/4' });
-  assert.equal(r.fixes()[0], "make eng's files readable: chmod u+r .agents/skills/alpha/SKILL.md");
+  assert.equal(r.fixes()[0], "make eng's files readable: chmod -R u+rX .agents/skills");
+});
+
+// PR #71 review 2: with many unreadable files the printed command must still run as printed and fix them all.
+test('many unreadable files: the readable fix is one runnable command, and running every printed fix makes all visible', { skip: ROOT_USER && 'root reads every file' }, () => {
+  const r = fixture();
+  for (const n of SKILLS) fs.chmodSync(r.f(`.agents/skills/${n}/SKILL.md`), 0o000);
+  fs.chmodSync(r.f('.agents/agents/helper.md'), 0o000);
+  assert.deepEqual(r.fixes()[0], "make eng's files readable: chmod -R u+rX .agents/skills .agents/agents");
+  for (const cmd of r.fixes()) assert.equal(spawnSync('sh', ['-c', cmd.replace(/^make eng's files readable: /, '')], { cwd: r.dir }).status, 0, cmd);
+  assert.deepEqual(r.seen(), { codex: '3/3', cursor: '3/3', 'claude-code': '4/4' });
 });
 
 // PR #71 review: with a custom skills_dir and one rendered skill gone, the links alone left every tool one short. The
