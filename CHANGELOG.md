@@ -2,6 +2,17 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.19.0 (10 Nov 2026)
+
+**eng writes almost nothing into AGENTS.md** (Matt, 10 Nov 2026: "eng writes almost nothing into AGENTS.md"). AGENTS.md is read on every agent turn, and research on context files found that extra instructions cost steps without raising success. The generated block went from about 2,800 words to 96, and it no longer grows with each check or rule.
+
+- **The block is three lines.** Hooks, `eng lint`, `eng gate` and CI enforce the repo's rules, and a block names the allowed route; never bypass a check (`--no-verify`, `--admin`). Skills live in `.agents/skills`, and `eng-route` picks one. `SHIPPING.md` has the rest.
+- **Nothing was deleted.** Everything the block said that `SHIPPING.md` did not already say is now in a new `SHIPPING.md` section, `Reference`: this standard, commands, check budgets, the skill router, how work runs, what eng adds, laws, the rule-to-enforcer table, and branches and merge. The spawn guidance, CI hygiene and fixed rules were already in `SHIPPING.md` §0, §1 and §6, so they appear there once.
+- **Dropped from the block:** "never merge your own PR". Matt called that line irrelevant there (10 Nov 2026): who merges is the repo's merge setting and its merge check. The rule still stands in `SHIPPING.md`.
+- **Text outside the markers is untouched.** Only the lines between `<!-- eng:begin -->` and `<!-- eng:end -->` change.
+- **Upgrade:** zero manual edits. Pin the new tag, run `eng sync`, and commit the new `AGENTS.md` and `SHIPPING.md`. `eng sync --check` fails until you do.
+- **Not done yet** (queued): enforcer messages that always name the safer route (a dirty worktree removal, the Claude Code deny list, a stale `# covers:` line), Safe YOLO lite for Claude Code and Codex, the vendored skills that still say to rebase pushed commits, `eng doctor` reporting which tools can see eng's skills, and the before-and-after agent test the decision asks for.
+
 ## 0.18.2 (10 Nov 2026)
 
 **Repos may lower merge gates, never silently** (Matt, 10 Nov 2026). A repo may lower any merge-gate level, even in the PR that changes it, and eng does not block it. The risk is an unnoticed loosening, so eng makes each one visible instead.

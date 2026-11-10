@@ -267,7 +267,7 @@ test('the catalog and the rendered budget text give the container pattern, and s
   assert.match(c.enforced_by, /docker/i); assert.doesNotMatch(c.enforced_by, /eng enforces/i);
   const { dir, eng } = repo();
   assert.equal(eng(['sync']).status, 0);
-  const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  const agents = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   assert.match(agents, /docker run.*--memory.*--cpus/);
   assert.match(agents, /docker (enforces|applies) (the|those) limits?/i);
   assert.match(agents, /trap 'docker rm -f/);

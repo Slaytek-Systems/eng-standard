@@ -246,7 +246,7 @@ function init() {
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
-  console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
+  console.log(`\nSkill router (also in SHIPPING.md, Reference). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
   console.log(`Branch ruleset advice (apply by hand; eng never edits rulesets):\n${rulesetAdvice(cfg)}\n`);
   mergeQueueWarn(cfg);
   if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng doctor --launch.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }

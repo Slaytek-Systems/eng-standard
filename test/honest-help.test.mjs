@@ -82,7 +82,6 @@ test('codex-only: no rendered text claims an agent deny list, and it names codex
   for (const [name, t] of [['AGENTS.md', agents], ['SHIPPING.md', shipping]]) {
     assert.doesNotMatch(t, /the agent deny list|deny lists only|\(deny list\)|Claude Code deny list/i, `${name} claims a deny list codex does not get`);
   }
-  assert.match(agents, /codex: no agent deny list/);
   assert.match(shipping, /codex: no agent deny list/);
 });
 
@@ -90,8 +89,8 @@ test('claude-code with codex: the deny list is named as Claude Code\'s, and code
   const { agents, shipping, files } = renderText(['claude-code', 'codex']);
   assert.ok(files['.claude/settings.json']);
   assert.doesNotMatch(agents + shipping, /agent deny lists only|the agent deny list/);
-  assert.match(agents, /Claude Code deny list/); assert.match(shipping, /Claude Code deny list/);
-  assert.match(agents, /codex: no agent deny list/);
+  assert.match(shipping, /Claude Code deny list/);
+  assert.match(shipping, /codex: no agent deny list/);
   const only = renderText(['claude-code']);
   assert.doesNotMatch(only.agents + only.shipping, /no agent deny list/, 'claude-code alone names no gap');
 });
@@ -169,17 +168,17 @@ test('rewrite modes: a harness with no deny list is told the truth about raw for
     assert.match(lineOf(never), /a raw force-push by \.githooks\/pre-push only \(which --no-verify skips\)/, `${hs}: never mode, the hook blocks any non-fast-forward push`);
     assert.doesNotMatch(lineOf(prot), /a raw force-push by \.githooks\/pre-push only/, `${hs}: protected mode must not claim the hook guards feature branches`);
     assert.match(lineOf(prot), /a raw force-push of a feature branch has no local guard/, `${hs}: protected mode names the gap`);
-    const ship = renderAll(prot, null)['SHIPPING.md'], agents = renderAll(prot, null)['AGENTS.md'];
+    const ship = renderAll(prot, null)['SHIPPING.md'];
     assert.doesNotMatch(ship, /so the git hooks are their only local guard\)/, `${hs}: protected SHIPPING.md must not imply the hooks guard feature branches`);
     assert.match(ship, /nothing local stops a raw force-push of a feature branch/, `${hs}: protected SHIPPING.md names the gap`);
-    assert.match(agents, /no local guard on feature branches/, `${hs}: protected AGENTS.md rule table names the gap`);
+    assert.match(ship, /no local guard on feature branches/, `${hs}: protected SHIPPING.md rule table names the gap`);
     assert.match(renderAll(never, null)['SHIPPING.md'], /so the git hooks are their only local guard\)/, `${hs}: never mode keeps its accurate wording`);
   }
   // PR #53 verdict 2: protected mode with no harness at all has no deny list either; the hooks still guard protected refs only.
   const none = renderAll(cfg([], 'protected'), null);
   assert.doesNotMatch(none['SHIPPING.md'], /`\.githooks\/pre-rebase` enforce this locally\./, 'protected, no harness: no claim of full local enforcement');
   assert.match(none['SHIPPING.md'], /enforce this locally for protected branches and tags; there is no agent deny list, so nothing local stops a raw force-push of a feature branch/);
-  assert.match(none['AGENTS.md'], /no agent deny list, so no local guard on feature branches/);
+  assert.match(none['SHIPPING.md'], /no agent deny list, so no local guard on feature branches/);
   const claude = renderAll(cfg(['claude-code'], 'protected'), null);
   assert.match(claude['SHIPPING.md'], /enforce this locally for protected branches and tags; the Claude Code deny list blocks a raw force-push on any branch \(common forms only/, 'protected, claude-code only: the deny list covers feature branches');
   assert.doesNotMatch(claude['SHIPPING.md'] + claude['AGENTS.md'], /no local guard|nothing local stops/, 'protected, claude-code only: no gap to name');
@@ -194,7 +193,7 @@ test('every claim that credits the Claude Code deny list or the rebase hook name
     const credits = text.split('\n').filter(l => /Claude Code deny list/.test(l));
     assert.equal(credits.length > 0, hs.includes('claude-code'), `${mode} ${hs}: a line credits the deny list exactly when Claude Code is selected`);
     for (const l of credits) assert.match(l, /common forms only: a flag later on the line or bundled short flags such as `-vf` get through/, `${mode}: deny-list claim without its limit: ${l}`);
-    const rebase = f['AGENTS.md'].split('\n').find(l => /\.githooks\/pre-rebase/.test(l) && l.startsWith('|'));
+    const rebase = f['SHIPPING.md'].split('\n').find(l => /\.githooks\/pre-rebase/.test(l) && l.startsWith('|'));
     assert.match(rebase, mode === 'never' ? /only when the branch has an upstream/ : /protected branches only\); the guarded-tool rule is this text only/, `${mode}: ${rebase}`);
     // PR #53 verdict 4: every line that credits pre-rebase, in every rendered text, names its limit.
     for (const l of text.split('\n').filter(l => /\.githooks\/pre-rebase/.test(l))) {

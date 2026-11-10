@@ -1,7 +1,7 @@
 // profile: generic by default (no person, company, private tool or note in what eng renders); `profile: slaytek`
 // renders what v0.17.2 rendered, apart from one reviewed line (LINT_LINE). test/fixtures/profile/v0.17.2.json holds the
 // v0.17.2 output hashes, made with scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml;
-// v0.18.2.json holds this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
+// v0.18.2.json holds v0.18.2's and v0.19.0.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -75,15 +75,25 @@ test('outcome 2: STACK.md frames picks as recommendations the owner adopts; DRAF
 const LINT_LINE = { file: '.eng/ci/pipeline.yml', old: '    command: "npx eng lint --config-from origin/main"', new: '    command: "npx eng lint"' };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.18.2.json, which differs from v0.17.2 by one reviewed line', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+// The files 0.19.0 changed on purpose (slim AGENTS.md block, 10 Nov 2026): the block's text moved into SHIPPING.md's
+// Reference, and eng-route's pointer to the router moved with it. Nothing else may differ from v0.18.2.
+const MOVED = ['.agents/skills/eng-route/SKILL.md', 'AGENTS.md', 'SHIPPING.md'];
+
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.19.0.json, which differs from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
   assert.deepEqual(Object.keys(want), Object.keys(old));
+  assert.deepEqual(Object.keys(prev), Object.keys(old));
+  for (const [name, w] of Object.entries(want)) {
+    const p = prev[name], changed = [...new Set([...Object.keys(w), ...Object.keys(p)])].filter(f => JSON.stringify(w[f]) !== JSON.stringify(p[f]));
+    assert.ok(changed.every(f => MOVED.includes(f)), `${name}: only the moved text differs from v0.18.2, got ${changed.join(', ')}`);
+    if (!w.refused) assert.ok(changed.includes('AGENTS.md') && changed.includes('SHIPPING.md'), `${name}: AGENTS.md and SHIPPING.md both changed`);
+  }
   const fixtures = Object.keys(want).map(f => path.join(FIX, f));
   assert.ok(fixtures.length >= 3 && fixtures.every(f => fs.existsSync(f)), 'every fixture in the hash file exists');
   const r = spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), '--append', 'profile: slaytek', ...fixtures], { encoding: 'utf8', env: env() });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.18.2 output');
-  for (const [name, w] of Object.entries(want)) {
+  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.19.0 output');
+  for (const [name, w] of Object.entries(prev)) {
     const o = old[name], changed = [...new Set([...Object.keys(w), ...Object.keys(o)])].filter(p => JSON.stringify(w[p]) !== JSON.stringify(o[p]));
     if (!changed.length) continue;
     assert.deepEqual(changed, [LINT_LINE.file], `${name}: the only file that differs from v0.17.2`);

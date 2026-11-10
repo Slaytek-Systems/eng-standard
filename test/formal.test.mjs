@@ -23,10 +23,10 @@ before(() => {
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('eng init makes statechart the formal check for stateful flows, in AGENTS.md and the printed router', () => {
+test('eng init makes statechart the formal check for stateful flows, in SHIPPING.md and the printed router', () => {
   const r = eng('init'); assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /- \*\*verify:\*\*.*`statechart` for a flow that moves between states, `create-formal-verification-skill` for non-stateful high-cost code/);
-  const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  const agents = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   assert.match(agents, /Formal check for a flow that moves between states \(merge flow, rollout, booking or other state machines, protocols\): `statechart`, a TLA\+ model checked by TLC/);
   assert.match(agents, /Formal check for non-stateful code where a bug costs most .*: `create-formal-verification-skill`/);
   assert.ok(fs.existsSync(path.join(dir, '.agents/skills/statechart/SKILL.md')));
@@ -51,11 +51,11 @@ test('a config that does not install statechart is rejected', () => {
   assert.doesNotMatch(r.stderr, /formal\.other/);
 });
 
-test('replacing the stateful default needs formal.why, and AGENTS.md then shows the choice and the reason', () => {
+test('replacing the stateful default needs formal.why, and SHIPPING.md then shows the choice and the reason', () => {
   const swap = replace('  stateful: statechart ', '  stateful: create-formal-verification-skill ');
   const bad = withConfig(swap, () => eng('sync', '--check'));
   assert.equal(bad.status, 1); assert.match(bad.stderr, /formal\.stateful replaces the standard's default \(statechart\): say why in formal\.why/);
-  const ok = withConfig(s => swap(s).replace('  # why: "..."', '  why: "every flow here is a pure parser"'), () => [eng('sync'), fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')]);
+  const ok = withConfig(s => swap(s).replace('  # why: "..."', '  why: "every flow here is a pure parser"'), () => [eng('sync'), fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8')]);
   assert.equal(ok[0].status, 0, ok[0].stderr);
   assert.match(ok[1], /moves between states .*: `create-formal-verification-skill`\./);
   assert.match(ok[1], /differ from the standard \(`statechart`, `create-formal-verification-skill`\): every flow here is a pure parser/);
