@@ -118,6 +118,7 @@ before(() => {
   fs.mkdirSync(fakebin);
   fs.writeFileSync(path.join(fakebin, 'gh'), `#!/usr/bin/env bash
 if [[ "$1 $2" == "pr view" ]]; then echo "{\\"headRefOid\\":\\"$FAKE_HEAD\\",\\"state\\":\\"OPEN\\"}"; exit 0; fi
+if [[ "$1" == "api" && "$*" == *--slurp* ]]; then echo '[]'; exit 0; fi
 if [[ "$1" == "api" ]]; then printf '%s\\n' "$*" >> "${calls}"; echo '{}'; exit 0; fi
 echo "fake-gh: unexpected: $*" >&2; exit 1
 `, { mode: 0o755 });
@@ -151,6 +152,59 @@ test('eng verdict --pr: no verdict posts failure; the builder\'s own verificatio
   assert.match(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1), new RegExp(`statuses/${H} -f state=success -f context=verdict -f description=verdict: PASS \\(PASS verification by builder-1 on`));
   r = eng('verdict', 'status');
   assert.equal(r.status, 1); assert.match(r.stderr, /usage: eng verdict status --pr <n>/);
+});
+
+// git notes do not travel with fetch or clone, so two verifiers in their own clones each hold only their own record. The
+// PR's verdict comments are the shared record: verdict status --pr counts them with self-merge's parse and trust rules.
+test('eng verdict --pr: verifiers in separate clones count together on risk:high, and a FAIL from either still blocks', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-clones-')), bin = path.join(root, 'bin');
+  const store = path.join(root, 'comments.json'), statuses = path.join(root, 'statuses');
+  fs.mkdirSync(bin); fs.writeFileSync(store, '[]');
+  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}
+const fs = require('node:fs'), a = process.argv.slice(2), store = ${JSON.stringify(store)};
+if (a[0] === 'pr' && a[1] === 'view') { console.log(JSON.stringify({ headRefOid: process.env.FAKE_HEAD, state: 'OPEN' })); process.exit(0); }
+const p = a.find(x => x.startsWith('repos/')) || '', body = a.find(x => x.startsWith('body='));
+if (a.includes('--slurp') && /\\/issues\\/9\\/comments/.test(p)) { console.log(JSON.stringify([JSON.parse(fs.readFileSync(store, 'utf8'))])); process.exit(0); }
+if (body && /\\/issues\\/9\\/comments$/.test(p)) {
+  const c = JSON.parse(fs.readFileSync(store, 'utf8'));
+  c.push({ body: body.slice(5), user: { login: 'verifier' }, author_association: 'OWNER', created_at: new Date(Date.now() + c.length * 1000).toISOString() });
+  fs.writeFileSync(store, JSON.stringify(c)); console.log('{}'); process.exit(0);
+}
+if (/\\/statuses\\//.test(p)) { fs.appendFileSync(${JSON.stringify(statuses)}, a.find(x => x.startsWith('state=')) + '\\n'); console.log('{}'); process.exit(0); }
+console.error('fake-gh: unexpected: ' + a.join(' ')); process.exit(1);
+`, { mode: 0o755 });
+  const origin = path.join(root, 'origin'), g = (cwd, c) => execSync(`git ${c}`, { cwd, stdio: 'pipe', encoding: 'utf8' }).trim();
+  fs.mkdirSync(origin); g(origin, 'init -q -b main'); g(origin, 'config user.email t@t'); g(origin, 'config user.name t');
+  fs.copyFileSync(ROOTCFG, path.join(origin, 'eng.config.yml')); g(origin, 'add -A'); g(origin, 'commit -qm base');
+  g(origin, 'checkout -qb high'); fs.mkdirSync(path.join(origin, 'bin')); fs.writeFileSync(path.join(origin, 'bin/tool.mjs'), 'export const x = 1;\n');
+  g(origin, 'add -A'); g(origin, 'commit -qm tool');
+  const H = g(origin, 'rev-parse HEAD'), clone = name => {
+    const d = path.join(root, name); g(root, `clone -q -b high ${origin} ${name}`); g(d, 'config user.email t@t'); g(d, 'config user.name t'); return d;
+  };
+  const [a, b, c] = ['clone-a', 'clone-b', 'clone-c'].map(clone);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_HEAD: H };
+  const run = (cwd, ...x) => spawnSync(process.execPath, [ENG, ...x], { cwd, encoding: 'utf8', env });
+  const verify = (cwd, by, result = 'PASS') => {
+    assert.equal(run(cwd, 'run', '--by', by, '--', 'true').status, 0, `${by} runs the change`);
+    return run(cwd, 'verdict', result, '--by', by, '--pr', '9');
+  };
+  try {
+    let r = verify(a, 'verifier-a');
+    assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /risk:high needs 2 distinct verifiers on .*have 1 \(verifier-a\)/, 'one verifier is not enough');
+    r = verify(b, 'verifier-b');
+    assert.equal(r.status, 0, `clone b sees clone a's PASS comment: ${r.stdout}${r.stderr}`); assert.match(r.stdout, /PASS \(risk:high, 2 of 2 verifiers/);
+    assert.equal(g(b, `notes --ref eng-verdict show ${H}`).split('\n').length, 1, 'clone b holds only its own git note');
+    assert.deepEqual(fs.readFileSync(statuses, 'utf8').trim().split('\n'), ['state=failure', 'state=success'], 'the second status posted is success');
+    r = run(a, 'verdict', 'status', '--pr', '9');
+    assert.equal(r.status, 0, `clone a now sees clone b's PASS too: ${r.stdout}${r.stderr}`);
+    r = verify(c, 'verifier-c', 'FAIL');
+    assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /latest verdict by verifier-c is FAIL/);
+    for (const d of [a, b]) {
+      r = run(d, 'verdict', 'status', '--pr', '9');
+      assert.equal(r.status, 1, `a FAIL from another clone vetoes: ${r.stdout}${r.stderr}`); assert.match(r.stdout, /latest verdict by verifier-c is FAIL/);
+    }
+    assert.equal(fs.readFileSync(statuses, 'utf8').trim().split('\n').at(-1), 'state=failure');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('rule 1: risk:low merges after one counted PASS on the exact head', () => {
