@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.1 (10 Nov 2026)
+
+**eng run runs the exact command it was given.** On a machine where eng's budget uses a systemd user scope, some systemd versions expand `${VAR}` in `systemd-run`'s command arguments. In CI on 10 Nov 2026, `eng run -- sh -c 'exit ${E-3}'` ran as `exit` and was recorded as exit 0, so recorded verification evidence could describe a different command from the one given. Nothing else in eng's output showed it.
+
+- `systemd-run` now gets `--expand-environment=no` when it accepts the flag (systemd 254 and later; probed once per `PATH`). An older `systemd-run` without the flag also has no such expansion.
+- `test/run-no-expand.test.mjs` reproduces the expansion with a stand-in `systemd-run` on `PATH`, so the bug shows on any machine, not only where systemd expands.
+- **Upgrade:** zero manual edits.
+
 ## 0.20.0 (10 Nov 2026)
 
 **eng says when a newer version is available** (Matt, 10 Nov 2026: "new version available, run [this command] to update"). Agents saw a new release only if they ran `eng doctor`.
