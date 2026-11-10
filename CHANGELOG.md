@@ -9,9 +9,10 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **pstack, at install** (`vendor/pstack/REWRITES.tsv`; the vendored copies stay byte-identical to upstream):
   - "Rebase into small, ordered commits" (Opening a PR, Feature step 6, Refactoring step 8) now applies only before the first push; after it, agents add new commits. "Amend" is limited the same way.
   - Taking trunk in is a merge (`gh pr update-branch <pr>`), not a rebase: Multi-phase plan, Autopilot-full (code-ready and merge prep), Autopilot-stack, Babysit, and the Sequence-verifiable-units principle. Stacked child branches take their parent by merge.
-  - Worktree cleanup no longer says `git worktree remove --force`. If git refuses, the worktree holds unsaved work: leave it and report the path.
+  - Worktree cleanup no longer says `git worktree remove --force`. If git refuses, the agent leaves the worktree and reports the path with git's reason (uncommitted or untracked work, or a lock).
+  - Opening a PR no longer offers `git reset --hard origin/<branch>` to share a worktree between tasks, or "reset from main" for a snarled worktree: each task gets its own worktree, and a snarled one is left as it is while the work is redone in a fresh one.
 - **eng-verify** says a new commit or a merge-in of main needs new runs, and mentions rebase or amend only for commits that were never pushed.
-- **Two new checks in `test/no-force-push.test.mjs`.** Every rendered skill is scanned in both `git.rewrite_pushed` modes for an instruction to rebase into, onto or on something, to amend, or to force-remove a worktree, unless the same sentence limits or forbids it. And every rewrite must still match the vendored text, so a pstack pin bump that changes the wording fails instead of silently dropping the rewrite.
+- **Two new checks in `test/no-force-push.test.mjs`.** Every rendered skill is scanned in both `git.rewrite_pushed` modes for an instruction to rebase into, onto or on something, to amend, to force-remove a worktree, or to discard local work (`reset --hard`, "reset from", `clean -f`, `checkout -- .`, `restore .`, `stash drop`/`clear`, `branch -D`), unless the same sentence limits or forbids it. And every rewrite must still match the vendored text, so a pstack pin bump that changes the wording fails instead of silently dropping the rewrite.
 - **Upgrade:** run `eng sync` to render the new skill text.
 
 ## 0.19.1 (10 Nov 2026)

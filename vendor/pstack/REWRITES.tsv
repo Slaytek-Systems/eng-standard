@@ -26,10 +26,12 @@ because rebasing for every trunk move never ends. Rebase and wait for CI when	be
 A lockfile both sides changed needs no rebase when	A lockfile both sides changed needs no update when
 and a failing install means the rebase must repair it.	and a failing install means the merge must repair it.
 If trunk would force a third rebase past merge prep,	If trunk would force a third update past merge prep,
-Per path, `git worktree remove --force <path>`.	Per path, `git worktree remove <path>`, never with `--force`: if git refuses, the worktree holds uncommitted or unpushed work, so leave it and report the path.
+Per path, `git worktree remove --force <path>`.	Per path, `git worktree remove <path>`, never with `--force`: if git refuses, leave the worktree and report the path with git's reason (uncommitted or untracked work, or a lock).
 Say which branch needs the rebase and stop.	Say which branch needs trunk merged in and stop.
 and the owner's rebase has to reconcile them in the same wave.	and the owner's merge has to reconcile them in the same wave.
 Then rebase onto current trunk and report the code-ready head before self-proof,	Then merge current trunk in (`gh pr update-branch <pr>`) and report the code-ready head before self-proof,
 because each rebase restarts CI.	because each update restarts CI.
 Rebase onto clean trunk first so every check measures against the real baseline.	Start from clean trunk first (a fresh branch, or trunk merged in) so every check measures against the real baseline.
 In place of step 2's rebase onto trunk, each PR rebases onto its parent PR's branch, and the stack root rebases onto trunk.	In place of step 2's merge of trunk, each PR merges its parent PR's branch in, and the stack root merges trunk in (`gh pr update-branch <pr>`).
+Multiple `Task` calls on the same branch each get their own worktree, or `git fetch && git reset --hard origin/<branch>` between them.	Multiple `Task` calls on the same branch each get their own worktree; never `git reset --hard` one to share it, which discards uncommitted work.
+Snarled worktree: reset from main, redo minimally.	Snarled worktree: start a fresh worktree from main and redo minimally there; leave the snarled one as it is and report it.
