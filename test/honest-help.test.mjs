@@ -101,7 +101,9 @@ test('eng doctor prints one line per selected harness naming the protections it 
   assert.equal(eng(dir, 'sync').status, 0);
   let o = out(eng(dir, 'doctor'));
   assert.match(o, /codex: no agent deny list; --no-verify and --admin are guarded by this text only/);
-  assert.doesNotMatch(o, /claude-code:/);
+  // The Skills section reports every main tool on purpose (indented under it); no harness line names claude-code.
+  assert.doesNotMatch(o, /^ {2}(ok {2}|WARN|FAIL) claude-code:/m);
+  assert.match(o, /^ {4}info claude-code: 0 of \d+ skills and subagents/m);
   c.agents.harnesses = ['claude-code', 'codex']; c.agents.post_edit_command = 'true';
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
   assert.equal(eng(dir, 'sync').status, 0);

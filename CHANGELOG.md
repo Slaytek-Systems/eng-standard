@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.1 (10 Nov 2026)
+
+**eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
+
+- **A Skills section in `eng doctor`.** It shows whether `.agents`, `.claude`, `.claude/skills` and `.claude/agents` are absent, a folder or a link (with its target, and `broken` when the target is gone). Then one row per main tool, listed in `agents.harnesses` or not: how many of eng's skills Codex, Cursor and Claude Code each see at their repo folders, and where each looks. Codex reads `.agents/skills`; Cursor reads `.agents/skills`, `.cursor/skills`, `.claude/skills` and `.codex/skills`; Claude Code reads `.claude/skills`, and `.claude/agents` for subagents. A custom `agents.skills_dir` outside `.agents/skills` means Codex sees none until it is linked.
+- **One plain instruction** when a tool misses skills: the `ln -s` commands that fix it (relative to the real folder when `.claude` is itself a link, quoted when a path needs it, with `mkdir -p` when the parent folder is missing), or install eng's skills into each tool's own folder. Skills in the home folder are not checked, and the section says so.
+- **Informational.** It never changes doctor's exit code. A tool not in `agents.harnesses` that misses skills is marked `info`, not `WARN`. The section replaces doctor's one-line Claude Code report; `eng sync` keeps that line and its text; its fix now starts with `mkdir -p .claude &&` when `.claude` is missing, where the old `ln -s` failed.
+- The counting and the fix live in `lib/skill-visibility.mjs`, a pure function over a read-only filesystem probe. `eng sync`'s line is built from it. **Upgrade:** zero manual edits.
+
 ## 0.20.0 (10 Nov 2026)
 
 **eng says when a newer version is available** (Matt, 10 Nov 2026: "new version available, run [this command] to update"). Agents saw a new release only if they ran `eng doctor`.
