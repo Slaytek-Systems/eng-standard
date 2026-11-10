@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import { updateCommand, packageManager, noticeFor, latestVersion, noticeOff } from '../lib/update-notice.mjs';
+import { cmp } from '../lib/standard.mjs';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname), ENG = path.join(ROOT, 'bin/eng.mjs');
 const INSTALLED = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
@@ -19,7 +21,11 @@ const pin = (spec, field = 'devDependencies') => ({ field, spec });
 test('the update command keeps the pin form and uses the repo package manager', () => {
   assert.equal(updateCommand(pin('github:Slaytek-Systems/eng-standard#v0.18.2'), '0.19.1', 'npm'), 'npm install -D "@slayteksystems/eng-standard@github:Slaytek-Systems/eng-standard#v0.19.1"');
   assert.equal(updateCommand(pin('github:Slaytek-Systems/eng-standard#0123456789abcdef0123456789abcdef01234567'), '0.19.1', 'bun'), 'bun add -d "@slayteksystems/eng-standard@github:Slaytek-Systems/eng-standard#v0.19.1"');
-  assert.equal(updateCommand(pin('0.18.2', 'dependencies'), '0.19.1', 'pnpm'), 'pnpm add "@slayteksystems/eng-standard@0.19.1"');
+  // PR #69 verdict 1: a plain version pin stays exact (each manager would save ^X.Y.Z, which eng sync --check refuses).
+  assert.equal(updateCommand(pin('0.18.2', 'dependencies'), '0.19.1', 'pnpm'), 'pnpm add --save-exact "@slayteksystems/eng-standard@0.19.1"');
+  assert.equal(updateCommand(pin('0.18.2'), '0.19.1', 'npm'), 'npm install -D --save-exact "@slayteksystems/eng-standard@0.19.1"');
+  assert.equal(updateCommand(pin('0.18.2'), '0.19.1', 'bun'), 'bun add -d --exact "@slayteksystems/eng-standard@0.19.1"');
+  assert.equal(updateCommand(pin('0.18.2', 'dependencies'), '0.19.1', 'yarn'), 'yarn add --exact "@slayteksystems/eng-standard@0.19.1"');
   assert.equal(updateCommand(pin('^0.18.0'), '0.19.1', 'yarn'), 'yarn add -D "@slayteksystems/eng-standard@github:Slaytek-Systems/eng-standard#v0.19.1"');
   assert.equal(packageManager(['bun.lock'], '{}'), 'bun');
   assert.equal(packageManager(['pnpm-lock.yaml'], '{}'), 'pnpm');
@@ -32,6 +38,12 @@ test('a notice only when the repo pins eng-standard and a newer release is known
   assert.match(noticeFor({ installed: '0.18.2', latest: '0.19.1', pin: p, pm: 'npm' }), /^eng: eng-standard 0\.19\.1 is available \(this repo runs 0\.18\.2\)\. To update: npm install -D "@slayteksystems\/eng-standard@github:Slaytek-Systems\/eng-standard#v0\.19\.1", then eng sync and eng gate, and commit it all in one PR\./);
   assert.equal(noticeFor({ installed: '0.19.1', latest: '0.19.1', pin: p, pm: 'npm' }), null, 'current');
   assert.equal(noticeFor({ installed: '0.20.0', latest: '0.19.1', pin: p, pm: 'npm' }), null, 'ahead');
+  // PR #69 verdict 1: semver order, so a prerelease of a later version is not offered a downgrade.
+  assert.equal(noticeFor({ installed: '0.20.2-beta.1', latest: '0.20.1', pin: p, pm: 'npm' }), null, 'a prerelease ahead');
+  assert.match(noticeFor({ installed: '0.20.1-rc.1', latest: '0.20.1', pin: p, pm: 'npm' }), /0\.20\.1 is available/, 'the release after its own prerelease');
+  for (const [a, b] of [['1.0.0-alpha', '1.0.0-alpha.1'], ['1.0.0-alpha.1', '1.0.0-alpha.beta'], ['1.0.0-beta.2', '1.0.0-beta.11'], ['1.0.0-rc.1', '1.0.0'], ['0.19.1', '0.20.0']])
+    assert.ok(cmp(a, b) < 0 && cmp(b, a) > 0, `${a} < ${b}`);
+  assert.equal(cmp('not a version', '0.20.0'), 0, 'an unreadable version is never behind');
   assert.equal(noticeFor({ installed: '0.18.2', latest: null, pin: p, pm: 'npm' }), null, 'latest unknown');
   assert.equal(noticeFor({ installed: '0.18.2', latest: '0.19.1', pin: null, pm: 'npm' }), null, 'no pin');
   assert.ok(noticeOff({ NODE_TEST_CONTEXT: 'child-v8' }) && noticeOff({ CI: 'true' }) && noticeOff({ ENG_NO_UPDATE_CHECK: '1' }) && !noticeOff({}));
@@ -80,5 +92,28 @@ test('eng prints the reminder on stderr and the command result does not change',
 test('offline: no reminder, and the command does not wait more than the read timeout', () => {
   const r = run(['lint'], { ENG_STANDARD_SOURCE: 'http://127.0.0.1:9/' });
   assert.doesNotMatch(r.stderr, /is available/);
-  assert.ok(r.ms < 15000, `${r.ms} ms`);
+  assert.ok(r.ms < 5000, `${r.ms} ms`);
+});
+
+// PR #69 verdict 1: the 2-second deadline bounds the whole command, not only the wait for the answer. A server that
+// accepts and never answers, and an address nothing answers on (TEST-NET-1), both end the command within a few seconds.
+test('a silent server or an unroutable address cannot keep a command alive past the deadline', async () => {
+  const held = [], server = net.createServer(s => held.push(s));
+  await new Promise(ok => server.listen(0, '127.0.0.1', ok));
+  try {
+    for (const src of [`http://127.0.0.1:${server.address().port}/`, 'http://192.0.2.1/']) {
+      const dir = tmp('eng-nudge-'), xdg = tmp('eng-xdg-');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', scripts: { test: 'true' }, devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
+      // A set-up repo, so lint finishes normally: an early process.exit would hide a socket left open.
+      spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      assert.equal(spawnSync(process.execPath, [ENG, 'init', '--owner', '@demo'], { cwd: dir, env: { ...process.env, ENG_NO_UPDATE_CHECK: '1', XDG_CACHE_HOME: xdg } }).status, 0);
+      const env = { ...process.env, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: src };
+      for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK']) delete env[k];
+      const t = Date.now();
+      const [code, err] = await new Promise(ok => { let e = ''; const c = spawn(process.execPath, [ENG, 'lint'], { cwd: dir, env }); c.stderr.on('data', d => { e += d; }); c.on('close', x => ok([x, e])); });
+      assert.equal(code, 0, `${src}: lint passes on a fresh repo: ${err}`);
+      assert.doesNotMatch(err, /is available/, src);
+      assert.ok(Date.now() - t < 6000, `${src}: ${Date.now() - t} ms`);
+    }
+  } finally { held.forEach(s => s.destroy()); server.close(); }
 });
