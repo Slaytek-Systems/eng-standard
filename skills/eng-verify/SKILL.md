@@ -19,8 +19,8 @@ pstack `create-verification-skill` assumes a Launch exists; `maintain-verificati
 2. Prove it bites: run this checkout's check against the base, `eng run --ref <merge-base> -- bash "$PWD/.eng/checks/<id>.sh"`. It must FAIL on the behaviour, not because a file is missing. On HEAD it PASSES.
 3. Commit the fix and the check. From then on `eng gate` runs it first, in CI too, and a failing check fails the gate whatever the verdict says. Run it as evidence on the exact commit too: `eng run --by <id> -- bash .eng/checks/<id>.sh`, then `eng verdict PASS --by <id>`.
 
-## Re-check (after a rebase onto main or a merge-in)
-1. A rebase, an amend or a merge-in of main makes a new commit. Re-run every check on it with `eng run --by <id> -- <cmd>`. A verdict never carries from another commit.
+## Re-check (after a merge-in of main or any new commit)
+1. A merge-in of main, a new commit, or a rebase or amend of commits that were never pushed makes a new commit. Re-run every check on it with `eng run --by <id> -- <cmd>`. A verdict never carries from another commit.
 2. Flaky → fix the check or the race. A check whose `covers` paths are gone → re-prove or delete it in a reviewed PR.
 3. Merge needs `eng verdict check`: a verdict from verification tooling for the exact HEAD commit. Who runs it does not matter; the builder may. The verifier runs each check on the exact commit (`eng run --by <id> -- <cmd>`: the app, e2e, property and mutation tests, formal checks), then `eng verdict PASS --by <id>` attaches those runs. `--review` counts only for docs and policy text (`verification.review_only_paths`).
 4. A mistake seen twice → the pstack `correct` skill picks the fix level; `custom-lint` is its lint rung.
