@@ -1,7 +1,7 @@
 // profile: generic by default (no person, company, private tool or note in what eng renders); `profile: slaytek`
 // renders what v0.17.2 rendered, apart from one reviewed line (LINT_LINE). test/fixtures/profile/v0.17.2.json holds the
 // v0.17.2 output hashes, made with scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml;
-// v0.18.2.json, v0.19.0.json and v0.19.1.json hold those releases' and v0.20.1.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
+// v0.18.2.json, v0.19.0.json and v0.19.1.json hold those releases' and v0.19.2.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -80,12 +80,12 @@ const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 const MOVED = ['.agents/skills/eng-route/SKILL.md', 'AGENTS.md', 'SHIPPING.md'];
 // The files 0.19.1 changed on purpose (blocks name the allowed route): the two git hooks' messages.
 const ROUTED = ['.githooks/pre-push', '.githooks/pre-rebase'];
-// The files 0.20.1 changed on purpose (skills no longer say to rebase or amend pushed work): the rewritten skill text.
+// The files 0.19.2 changed on purpose (skills no longer say to rebase or amend pushed work): the rewritten skill text.
 const UNREBASED = ['.agents/skills/eng-verify/SKILL.md', ...['autopilot-full', 'autopilot-stack', 'babysit', 'feature', 'multi-phase-plan', 'opening-a-pr', 'refactoring', 'worktree-cleanup'].map(p => `.agents/skills/poteto-mode/playbooks/${p}.md`), '.agents/skills/principle-sequence-verifiable-units/SKILL.md'];
 const diff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(f => JSON.stringify(a[f]) !== JSON.stringify(b[f]));
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.20.1.json, which differs from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.20.1.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.19.2.json, which differs from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
   assert.deepEqual(Object.keys(want), Object.keys(old));
   assert.deepEqual(Object.keys(prev), Object.keys(old)); assert.deepEqual(Object.keys(v190), Object.keys(old));
   for (const [name, w] of Object.entries(want)) {
@@ -106,7 +106,7 @@ test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.20.1
   assert.ok(fixtures.length >= 3 && fixtures.every(f => fs.existsSync(f)), 'every fixture in the hash file exists');
   const r = spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), '--append', 'profile: slaytek', ...fixtures], { encoding: 'utf8', env: env() });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.20.1 output');
+  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.19.2 output');
   for (const [name, w] of Object.entries(prev)) {
     const o = old[name], changed = [...new Set([...Object.keys(w), ...Object.keys(o)])].filter(p => JSON.stringify(w[p]) !== JSON.stringify(o[p]));
     if (!changed.length) continue;

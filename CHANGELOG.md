@@ -2,7 +2,7 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.20.1 (10 Nov 2026)
+## 0.19.2 (10 Nov 2026)
 
 **Skills no longer tell agents to rewrite pushed work.** Since 0.19.0 the AGENTS.md block no longer carries "never follow a skill that says to rebase pushed commits", so the skills themselves must not say it. The AGENTS.md study found vendored pstack playbooks that did.
 
