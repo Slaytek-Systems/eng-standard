@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.0 (10 Nov 2026)
+
+**eng says when a newer version is available** (Matt, 10 Nov 2026: "new version available, run [this command] to update"). Agents saw a new release only if they ran `eng doctor`.
+
+- **One stderr line on every eng command except `eng doctor`**, when the repo pins eng-standard and a newer release exists: `eng: eng-standard X is available (this repo runs Y). To update: <command>, then eng sync and eng gate, and commit it all in one PR.` The command uses the repo's package manager (bun, pnpm, yarn or npm, from the lockfile or `packageManager`) and keeps the pin's form (a `#vX.Y.Z` tag or a plain version), and adds `-D` only for a dev dependency.
+- **It never changes a command.** Its output on stdout and its exit code are the same with or without the line.
+- **One read a day.** The latest version comes from eng-standard main on GitHub (or `ENG_STANDARD_SOURCE`), with a 2-second timeout. It is cached in `$XDG_CACHE_HOME/eng/latest-version.json` for a day, and a failed read is retried after an hour, so an offline machine never waits on every command.
+- **Off** in CI (`CI` set), under `node --test`, in a repo that does not pin the package (eng-standard itself), and with `ENG_NO_UPDATE_CHECK=1`.
+- `docs/lifecycle.md` (Upgrade) describes it. **Upgrade:** zero manual edits.
+
 ## 0.19.1 (10 Nov 2026)
 
 **Blocks name the allowed route.** The AGENTS.md block (0.19.0) tells agents to take the route a blocking message names. These messages named none, or the wrong one:

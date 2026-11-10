@@ -72,6 +72,14 @@ never silent:
 
 ## Upgrade
 
+From 0.20.0, every eng command except `eng doctor` prints one line on stderr when a newer release exists, with the
+install command for the repo's package manager and pin, for example
+`eng: eng-standard 0.20.0 is available (this repo runs 0.19.1). To update: npm install -D "@slayteksystems/eng-standard@github:Slaytek-Systems/eng-standard#v0.20.0", then eng sync and eng gate, and commit it all in one PR.`
+It reads the latest version from eng-standard main (or `ENG_STANDARD_SOURCE`) at most once a day per machine, caches it
+under `$XDG_CACHE_HOME/eng/latest-version.json`, and prints nothing when offline. It never changes a command's output
+or exit code. It is off in CI (`CI` set), under `node --test`, in a repo that does not pin the package, and with
+`ENG_NO_UPDATE_CHECK=1`.
+
 1. `eng doctor`. Read every CHANGELOG entry it lists. Entries marked **Breaking** or risk:high change gates, CI or
    permissions.
 2. On a branch, move the pin to the new `vX.Y.Z` tag and install with the repo's package manager.
