@@ -86,7 +86,20 @@ test('a broken link is reported as broken and sees nothing', () => {
 test('an unreadable SKILL.md is not visible, and the first fix makes it readable (eng sync would fail on it)', { skip: ROOT_USER && 'root reads every file' }, () => {
   const r = fixture(); fs.chmodSync(r.f('.agents/skills/alpha/SKILL.md'), 0o000);
   assert.deepEqual(r.seen(), { codex: '2/3', cursor: '2/3', 'claude-code': '0/4' });
-  assert.equal(r.fixes()[0], "make eng's files readable: chmod -R u+rX .agents/skills");
+  assert.equal(r.fixes()[0], "make eng's files readable: chmod u+r .agents/skills/alpha/SKILL.md");
+});
+
+// PR #71 review 3: the readable fix names exact files, so it never changes an outside file hard-linked into eng's folder,
+// and it reaches a skill that is a symlink.
+test('the readable fix touches only the named files and follows a symlinked skill', { skip: ROOT_USER && 'root reads every file' }, () => {
+  const r = fixture(), outside = path.join(tmp('eng-outside-'), 'secret');
+  fs.writeFileSync(outside, 'x\n', { mode: 0o200 }); fs.linkSync(outside, r.f('.agents/skills/outside-link'));
+  const real = path.join(tmp('eng-real-'), 'gamma'); fs.mkdirSync(real); fs.renameSync(r.f('.agents/skills/gamma/SKILL.md'), path.join(real, 'SKILL.md'));
+  fs.rmSync(r.f('.agents/skills/gamma'), { recursive: true }); fs.symlinkSync(real, r.f('.agents/skills/gamma'));
+  fs.chmodSync(r.f('.agents/skills/alpha/SKILL.md'), 0o000); fs.chmodSync(path.join(real, 'SKILL.md'), 0o000);
+  for (const cmd of r.fixes()) assert.equal(spawnSync('sh', ['-c', cmd.replace(/^make eng's files readable: /, '')], { cwd: r.dir }).status, 0, cmd);
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o200, 'the hard-linked outside file keeps its mode');
+  assert.deepEqual(r.seen(), { codex: '3/3', cursor: '3/3', 'claude-code': '4/4' });
 });
 
 // PR #71 review 2: with many unreadable files the printed command must still run as printed and fix them all.
@@ -94,7 +107,7 @@ test('many unreadable files: the readable fix is one runnable command, and runni
   const r = fixture();
   for (const n of SKILLS) fs.chmodSync(r.f(`.agents/skills/${n}/SKILL.md`), 0o000);
   fs.chmodSync(r.f('.agents/agents/helper.md'), 0o000);
-  assert.deepEqual(r.fixes()[0], "make eng's files readable: chmod -R u+rX .agents/skills .agents/agents");
+  assert.deepEqual(r.fixes()[0], "make eng's files readable: chmod u+r .agents/skills/alpha/SKILL.md .agents/skills/beta/SKILL.md .agents/skills/gamma/SKILL.md .agents/agents/helper.md");
   for (const cmd of r.fixes()) assert.equal(spawnSync('sh', ['-c', cmd.replace(/^make eng's files readable: /, '')], { cwd: r.dir }).status, 0, cmd);
   assert.deepEqual(r.seen(), { codex: '3/3', cursor: '3/3', 'claude-code': '4/4' });
 });
