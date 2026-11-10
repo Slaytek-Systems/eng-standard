@@ -61,13 +61,13 @@ test('never: a feature-branch rewrite, a protected-branch rewrite or delete, and
 // work when the remote tip was never fetched. So: someone else pushes to the branch, nothing is fetched, the local branch
 // is rewritten with real work, and another branch is checked out when the push is refused.
 const followPushRoute = (r, stderr) => {
-  const m = stderr.match(/To keep your work and what is already on (\S+): git fetch (\S+) (\S+), git switch (\S+), then git merge ([0-9a-f]{40}) \(resolve any conflicts\), then push again/);
+  const m = stderr.match(/To keep your work and what is already on (\S+): git fetch (\S+) (\S+), then git switch (--detach [0-9a-f]{40}|\S+), then git merge ([0-9a-f]{40}) \(resolve any conflicts\), then git push (\S+) (\S+)$/m);
   assert.ok(m, stderr);
-  const [, , remote, rref, branch, sha] = m;
-  for (const a of [['fetch', '-q', remote, rref], ['switch', '-q', branch], ['-c', 'core.hooksPath=/dev/null', 'merge', '-q', '--no-edit', sha]]) {
+  const [, , remote, rref, sw, sha, pushRemote, refspec] = m;
+  for (const a of [['fetch', '-q', remote, rref], ['switch', '-q', ...sw.split(' ')], ['-c', 'core.hooksPath=/dev/null', 'merge', '-q', '--no-edit', sha], ['push', '-q', pushRemote, refspec]]) {
     const x = r.git(...a); assert.equal(x.status, 0, `${a.join(' ')}: ${x.stderr}`);
   }
-  return { branch, sha };
+  return { sha };
 };
 test('each refusal names its route, and following the push route keeps both sides\' work and pushes', () => {
   for (const [mode, target] of [['never', 'feat'], ['protected', 'main']]) {
@@ -80,11 +80,25 @@ test('each refusal names its route, and following the push route keeps both side
     const f = git('push', '-q', '--force', 'origin', target);
     assert.notEqual(f.status, 0, `${mode}: the rewrite is refused`);
     const { sha } = followPushRoute(r, f.stderr);
-    const again = git('push', '-q', 'origin', target);
-    assert.equal(again.status, 0, `${mode}: ${again.stderr}`);
     assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode}: my work reached the remote`);
     assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode}: what was already pushed is kept`);
     assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode}: no pushed commit was rewritten`);
+  }
+  // PR #68 verdict 2: a push from something that is not a branch (a commit id, HEAD~1:feat) gets a route whose last step
+  // pushes the merge it made.
+  for (const mode of ['never', 'protected']) {
+    const r = pushedRepo(withMode(mode)), { git } = r, remote = path.join(path.dirname(r.w), 'remote.git'), peer = path.join(path.dirname(r.w), 'peer');
+    const target = mode === 'never' ? 'feat' : 'main';
+    execSync(`git clone -q -b ${target} ${remote} ${peer} && cd ${peer} && echo theirs > peer.txt && git add peer.txt && git -c user.email=p@p -c user.name=p -c core.hooksPath=/dev/null commit -qm peer && git push -q origin ${target}`);
+    git('checkout', '-q', target); fs.writeFileSync(path.join(r.w, 'work.txt'), 'mine\n');
+    git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'rewritten with my work');
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'later, not to push', '--allow-empty');
+    const f = git('push', '-q', '--force', 'origin', `HEAD~1:refs/heads/${target}`);
+    assert.notEqual(f.status, 0, `${mode} HEAD~1: the rewrite is refused`);
+    const { sha } = followPushRoute(r, f.stderr);
+    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode} HEAD~1: my work reached the remote`);
+    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode} HEAD~1: what was already pushed is kept`);
+    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode} HEAD~1: no pushed commit was rewritten`);
   }
   const r = pushedRepo(withMode('never')), { git } = r;
   assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves or is deleted\. Cut a new tag instead/);
