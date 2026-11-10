@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
-import { MODEL_ID, ROUTING, modelErrors, neverErrors, pstackRoles } from '../lib/models.mjs';
+import { MODEL_ID, modelErrors, neverErrors, pstackRoles } from '../lib/models.mjs';
+import { SLAYTEK_ROUTING as ROUTING } from '../lib/profile.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -12,19 +13,19 @@ const PKG = path.resolve(new URL('..', import.meta.url).pathname);
 const ENG = path.join(PKG, 'bin/eng.mjs');
 const TPL = path.join(PKG, 'templates/eng.config.yml');
 // Where a model id may appear: eng.config.yml files (the config), vendored upstream text (pinned verbatim; models.pstack
-// overrides its defaults) and history (CHANGELOG.md, docs/evidence/).
-const ALLOWED = [/^vendor\//, /^docs\/evidence\//, /^CHANGELOG\.md$/, /(^|\/)eng\.config\.yml$/];
+// overrides its defaults), history (CHANGELOG.md, docs/evidence/) and the configs test/profile.test.mjs renders.
+const ALLOWED = [/^vendor\//, /^docs\/evidence\//, /^CHANGELOG\.md$/, /(^|\/)eng\.config\.yml$/, /^test\/fixtures\/profile\/[^/]+\.yml$/];
 let dir, cfgPath, base;
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8' });
 const withConfig = (edit, fn) => { fs.writeFileSync(cfgPath, edit(base)); try { return fn(); } finally { fs.writeFileSync(cfgPath, base); } };
-const ROUTING_LINE = `routing: ${ROUTING}`;
+const slaytek = s => s.replace(/^profile: generic\b/m, 'profile: slaytek');
 const noPstack = s => s.replace(/^  pstack:.*\n(?: {4}.*\n)*/m, '');
 
 before(() => {
   dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-models-'));
   execSync('git init -q -b main && git config user.email t@t && git config user.name t', { cwd: dir });
   cfgPath = path.join(dir, 'eng.config.yml'); fs.copyFileSync(TPL, cfgPath); base = fs.readFileSync(cfgPath, 'utf8');
-  assert.ok(base.includes(ROUTING_LINE), 'starter config sets models.routing');
+  assert.doesNotMatch(base, /^ {2}routing:/m, 'the starter names no routing note');
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -82,14 +83,26 @@ test('pstack roles come from setup-pstack, and models config is checked', () => 
 test('eng sync on the starter: AGENTS.md and SHIPPING.md name no model, and every pstack role runs on the parent model', () => {
   const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
   const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), shipping = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
-  assert.match(agents, new RegExp(`Models: this standard names no models\\. .*'Model routing: who uses which model' \\(\`${ROUTING}\`\\)`));
+  assert.match(agents, /Models: this standard names no models\. pstack role lines .* A repo that keeps a routing note .* names it in `models.routing`\./);
   assert.match(agents, /pstack role lines are in `.eng\/pstack-models.md`/);
   for (const [n, t] of [['AGENTS.md', agents], ['SHIPPING.md', shipping]]) assert.doesNotMatch(t, MODEL_ID, n);
   const lines = fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n');
   for (const role of pstackRoles()) assert.ok(lines.some(l => new RegExp(`^${role}: inherit-parent(, inherit-parent)*$`).test(l)), `starter sets ${role} to inherit-parent; add the role under models.pstack in templates/eng.config.yml`);
   assert.ok(lines.includes('arena runners: inherit-parent, inherit-parent'), 'a panel keeps two seats');
-  assert.ok(lines.includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
+  assert.ok(!lines.some(l => l.startsWith('# Routing source:')), 'no routing note, no routing line');
   const d = eng('sync', '--check'); assert.equal(d.status, 0, d.stderr);
+});
+
+test('the slaytek profile points at its Core routing note, and models.routing points anywhere else', () => {
+  withConfig(slaytek, () => {
+    const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
+    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), new RegExp(`Models: this standard names no models\\. .*'Model routing: who uses which model' \\(\`${ROUTING}\`\\)`));
+    assert.ok(fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n').includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
+  });
+  withConfig(s => s.replace('models:', 'models:\n  routing: docs/models.md'), () => {
+    const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
+    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /is set in the routing note `docs\/models.md`\. Read it before/);
+  });
 });
 
 test('models.pstack renders as written, and removing it removes .eng/pstack-models.md', () => {
@@ -112,11 +125,12 @@ test('eng rejects a models.pstack role pstack does not have', () => {
   });
 });
 
-test('eng rejects a never-list model in models.pstack and names the fix', () => {
+test('the slaytek profile rejects a never-list model in models.pstack and names the fix; generic has no never-list', () => {
   const grok = ['grok', '4.7', 'xhigh', 'fast'].join('-'), composer = ['composer', '2'].join('-');
-  assert.deepEqual(neverErrors({ models: { pstack: { 'swarm workers': 'inherit-parent', 'arena runners': ['auto', 'inherit-parent'] } } }), []);
-  assert.match(neverErrors({ models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }).join(), /models.pstack."arena runners": .* is Cursor/);
-  withConfig(s => s.replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`), () => {
+  assert.deepEqual(neverErrors({ profile: 'slaytek', models: { pstack: { 'swarm workers': 'inherit-parent', 'arena runners': ['auto', 'inherit-parent'] } } }), []);
+  assert.match(neverErrors({ profile: 'slaytek', models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }).join(), /models.pstack."arena runners": .* is Cursor/);
+  assert.deepEqual(neverErrors({ models: { pstack: { 'arena runners': ['inherit-parent', composer] } } }), [], 'the never-list is Slaytek\'s routing note');
+  withConfig(s => slaytek(s).replace('    swarm workers: inherit-parent', `    swarm workers: ${grok}`), () => {
     const r = eng('sync');
     assert.equal(r.status, 1);
     assert.match(r.stderr, new RegExp(`models.pstack."swarm workers": ${grok} is Grok, which the routing note \\(${ROUTING}\\) never uses for coding. Set it to inherit-parent`));

@@ -9,7 +9,7 @@ To use a skill, read `.agents/skills/<name>/SKILL.md` and follow it. Do not rely
 
 ## Starting or steering a thread
 
-This is the primary path. A lead that spawns or steers a coding thread (for example in T3) starts the message with one line naming the mode and the playbook, then the job:
+This is the primary path. A lead that spawns or steers a coding thread{{steer_example_skill}} starts the message with one line naming the mode and the playbook, then the job:
 - `/poteto-mode -> Shipping playbook: verify commit <sha> with verify-<app>, record eng verdict`
   (the verifier runs each check with `eng run --by <id> -- <cmd>`, then records the verdict, which carries the runs)
 - `/poteto-mode -> Babysit playbook (drive): get PR #<n> to merge-ready`
@@ -41,7 +41,7 @@ The router below (also in AGENTS.md) is the fallback when no skill was named.
 
 ## Shipping (serial, one PR at a time)
 
-Author stops at merge-ready (gate green, description, evidence, risk label). Verification tooling records the verdict on the head SHA; the builder may run it. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. Matt only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
+Author stops at merge-ready (gate green, description, evidence, risk label). Verification tooling records the verdict on the head SHA; the builder may run it. The shipping manager (repo lead) is the only one that merges, reverts and reorders, and never writes code. {{Approves}} only approves `risk:high` (auth, payments, schema/migrations, public APIs, CI, production data) and never presses merge.
 
 Loop, whenever a PR becomes ready:
 1. Oldest ready PR with a PASS verdict; skip `risk:high` not yet approved.
@@ -49,7 +49,7 @@ Loop, whenever a PR becomes ready:
 3. Wait for the gate on the new head. The new head needs its own run and verdict; a verdict never carries from the old head.
 4. `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 5. Main green after merge, else revert now and return the PR to its author.
-6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.
+6. {{log_step}}
 
-Two gate failures: back to the author with the reason. `risk:high`: send to Matt as soon as ready, one at a time, with a one-line summary, evidence and PR link; merge once he approves. Full SOP: `SHIPPING.md`. TODO: releases and tagging.
+Two gate failures: back to the author with the reason. `risk:high`: send to {{approves}} as soon as ready, one at a time, with a one-line summary, evidence and PR link; {{merge_once}}. Full SOP: `SHIPPING.md`. TODO: releases and tagging.
 - **retro:** `eng-retro` after each merged PR, then `correct` for any class it finds.

@@ -25,11 +25,15 @@ before(() => {
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-test('SHIPPING.md defaults to the PR Core task and a separate decision note', () => {
+test('SHIPPING.md defaults to where the repo tracks its work; the slaytek profile to the PR Core task and a separate decision note', () => {
   const cfg = YAML.parse(fs.readFileSync(TPL, 'utf8'));
-  const step = "6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.";
+  const step = "6. Record the merge where this repo tracks its work (PR number, merge SHA, main's post-merge result), and any decision as its own record.";
   assert.ok(shippingMd(cfg).includes(step));
   assert.ok(skills(cfg)['.agents/skills/eng-route/SKILL.md'].includes(step));
+  cfg.profile = 'slaytek';
+  const core = "6. Log the merge on the PR's Core task (PR number, merge SHA, main's post-merge result). Record any decision as its own decision note. Never write to the repo's Core status note.";
+  assert.ok(shippingMd(cfg).includes(core));
+  assert.ok(skills(cfg)['.agents/skills/eng-route/SKILL.md'].includes(core));
 });
 
 test('SHIPPING.md no longer instructs logging to the repo Core status note by default', () => {
@@ -57,7 +61,7 @@ test('CLI renders the default and custom logging step; sync --check accepts each
       const r = spawnSync(process.execPath, [ENG, 'sync'], { cwd: dir, encoding: 'utf8' });
       assert.equal(r.status, 0, r.stdout + r.stderr);
       const text = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
-      assert.ok(text.includes(log_step === undefined ? "6. Log the merge on the PR's Core task" : `6. ${log_step}`));
+      assert.ok(text.includes(log_step === undefined ? '6. Record the merge where this repo tracks its work' : `6. ${log_step}`));
       const drift = spawnSync(process.execPath, [ENG, 'sync', '--check'], { cwd: dir, encoding: 'utf8' });
       assert.equal(drift.status, 0, drift.stdout + drift.stderr);
     }

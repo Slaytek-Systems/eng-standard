@@ -26,14 +26,14 @@ before(() => {
 });
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-test('every rule has a default, its options, a check and the Core source; the template declares each one', () => {
+test('every rule has a default, its options, a check and a source; the template declares each one at its defaults', () => {
   const tpl = YAML.parse(fs.readFileSync(TPL, 'utf8')).hygiene.disk_rules;
   assert.deepEqual(Object.keys(DISK_RULE_SPECS), ['tests_leave_nothing', 'no_cache_in_evidence', 'pinned_downloads', 'evidence_budget']);
   for (const [k, s] of Object.entries(DISK_RULE_SPECS)) {
     assert.ok(s.rule && s.check, k);
     assert.deepEqual(Object.keys(s.defaults).sort(), Object.keys(s.options).sort(), `${k}: each default has its allowed options`);
     for (const [o, [, ok]] of Object.entries(s.options)) assert.ok(ok(s.defaults[o]), `${k}.${o} default is allowed`);
-    assert.deepEqual(tpl[k], { ...s.defaults, source: SOURCE }, `template declares ${k} at its defaults`);
+    assert.deepEqual(tpl[k], s.defaults, `template declares ${k} at its defaults`);
   }
   assert.equal(SOURCE, 'core:nd79fdwd1p4hc5nk60j7rmbn518h6tsv');
   assert.deepEqual(diskRules({}).evidence_budget, { mode: 'fail', max_mb: 100, source: SOURCE });

@@ -20,6 +20,7 @@ import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
 import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
+import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
@@ -95,6 +96,7 @@ function configErrors(c) {
   errs.push(...modelErrors(c.models));
   errs.push(...neverErrors(c));
   errs.push(...rewriteModeErrors(c));
+  errs.push(...profileErrors(c));
   return errs;
 }
 
@@ -217,6 +219,7 @@ function sync() {
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
   const v = claudeVisibility(cfg);
   if (v) console.log(visibilityLine(v));
+  if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
   console.log(changed ? `eng sync: ${changed} change(s)` : 'eng sync: no changes');
 }
 
@@ -917,6 +920,7 @@ async function doctor() {
   const v = renderErrors(cfg).length ? null : claudeVisibility(cfg);
   if (v) console.log(visibilityLine(v));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
+  if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
   let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }

@@ -63,6 +63,7 @@ function scratch(mode, prePush) {
   const git = (...a) => spawnSync('git', a, { cwd: w, encoding: 'utf8', env });
   const rgit = (...a) => spawnSync('git', ['--git-dir', remote, ...a], { encoding: 'utf8' });
   const c = structuredClone(TEMPLATE);
+  c.profile = 'slaytek';  // test/fixtures/pre-push-v0.16.2 is the Slaytek text; the hook's commands are the same in every profile
   c.git.rewrite_pushed = mode;
   c.project.protected_branches = PROTECTED;
   c.hooks = prePush === undefined ? {} : { pre_push: prePush };
@@ -216,10 +217,12 @@ test('an eng refusal on any ref line stops the hook before the first command', (
 test('no hooks.pre_push, or an empty list, renders the v0.16.2 hook byte for byte', () => {
   for (const mode of MODES) {
     const want = fs.readFileSync(path.join(ROOT, 'test/fixtures/pre-push-v0.16.2', mode), 'utf8');
-    const base = { project: { default_branch: 'main', protected_branches: PROTECTED }, agents: { harnesses: ['claude-code'] }, git: { rewrite_pushed: mode } };
+    const base = { profile: 'slaytek', project: { default_branch: 'main', protected_branches: PROTECTED }, agents: { harnesses: ['claude-code'] }, git: { rewrite_pushed: mode } };
     assert.equal(hooks(base)['.githooks/pre-push'], want, `${mode}: absent key`);
     assert.equal(hooks({ ...base, hooks: { pre_push: [] } })['.githooks/pre-push'], want, `${mode}: empty list`);
     assert.equal(hooks({ ...base, hooks: { pre_commit: ['true'] } })['.githooks/pre-push'], want, `${mode}: pre_commit alone`);
+    const generic = hooks({ ...base, profile: 'generic' })['.githooks/pre-push'];
+    assert.equal(generic, want.replace(/ \(Matt, \d+ Nov 2026\)/, ''), `${mode}: generic drops only the attribution`);
   }
 });
 
