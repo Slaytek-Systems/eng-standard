@@ -138,3 +138,30 @@ test('whatever the network does, the command runs as it would have and waits at 
     assert.match(ok.err, /eng: eng-standard 99\.0\.0 is available/, 'a real HTTP answer gives the reminder');
   } finally { held.forEach(s => s.destroy()); for (const srv of [silent, cut, good]) srv.close(); }
 });
+
+// PR #69 verdict 3: the read's child ends itself at the deadline, so killing eng while the child waits on the network
+// (a runner cancelling the job) leaves no process behind. Children are found by their unique source URL in /proc.
+const childrenFor = src => fs.readdirSync('/proc').filter(p => /^\d+$/.test(p)).filter(p => {
+  try { return fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0').includes(src); } catch { return false; }
+});
+test('killing eng while the version read waits leaves no child process past the deadline', { skip: process.platform !== 'linux' && 'reads /proc' }, async () => {
+  const held = [], silent = net.createServer(s => { held.push(s); silent.emit('accepted'); });
+  await new Promise(ok => silent.listen(0, '127.0.0.1', ok));
+  try {
+    for (const [name, src, extra, ready] of [
+      ['silent server', `http://127.0.0.1:${silent.address().port}/`, {}, () => new Promise(ok => silent.once('accepted', ok))],
+      ['dns stall', `http://stall.invalid:${silent.address().port + 1}/`, { NODE_OPTIONS: `--import=${STALL}` }, () => new Promise(ok => setTimeout(ok, 700))],
+    ]) for (const signal of ['SIGTERM', 'SIGKILL']) {
+      const dir = tmp('eng-nudge-'), xdg = tmp('eng-xdg-');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
+      const env = { ...process.env, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: src, ...extra };
+      for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK']) delete env[k];
+      const eng = spawn(process.execPath, [ENG, 'lint'], { cwd: dir, env, stdio: 'ignore' });
+      await ready();
+      assert.equal(childrenFor(src).length, 1, `${name}: the read's child is running`);
+      eng.kill(signal);
+      await new Promise(ok => setTimeout(ok, 2600));
+      assert.deepEqual(childrenFor(src), [], `${name}, ${signal}: no child left after the deadline`);
+    }
+  } finally { held.forEach(s => s.destroy()); silent.close(); }
+});
