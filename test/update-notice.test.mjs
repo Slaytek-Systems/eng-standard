@@ -95,25 +95,46 @@ test('offline: no reminder, and the command does not wait more than the read tim
   assert.ok(r.ms < 5000, `${r.ms} ms`);
 });
 
-// PR #69 verdict 1: the 2-second deadline bounds the whole command, not only the wait for the answer. A server that
-// accepts and never answers, and an address nothing answers on (TEST-NET-1), both end the command within a few seconds.
-test('a silent server or an unroutable address cannot keep a command alive past the deadline', async () => {
-  const held = [], server = net.createServer(s => held.push(s));
-  await new Promise(ok => server.listen(0, '127.0.0.1', ok));
+// PR #69 verdicts 1 and 2: whatever the network does, a command on a set-up repo runs as it would have, and the read
+// adds at most the 2-second deadline. A set-up repo, so lint finishes normally: an early process.exit would hide a socket
+// or a DNS lookup left open. Cases: a server that accepts and never answers, an address nothing answers on (TEST-NET-1),
+// a reply cut off mid-body, a DNS lookup that stalls for 8 seconds, and a real HTTP answer (the reminder appears).
+const STALL = path.join(tmp('eng-dns-'), 'stall.mjs');
+fs.writeFileSync(STALL, `import dns from 'node:dns';
+const orig = dns.lookup;
+dns.lookup = function (host, opts, cb) {
+  if (host === 'stall.invalid') { const done = typeof opts === 'function' ? opts : cb; setTimeout(() => done(Object.assign(new Error('stalled'), { code: 'ENOTFOUND' })), 8000); return; }
+  return orig.apply(this, arguments);
+};
+`);
+async function lintAgainst(src, extraEnv = {}) {
+  const dir = tmp('eng-nudge-'), xdg = tmp('eng-xdg-');
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', scripts: { test: 'true' }, devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  assert.equal(spawnSync(process.execPath, [ENG, 'init', '--owner', '@demo'], { cwd: dir, env: { ...process.env, ENG_NO_UPDATE_CHECK: '1', XDG_CACHE_HOME: xdg } }).status, 0);
+  const env = { ...process.env, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: src, ...extraEnv };
+  for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK']) delete env[k];
+  const t = Date.now();
+  const [code, out, err] = await new Promise(ok => { let o = '', e = ''; const c = spawn(process.execPath, [ENG, 'lint'], { cwd: dir, env }); c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { e += d; }); c.on('close', x => ok([x, o, e])); });
+  return { code, out, err, ms: Date.now() - t };
+}
+test('whatever the network does, the command runs as it would have and waits at most the deadline', async () => {
+  const held = [], silent = net.createServer(s => held.push(s));
+  const cut = net.createServer(s => s.once('data', () => { s.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"version":"9'); setTimeout(() => s.destroy(), 50); }));
+  const good = net.createServer(s => s.once('data', () => { const b = '{"version":"99.0.0"}'; s.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${b.length}\r\nConnection: close\r\n\r\n${b}`); }));
+  for (const srv of [silent, cut, good]) await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
   try {
-    for (const src of [`http://127.0.0.1:${server.address().port}/`, 'http://192.0.2.1/']) {
-      const dir = tmp('eng-nudge-'), xdg = tmp('eng-xdg-');
-      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', scripts: { test: 'true' }, devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
-      // A set-up repo, so lint finishes normally: an early process.exit would hide a socket left open.
-      spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-      assert.equal(spawnSync(process.execPath, [ENG, 'init', '--owner', '@demo'], { cwd: dir, env: { ...process.env, ENG_NO_UPDATE_CHECK: '1', XDG_CACHE_HOME: xdg } }).status, 0);
-      const env = { ...process.env, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: src };
-      for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK']) delete env[k];
-      const t = Date.now();
-      const [code, err] = await new Promise(ok => { let e = ''; const c = spawn(process.execPath, [ENG, 'lint'], { cwd: dir, env }); c.stderr.on('data', d => { e += d; }); c.on('close', x => ok([x, e])); });
-      assert.equal(code, 0, `${src}: lint passes on a fresh repo: ${err}`);
-      assert.doesNotMatch(err, /is available/, src);
-      assert.ok(Date.now() - t < 6000, `${src}: ${Date.now() - t} ms`);
+    const baseline = await lintAgainst('http://127.0.0.1:9/', { ENG_NO_UPDATE_CHECK: '' });
+    assert.equal(baseline.code, 0, baseline.err);
+    for (const [name, src, extra] of [['silent server', `http://127.0.0.1:${silent.address().port}/`], ['unroutable', 'http://192.0.2.1/'], ['reply cut off', `http://127.0.0.1:${cut.address().port}/`], ['dns stall', 'http://stall.invalid/', { NODE_OPTIONS: `--import=${STALL}` }]]) {
+      const r = await lintAgainst(src, extra);
+      assert.equal(r.code, 0, `${name}: exit ${r.code}: ${r.err}`);
+      assert.equal(r.out, baseline.out, `${name}: same stdout as without the reminder`);
+      assert.doesNotMatch(r.err, /is available/, name);
+      assert.ok(r.ms < 6000, `${name}: ${r.ms} ms`);
     }
-  } finally { held.forEach(s => s.destroy()); server.close(); }
+    const ok = await lintAgainst(`http://127.0.0.1:${good.address().port}/`);
+    assert.equal(ok.code, 0, ok.err);
+    assert.match(ok.err, /eng: eng-standard 99\.0\.0 is available/, 'a real HTTP answer gives the reminder');
+  } finally { held.forEach(s => s.destroy()); for (const srv of [silent, cut, good]) srv.close(); }
 });
