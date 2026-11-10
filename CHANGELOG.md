@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.18.2 (10 Nov 2026)
+
+**Repos may lower merge gates, never silently** (Matt, 10 Nov 2026). A repo may lower any merge-gate level, even in the PR that changes it, and eng does not block it. The risk is an unnoticed loosening, so eng makes each one visible instead.
+
+- **Gate settings are risk:high in the template.** `ship.high_risk.paths` in `templates/eng.config.yml` adds `eng.config.yml` and `.eng/checks/**`, and `reasons` adds `gate settings`. A PR that changes, adds, removes or renames either is risk:high (`lib/risk.mjs`), so it needs the repo owner. Only new repos get this; an existing config keeps its paths, and doctor lists the two as missing.
+- **`eng doctor` lists gates below the standard default.** One section, "Gates below the standard default": the setting, the repo's value, the standard default (the template's value, else the code's fallback) and the line that restores it. A repo at or above every default prints one line saying so. It never changes doctor's exit code. The settings, one table in `lib/gate-levels.mjs`: `renovation.gates.mode` (warn), `gates.required` (a template gate removed), `ship.high_risk.verifiers`, `ship.high_risk.paths` (a template path missing), `merge.auto.high_risk_verifiers` (when `merge.auto` is set), `verification.flake_runs`, the `hygiene.disk_rules` modes of `tests_leave_nothing`, `no_cache_in_evidence` and `evidence_budget`, and `hygiene.run_rules.ephemeral_runs.mode`.
+- **Not listed, and why.** `gates.skipped_is_failed: false` is already a config error. `renovation.merge_policy.strict: false` is the standard; `true` is the stricter divergence. `hygiene.disk_rules.pinned_downloads.mode` has no built-in check, so it gates nothing.
+- **Not built, by decision.** No block on lowering, and no rule that a lowered level takes effect only after a merge under the old level or that reads config from the base branch.
+- **Upgrade:** zero manual edits. Doctor may now list gates below default; to match the standard, apply the restore lines it prints, including the two new `ship.high_risk.paths`.
+
 ## 0.18.0 (9 Nov 2026)
 
 **Generic by default; Slaytek's rules are a profile** (Matt, 9 Nov 2026; Core decision nd7f2xgfrcbtg4ghn6f5x2fprn8hwv72: picks are reasoned recommendations any developer can adopt and question, and the repo's human decides). eng-standard is public, but the files it rendered named Matt, Slaytek Systems, Core, T3, AEDT, private note ids and a machine path.

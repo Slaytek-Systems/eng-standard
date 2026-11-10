@@ -27,6 +27,7 @@ import { parseLock, lockText } from '../lib/lock.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
+import { belowDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -926,6 +927,7 @@ async function doctor() {
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
   for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
   hits = hits.filter(h => !h.warn);
+  for (const l of belowDefaultLines(belowDefault(cfg, YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'))))) console.log(l);
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (merges.some(c => !c.ok)) mergeSettings(cfg);
   if (bad) die(`doctor: ${bad} problem(s) above`);

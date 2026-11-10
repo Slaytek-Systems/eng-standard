@@ -121,8 +121,10 @@ ship:                             # Shipping model: one actor merges, so merges,
   # verdict_wait_minutes } plus eng merge gate|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
   high_risk:                      # The repo owner approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
     label: risk:high
-    reasons: [auth, payments, schema/migrations, public APIs, CI, production data]
-    paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**"]
+    reasons: [auth, payments, schema/migrations, public APIs, CI, production data, gate settings]
+    # eng.config.yml and .eng/checks/** hold the gate settings: a repo may lower a gate, but the change is risk:high, so
+    # it is visible and needs the owner. eng doctor lists every gate below this file's default.
+    paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**", "eng.config.yml", ".eng/checks/**"]
   split_bot_when: "concurrent PR load or release work outgrows the lead agent"
 
 verification:

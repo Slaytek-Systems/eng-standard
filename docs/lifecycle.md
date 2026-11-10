@@ -45,6 +45,21 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 upgrade is a choice. If it cannot read the latest version, it says `latest UNKNOWN` and why. It never prints that as
 current.
 
+### Lowering a gate
+
+A repo may lower any merge gate, in any PR, including the PR that changes it. eng never blocks that. A lowering is
+never silent:
+
+- For a repo set up from 0.18.2 on, the template's `ship.high_risk.paths` include `eng.config.yml` and
+  `.eng/checks/**`, so any change to gate settings is risk:high and needs the repo owner. Older configs keep their own
+  paths until the owner adds these two; `eng doctor` lists them as missing.
+- `eng doctor` prints "Gates below the standard default". Each line names the setting, the repo's value, the standard
+  default (what `templates/eng.config.yml` sets, else the code's fallback) and the config line that restores it. It is
+  information only and never changes doctor's exit code. The settings it compares: `renovation.gates.mode`,
+  `gates.required`, `ship.high_risk.verifiers`, `ship.high_risk.paths`, `merge.auto.high_risk_verifiers`,
+  `verification.flake_runs`, and the modes of `hygiene.disk_rules` (`tests_leave_nothing`, `no_cache_in_evidence`,
+  `evidence_budget`) and `hygiene.run_rules.ephemeral_runs`.
+
 ## Upgrade
 
 1. `eng doctor`. Read every CHANGELOG entry it lists. Entries marked **Breaking** or risk:high change gates, CI or
