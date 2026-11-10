@@ -110,6 +110,9 @@ const KINDS = {
 };
 const TARGETS = { main: 'main', 'a protected branch': 'dev', 'a feature branch': 'feat/x' };
 const MODES = ['never', 'protected'];
+// The text 0.19.1 added on purpose (blocks name the allowed route). Taking it out must give the v0.16.2 hook byte for byte.
+const ROUTES = ['. To keep your local work: git reset --soft $rsha (your changes stay staged), commit them, then push again', '. Cut a new tag instead'];
+const asV0162 = (hook, mode) => { for (const r of ROUTES) assert.equal(hook.split(r).length - 1, 1, `${mode}: the hook names the route once: ${r}`); return ROUTES.reduce((h, r) => h.replace(r, ''), hook); };
 
 // The oracle, from the requirement: eng's own refusals (git.rewrite_pushed), then the Kalsigns-shaped rules.
 const isProt = t => PROTECTED.includes(t);
@@ -121,7 +124,7 @@ test('full sweep: refs x targets x repo commands x rewrite modes, real pushes th
   for (const mode of MODES) for (const [cmdName, spec] of Object.entries(COMMANDS)) {
     const r = scratch(mode, spec ? [spec.cmd] : undefined);
     const hook = fs.readFileSync(path.join(r.w, '.githooks/pre-push'), 'utf8');
-    if (!spec) assert.equal(hook, fs.readFileSync(path.join(ROOT, 'test/fixtures/pre-push-v0.16.2', mode), 'utf8'), `${mode}: no key renders the v0.16.2 hook byte for byte`);
+    if (!spec) assert.equal(asV0162(hook, mode), fs.readFileSync(path.join(ROOT, 'test/fixtures/pre-push-v0.16.2', mode), 'utf8'), `${mode}: no key renders the v0.16.2 hook byte for byte, apart from the 0.19.1 routes`);
     const side = r.git('rev-parse', 'side').stdout.trim();
     for (const [kind, make] of Object.entries(KINDS)) for (const [tName, t] of Object.entries(TARGETS)) {
       const row = `${mode} | ${cmdName} | ${kind} | ${tName}`;
@@ -214,15 +217,15 @@ test('an eng refusal on any ref line stops the hook before the first command', (
   assert.deepEqual(r.leftovers, []);
 });
 
-test('no hooks.pre_push, or an empty list, renders the v0.16.2 hook byte for byte', () => {
+test('no hooks.pre_push, or an empty list, renders the v0.16.2 hook byte for byte, apart from the 0.19.1 routes', () => {
   for (const mode of MODES) {
     const want = fs.readFileSync(path.join(ROOT, 'test/fixtures/pre-push-v0.16.2', mode), 'utf8');
     const base = { profile: 'slaytek', project: { default_branch: 'main', protected_branches: PROTECTED }, agents: { harnesses: ['claude-code'] }, git: { rewrite_pushed: mode } };
-    assert.equal(hooks(base)['.githooks/pre-push'], want, `${mode}: absent key`);
-    assert.equal(hooks({ ...base, hooks: { pre_push: [] } })['.githooks/pre-push'], want, `${mode}: empty list`);
-    assert.equal(hooks({ ...base, hooks: { pre_commit: ['true'] } })['.githooks/pre-push'], want, `${mode}: pre_commit alone`);
+    assert.equal(asV0162(hooks(base)['.githooks/pre-push'], mode), want, `${mode}: absent key`);
+    assert.equal(asV0162(hooks({ ...base, hooks: { pre_push: [] } })['.githooks/pre-push'], mode), want, `${mode}: empty list`);
+    assert.equal(asV0162(hooks({ ...base, hooks: { pre_commit: ['true'] } })['.githooks/pre-push'], mode), want, `${mode}: pre_commit alone`);
     const generic = hooks({ ...base, profile: 'generic' })['.githooks/pre-push'];
-    assert.equal(generic, want.replace(/ \(Matt, \d+ Nov 2026\)/, ''), `${mode}: generic drops only the attribution`);
+    assert.equal(asV0162(generic, mode), want.replace(/ \(Matt, \d+ Nov 2026\)/, ''), `${mode}: generic drops only the attribution`);
   }
 });
 

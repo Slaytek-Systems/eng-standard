@@ -56,6 +56,28 @@ test('never: a feature-branch rewrite, a protected-branch rewrite or delete, and
   const m = rewriteMain(r); assert.notEqual(m.status, 0); assert.match(m.stderr, /non-fast-forward push to main blocked/);
 });
 
+// Every refusal names the allowed route, and following it works (AGENTS.md: "take the route its message names").
+test('never: each refusal names its route, and following the push route keeps the work and pushes', () => {
+  const r = pushedRepo(withMode('never')), { git } = r;
+  fs.writeFileSync(path.join(r.w, 'work.txt'), 'my change\n');
+  git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'b3');
+  const f = git('push', '-q', '--force', 'origin', 'feat');
+  assert.notEqual(f.status, 0);
+  const route = f.stderr.match(/To keep your local work: git reset --soft ([0-9a-f]{40}) \(your changes stay staged\), commit them, then push again/);
+  assert.ok(route, f.stderr);
+  assert.equal(git('reset', '--soft', route[1]).status, 0);
+  assert.equal(git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'b3 as a new commit', '--allow-empty').status, 0);
+  const again = git('push', '-q', 'origin', 'feat');
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(git('show', 'origin/feat:work.txt').stdout, 'my change\n', 'the work reached the remote');
+  assert.equal(git('merge-base', '--is-ancestor', route[1], 'origin/feat').status, 0, 'no pushed commit was rewritten');
+  assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves or is deleted\. Cut a new tag instead/);
+  git('checkout', '-q', 'main');
+  assert.match(git('rebase', '-q', '-f', 'HEAD~1').stderr, /rebasing protected branch main is blocked: its history is never rewritten\. To update it, git pull --ff-only; to change it, open a pull request/);
+  git('checkout', '-q', 'feat');
+  assert.match(git('rebase', '-q', '-f', 'HEAD~2').stderr, /Add a commit instead; to bring in the base, merge it \(gh pr update-branch\)/);
+});
+
 test('protected: a feature-branch rewrite passes; a protected-branch rewrite or delete and a tag move are refused', () => {
   const r = pushedRepo(withMode('protected'));
   const f = r.git('push', '-q', '--force-with-lease', 'origin', 'feat');
