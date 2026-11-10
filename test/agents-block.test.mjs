@@ -19,9 +19,21 @@ test('the AGENTS.md block is three lines and under 120 words, in both profiles',
     assert.ok(words(block) < 120, `${profile}: ${words(block)} words`);
     const lines = block.split('\n').filter(l => l.startsWith('- '));
     assert.equal(lines.length, 3, `${profile}: ${lines.join('\n')}`);
-    assert.match(lines[0], /When one blocks you, its message names the allowed route; take it\. Never bypass a check/);
+    assert.match(lines[0], /When one blocks you, take the route its message names; if it names none, find the rule in `SHIPPING\.md`\. Never bypass a check/);
     assert.match(lines[1], /Read `\.agents\/skills\/eng-route\/SKILL\.md` to pick one/);
     assert.match(lines[2], /`SHIPPING\.md` has this repo's shipping rules and the reference/);
+  }
+});
+
+test('without the eng-route skill, the block points at the router in SHIPPING.md, never at a missing file', () => {
+  for (const dir of ['.agents/skills', 'tools/skills']) {
+    const c = template(); c.agents.skills_dir = dir; c.agents.skills = c.agents.skills.filter(x => x !== 'eng/eng-route');
+    const f = renderAll(c, null), block = blockOf(f['AGENTS.md']);
+    assert.ok(!Object.keys(f).some(p => p.includes('/eng-route/')), `${dir}: eng-route is not rendered`);
+    assert.doesNotMatch(block, /eng-route/, `${dir}: the block names no missing skill`);
+    assert.match(block, /Pick one with the skill router in `SHIPPING\.md` \(Reference\)/);
+    assert.match(f['SHIPPING.md'], /### Skill router/);
+    for (const [, p] of block.matchAll(/`([^`]+\/SKILL\.md)`/g)) if (!p.includes('<name>')) assert.ok(f[p] !== undefined, `${dir}: ${p} is rendered`);
   }
 });
 
