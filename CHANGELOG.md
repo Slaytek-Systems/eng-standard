@@ -2,6 +2,18 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.1 (10 Nov 2026)
+
+**Skills no longer tell agents to rewrite pushed work.** Since 0.19.0 the AGENTS.md block no longer carries "never follow a skill that says to rebase pushed commits", so the skills themselves must not say it. The AGENTS.md study found vendored pstack playbooks that did.
+
+- **pstack, at install** (`vendor/pstack/REWRITES.tsv`; the vendored copies stay byte-identical to upstream):
+  - "Rebase into small, ordered commits" (Opening a PR, Feature step 6, Refactoring step 8) now applies only before the first push; after it, agents add new commits. "Amend" is limited the same way.
+  - Taking trunk in is a merge (`gh pr update-branch <pr>`), not a rebase: Multi-phase plan, Autopilot-full (code-ready and merge prep), Autopilot-stack, Babysit, and the Sequence-verifiable-units principle. Stacked child branches take their parent by merge.
+  - Worktree cleanup no longer says `git worktree remove --force`. If git refuses, the worktree holds unsaved work: leave it and report the path.
+- **eng-verify** says a new commit or a merge-in of main needs new runs, and mentions rebase or amend only for commits that were never pushed.
+- **Two new checks in `test/no-force-push.test.mjs`.** Every rendered skill is scanned in both `git.rewrite_pushed` modes for an instruction to rebase into, onto or on something, to amend, or to force-remove a worktree, unless the same sentence limits or forbids it. And every rewrite must still match the vendored text, so a pstack pin bump that changes the wording fails instead of silently dropping the rewrite.
+- **Upgrade:** run `eng sync` to render the new skill text.
+
 ## 0.19.1 (10 Nov 2026)
 
 **Blocks name the allowed route.** The AGENTS.md block (0.19.0) tells agents to take the route a blocking message names. These messages named none, or the wrong one:

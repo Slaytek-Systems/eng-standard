@@ -59,6 +59,39 @@ test('the detector bites: an instruction to force-push is caught, a prohibition 
   assert.equal(tellsToForcePush('Push with `git push --force-with-lease`. Never rebase main.').length, 1, 'a later prohibition does not excuse it');
 });
 
+// The slim AGENTS.md (0.19.0) no longer says "never follow a skill that says to rebase pushed commits", so the skills
+// themselves must not say it: an instruction to rebase into, onto or on something, to amend, or to force-remove a
+// worktree, counts unless the same sentence limits it to commits that were never pushed or prohibits it.
+const REBASE = /\brebas(?:e|es|ed|ing)\s+(?:into|onto|on)\b|\bamend\b|worktree remove --force/i;
+const LIMITED = /never pushed|before the first push|\b(never|no|not|don't|do not|without)\b/i;
+const tellsToRewrite = text => text.split('\n').flatMap((l, i) => l.split(/(?<=[.!?;])\s+/).map(x => [i + 1, x])).filter(([, x]) => REBASE.test(x) && !LIMITED.test(x));
+
+test('no rendered skill tells an agent to rebase or amend pushed work, or to force-remove a worktree (both modes)', () => {
+  const bad = [];
+  for (const mode of ['never', 'protected']) {
+    const dir = rendered('templates/eng.config.yml', mode);
+    for (const f of walk(dir).filter(f => f.startsWith('.agents/')))
+      for (const [n, l] of tellsToRewrite(fs.readFileSync(path.join(dir, f), 'utf8'))) bad.push(`(${mode}) ${f}:${n}: ${l.trim().slice(0, 140)}`);
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('every pstack rewrite still matches its upstream text, so a pin bump cannot silently drop one', () => {
+  const rows = fs.readFileSync(path.join(ROOT, 'vendor/pstack/REWRITES.tsv'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => l.split('\t')[0]);
+  const text = walk(path.join(ROOT, 'vendor/pstack')).filter(f => /\.(md|ya?ml)$/.test(f)).map(f => fs.readFileSync(path.join(ROOT, 'vendor/pstack', f), 'utf8')).join('\n');
+  assert.deepEqual(rows.filter(r => !text.includes(r)), []);
+});
+
+test('the rebase detector bites: an instruction is caught, a limited or prohibited one is not', () => {
+  assert.equal(tellsToRewrite('Rebase onto current trunk before the report.').length, 1);
+  assert.equal(tellsToRewrite('6. Rebase into small, ordered commits.').length, 1);
+  assert.equal(tellsToRewrite('Per path, `git worktree remove --force <path>`.').length, 1);
+  assert.equal(tellsToRewrite('Amend when the fix belongs in a just-made commit.').length, 1);
+  assert.equal(tellsToRewrite('Before the first push, rebase into small commits.').length, 0);
+  assert.equal(tellsToRewrite('Amend a just-made commit that was never pushed.').length, 0);
+  assert.equal(tellsToRewrite('No rebase onto trunk from inside a babysit.').length, 0);
+});
+
 test('the rendered pre-push hook refuses rewriting a pushed feature branch or tag, and the deny list covers every branch', () => {
   const root = tmp('eng-fp-remote-'), remote = path.join(root, 'remote.git'), w = path.join(root, 'w');
   execSync(`git init -q --bare ${remote} && git init -q -b main ${w}`);

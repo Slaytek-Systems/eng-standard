@@ -10,3 +10,26 @@
 Force-push only your own branch, with `--force-with-lease` pinned to the SHA you last pushed or took over, and on any push you did not make, stop and report to the root.	Never rewrite a pushed branch (eng-standard SHIPPING.md rule 1): every fix is a new commit, the base comes in by merge (`gh pr update-branch <n>`), and on any push you did not make, stop and report to the root.
 Where this playbook says to report a rebase, that owner rebases its own branch and publishes it with `git push --force-with-lease` per `playbooks/autopilot-full.md` step 2.	Where this playbook says to report a rebase, that owner brings the base in with a merge (`gh pr update-branch <n>`) and pushes a new commit. Pushed history is never rewritten (eng-standard SHIPPING.md rule 1).
 move its patch onto the merge result, and push with `--force-with-lease`.	merge the new trunk into it (`gh pr update-branch <pr>`) and push that merge commit. Pushed history is never rewritten (eng-standard SHIPPING.md rule 1).
+# Rebase policy (Matt, 3 Nov 2026; the slim AGENTS.md of 0.19.0 no longer carries "never follow a skill that says to
+# rebase pushed commits"): each upstream sentence that says to rebase or amend pushed work, or to force-remove a
+# worktree, says to do it only before the first push, or to merge instead. test/no-force-push.test.mjs checks the render.
+Rebase into small, ordered commits before opening PRs.	Tidy into small, ordered commits before the first push: rebase or amend only commits that were never pushed (eng-standard SHIPPING.md rule 1).
+Amend when the fix belongs in a just-made commit.	Amend when the fix belongs in a just-made commit that was never pushed.
+Each child branch rebases onto its parent's exact tip and its PR targets the parent branch.	Each child branch starts from its parent's tip, takes later parent commits by merge, and its PR targets the parent branch.
+Rebase on trunk before substantial stack work.	Merge trunk in (`gh pr update-branch <pr>`) before substantial stack work.
+6. Rebase into small, ordered commits. Stack follow-ups.	6. Before the first push, rebase into small, ordered commits; after it, add new commits (eng-standard SHIPPING.md rule 1). Stack follow-ups.
+8. Rebase into small ordered commits.	8. Before the first push, rebase into small ordered commits; after it, add new commits (eng-standard SHIPPING.md rule 1).
+- [ ] Rebase onto current trunk before the code-ready report and babysit. Keep that merge base in fix rounds. Rebase again only at merge prep,	- [ ] Merge current trunk in (`gh pr update-branch <pr>`) before the code-ready report and babysit. Keep that base in fix rounds. Merge trunk in again only at merge prep,
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.	- [ ] Current trunk merged in after the verdict (`gh pr update-branch <pr>`), and the PR's diff against trunk unchanged.
+merge prep rebases onto current trunk, reports the new head, and waits for green CI.	merge prep merges current trunk in (`gh pr update-branch <pr>`), reports the new head, and waits for green CI.
+because rebasing for every trunk move never ends. Rebase and wait for CI when	because updating for every trunk move never ends. Merge trunk in and wait for CI when
+A lockfile both sides changed needs no rebase when	A lockfile both sides changed needs no update when
+and a failing install means the rebase must repair it.	and a failing install means the merge must repair it.
+If trunk would force a third rebase past merge prep,	If trunk would force a third update past merge prep,
+Per path, `git worktree remove --force <path>`.	Per path, `git worktree remove <path>`, never with `--force`: if git refuses, the worktree holds uncommitted or unpushed work, so leave it and report the path.
+Say which branch needs the rebase and stop.	Say which branch needs trunk merged in and stop.
+and the owner's rebase has to reconcile them in the same wave.	and the owner's merge has to reconcile them in the same wave.
+Then rebase onto current trunk and report the code-ready head before self-proof,	Then merge current trunk in (`gh pr update-branch <pr>`) and report the code-ready head before self-proof,
+because each rebase restarts CI.	because each update restarts CI.
+Rebase onto clean trunk first so every check measures against the real baseline.	Start from clean trunk first (a fresh branch, or trunk merged in) so every check measures against the real baseline.
+In place of step 2's rebase onto trunk, each PR rebases onto its parent PR's branch, and the stack root rebases onto trunk.	In place of step 2's merge of trunk, each PR merges its parent PR's branch in, and the stack root merges trunk in (`gh pr update-branch <pr>`).
