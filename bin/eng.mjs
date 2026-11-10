@@ -24,6 +24,8 @@ import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profil
 import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
+import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { DEFAULTS as SELF_MERGE_DEFAULTS } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
@@ -686,7 +688,8 @@ function verdictRecord(result) {
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
 // ruleset and the self-merge workflow can see it. success only when `eng verdict check` passes (a counted PASS for
-// this exact commit); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
+// this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers); failure otherwise. Local HEAD
+// must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
   const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
@@ -723,11 +726,35 @@ function verdictCheck() {
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
   const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
   if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
-  const testable = testableFiles(sh(`git diff --no-renames --name-only ${sh(`git merge-base ${baseRef(cfg)} HEAD`)} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
+  const mb = sh(`git merge-base ${baseRef(cfg)} HEAD`);
+  const testable = testableFiles(sh(`git diff --no-renames --name-only ${mb} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
   for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
-  const v = latest.filter(x => !passProblem(x, testable)).at(-1);
+  const counted = latest.filter(x => !passProblem(x, testable)), v = counted.at(-1);
   if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng run --by <id> -- <cmd>), then eng verdict PASS --by <id>');
+  // risk:high (ship.high_risk, the rule self-merge and the risk label apply) needs ship.high_risk.verifiers distinct verifiers.
+  const risk = riskOf(cfg, mb), need = cfg.ship?.high_risk?.verifiers ?? SELF_MERGE_DEFAULTS.high_verifiers;
+  if (risk.risk === 'high') {
+    if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
+    console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
+    if (counted.length < need) die(`verdict: risk:high needs ${need} distinct verifiers on ${H.slice(0, 8)}; have ${counted.length} (${counted.map(x => x.by).join(', ')})`);
+    return console.log(`eng verdict: PASS (risk:high, ${counted.length} of ${need} verifiers: ${counted.map(x => `${x.result} ${methodOf(x)} by ${x.by}`).join(', ')} on ${H.slice(0, 8)})`);
+  }
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
+}
+// The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
+// No ship.high_risk block: low, as before 0.18.1.
+function riskOf(cfg, mb) {
+  const hr = cfg.ship?.high_risk;
+  if (!hr) return { risk: 'low', hits: [] };
+  const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
+  for (let i = 0; i < z.length && z[i];) {
+    const k = z[i][0];
+    if (k === 'R' || k === 'C') { files.push({ filename: z[i + 2], previous_filename: k === 'R' ? z[i + 1] : undefined, status: k === 'R' ? 'renamed' : 'added' }); i += 3; }
+    else { files.push({ filename: z[i + 1], status: status[k] || 'modified' }); i += 2; }
+  }
+  const show = (ref, f) => { const r = spawnSync('git', ['show', `${ref}:${f}`], { cwd: ROOT, encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
+  const bump = new Set((hr.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
+  return classifyRisk(files, hr, bump);
 }
 
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
@@ -943,7 +970,7 @@ const COMMANDS = [
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
   ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
-  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
+  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],

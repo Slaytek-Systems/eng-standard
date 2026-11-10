@@ -172,6 +172,51 @@ test('eng verdict PASS is refused when a different argv with the same joined tex
   assert.equal(old.status, 1, out(old)); assert.match(out(old), /run `sh -c exit 7` by builder-2 exited 7/);
 });
 
+// eng verdict check applies self-merge's risk:high rule: counted PASSes from ship.high_risk.verifiers distinct verifiers.
+const verify = by => { assert.equal(eng('run', '--by', by, '--', 'true').status, 0); const r = eng('verdict', 'PASS', '--by', by); assert.equal(r.status, 0, out(r)); };
+const branchWith = (name, file, edit) => {
+  git('checkout -q main'); git(`checkout -qb ${name}`);
+  if (edit) { const c = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')); edit(c); fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c)); }
+  fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true }); fs.writeFileSync(path.join(dir, file), `export const x = '${name}';\n`);
+  git('add -A'); git(`commit -qm ${name}`); return git('rev-parse HEAD').slice(0, 8);
+};
+test('eng verdict check: risk:high needs ship.high_risk.verifiers distinct verifiers; risk:low needs one; a FAIL still blocks', () => {
+  let h = branchWith('high', 'bin/tool.mjs');
+  verify('builder-1');
+  let r = eng('verdict', 'check');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, new RegExp(`risk:high needs 2 distinct verifiers on ${h}; have 1 \\(builder-1\\)`));
+  assert.match(r.stdout, /risk:high \(bin\/tool\.mjs\)/);
+  verify('verifier-2');
+  r = eng('verdict', 'check');
+  assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /PASS \(risk:high, 2 of 2 verifiers/);
+  assert.equal(eng('verdict', 'FAIL', '--by', 'verifier-3').status, 0);
+  r = eng('verdict', 'check');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /latest verdict by verifier-3 is FAIL/);
+
+  branchWith('low', 'lib/low.mjs');
+  verify('builder-1');
+  r = eng('verdict', 'check');
+  assert.equal(r.status, 0, out(r)); assert.doesNotMatch(r.stdout, /risk:high/);
+});
+
+test('eng verdict check: the risk:high count follows the config (1, 3, no ship block)', () => {
+  let h = branchWith('need1', 'bin/one.mjs', c => { c.ship.high_risk.verifiers = 1; });
+  verify('builder-1');
+  assert.equal(eng('verdict', 'check').status, 0, 'verifiers: 1');
+
+  h = branchWith('need3', 'bin/three.mjs', c => { c.ship.high_risk.verifiers = 3; });
+  verify('builder-1'); verify('verifier-2');
+  let r = eng('verdict', 'check');
+  assert.equal(r.status, 1, out(r)); assert.match(r.stderr, new RegExp(`risk:high needs 3 distinct verifiers on ${h}; have 2 \\(builder-1, verifier-2\\)`));
+  verify('verifier-3');
+  r = eng('verdict', 'check'); assert.equal(r.status, 0, out(r));
+
+  branchWith('noship', 'bin/noship.mjs', c => { delete c.ship; });
+  verify('builder-1');
+  r = eng('verdict', 'check');
+  assert.equal(r.status, 0, `no ship block: one PASS, as before 0.18.1: ${out(r)}`);
+});
+
 // PR #42 review, finding 1: a PASS counts only for the exact commit it ran on. Patch-id ignores the message and whitespace.
 test('eng verdict check does not carry a PASS to a new SHA with the same patch-id (message-only amend, whitespace-only change)', () => {
   git('checkout -q main'); git('checkout -qb carry');
@@ -216,7 +261,8 @@ test('eng gate runs every check first: a failing, flaky or stale check fails the
   git('add -A'); git('commit -qm wall -m "Agent: builder-1"');
   assert.equal(eng('run', '--by', 'builder-1', '--', 'true').status, 0);
   assert.equal(eng('verdict', 'PASS', '--by', 'builder-1').status, 0);
-  assert.equal(eng('verdict', 'check').status, 0, 'the verdict alone passes');
+  verify('verifier-2');
+  assert.equal(eng('verdict', 'check').status, 0, 'the verdict alone passes (risk:high: config and checks changed, two verifiers)');
   let r = eng('gate');
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /FAIL\s+check:broken eng: FAIL check broken: failed 2\/2/);
@@ -228,7 +274,7 @@ test('eng gate runs every check first: a failing, flaky or stale check fails the
   assert.match(eng('gate', 'nope').stderr, /gate: nope is not a step here/);
   for (const f of ['broken', 'flaky', 'stale']) fs.writeFileSync(path.join(dir, `.eng/checks/${f}.sh`), '#!/bin/sh\nexit 0\n');
   git('add -A'); git('commit -qm fixed -m "Agent: builder-1"');
-  eng('run', '--by', 'builder-1', '--', 'true'); eng('verdict', 'PASS', '--by', 'builder-1');
+  verify('builder-1'); verify('verifier-2');
   r = eng('gate'); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /pass\s+check:broken check broken: passed 2\/2/);
   fs.writeFileSync(p, orig); git('add -A'); git('commit -qm restore');
 });
