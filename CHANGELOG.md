@@ -2,6 +2,12 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.18.1 (10 Nov 2026)
+
+**Two gate fixes from an independent sweep.**
+
+- **eng scans `.claude/skills` and `.claude/agents` again.** v0.17.2 had dropped both folders from every repo scan, not only from what eng writes. So `eng lint` and the secret-filename check missed tracked files there: an `id_rsa` in `.claude/skills/` got no finding. 0.18.1 restores the scans: lint rules, the secret-filename check and baselines, `eng doctor`'s toolchain checks, `rules prove` and the e2e check see files in those folders again, matched ignoring case (`.Claude/Skills` too). The secret-filename check needs names only, so it sees every path there. Scans that read contents read a path there only when it is a readable regular file: a link is not followed, and an unreadable file or a FIFO is skipped, so it cannot crash, block or fail doctor, lint or gate. eng still never writes there: the render refusal, the prune exclusion, the `skills_dir` and `checks_dir` config errors and the empty-folder skip are unchanged.
+
 ## 0.18.0 (9 Nov 2026)
 
 **Generic by default; Slaytek's rules are a profile** (Matt, 9 Nov 2026; Core decision nd7f2xgfrcbtg4ghn6f5x2fprn8hwv72: picks are reasoned recommendations any developer can adopt and question, and the repo's human decides). eng-standard is public, but the files it rendered named Matt, Slaytek Systems, Core, T3, AEDT, private note ids and a machine path.

@@ -55,10 +55,14 @@ function validate(c) { const errs = configErrors(c); if (errs.length) die('confi
 // A folder eng writes into is checked where it lands, joined to the repo root exactly as eng writes it (so /.claude/skills
 // is the repo's), with .. resolved, so ../<repo>/.claude/skills and .Claude/Skills count too.
 const harnessOut = p => harnessRel(path.relative(ROOT, path.join(ROOT, p)));
-// Every file the repo has (tracked and untracked, not ignored) for eng's scans (doctor, lint, baselines, rule proofs),
-// without .claude/skills and .claude/agents: those are the developer's, so eng never opens them and their state (an
-// unreadable file, a FIFO) can never fail or block a scan.
-const repoFiles = () => sh('git ls-files --cached --others --exclude-standard').split('\n').filter(f => f && !harnessOut(f));
+// Every path the repo has (tracked and untracked, not ignored). The secret-filename check needs names only, so it sees
+// .claude/skills and .claude/agents too: eng never writes there, but it does scan them (v0.17.2 had dropped them).
+const repoPaths = () => sh('git ls-files --cached --others --exclude-standard').split('\n').filter(Boolean);
+// The files eng's content scans read (doctor, lint, rule proofs, e2e). In .claude/skills and .claude/agents, which the
+// developer owns, a path counts only when it is a readable regular file: a link is not followed, and an unreadable file
+// or a FIFO is skipped, so it can never fail or block a scan.
+const readableFile = f => { try { const abs = path.join(ROOT, f); if (!fs.lstatSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
+const repoFiles = () => repoPaths().filter(f => !harnessOut(f) || readableFile(f));
 function harnessConfigErrors(c) {
   const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
@@ -269,7 +273,7 @@ function seedShipping(owner) {
 }
 // Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
 function saveBaseline(kind, cfg) {
-  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')));
+  const found = kind === 'lint' ? lintFindings(lintHits(cfg)) : secretFilenameFindings(repoPaths().filter(f => !f.startsWith('renovation/')));
   const pack = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
   const b = makeBaseline(kind, found, { owner: cfg.renovation.policy_owner, reason: 'pre-existing when the repo adopted the standard', pack, prev: null });
   fs.mkdirSync(path.join(ROOT, 'renovation/baselines'), { recursive: true });
@@ -372,7 +376,7 @@ function lint() {
     hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint));
   }
   // Credential-looking filenames are checked where eng init baselined them (a repo that adopted the standard while shipping).
-  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(repoFiles().filter(f => f && !f.startsWith('renovation/')))).fresh : [];
+  const sb = readOr(baselinePath('secret-filename')), secrets = sb ? compareBaseline(JSON.parse(sb), secretFilenameFindings(repoPaths().filter(f => !f.startsWith('renovation/')))).fresh : [];
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
