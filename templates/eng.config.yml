@@ -127,8 +127,10 @@ ship:                             # Shipping model: one actor merges, so merges,
 
 verification:
   checks_dir: .eng/checks         # One executable check per behaviour. Exit 0 = behaviour present. eng gate runs every one first, whatever gates.required says. Each declares '# weight: light|heavy' and '# budget: memory=<size> workers=<n> timeout=<duration>' in its header (defaults: light, 2G, 2, 30m); see standard/checks.yml.
-  # parallel: false               # Default false: checks run one after another, as before 0.16.0. true: side by side while their budgets fit free memory and cores (only for checks that share no state).
+  # parallel: false               # Default false: checks run one after another, as before 0.16.0. true: up to 4 side by side while their budgets fit free memory and cores; a whole number: up to that many. A check that shares state (fixed ports, containers, one database) declares '# serial: <why>' and runs alone.
   flake_runs: 3                   # eng gate runs each check this many times; any failure (FLAKY included) fails the gate. A missing `# covers:` path fails it too.
+  # flake_runs_pr: 1              # eng gate --event pr (pull requests) runs each check this many times (1 to flake_runs; default flake_runs). Main keeps flake_runs and catches a flake.
+  # pr_checks: affected           # Default all. affected: eng gate --event pr runs only the checks whose '# covers:' paths changed against the merge base. A check with no '# covers:' line, a change to eng.config.yml, .eng/lock.json or checks_dir, or a diff eng cannot compute runs every check.
   # Verification first: a PASS needs passing `eng run --by` runs on its commit. A review (eng verdict --review)
   # counts only when every changed file matches these globs: text no check can run. Default below; unknown files count as testable.
   review_only_paths: ["**/*.md", "**/*.mdx", "**/*.txt", "**/LICENSE*"]

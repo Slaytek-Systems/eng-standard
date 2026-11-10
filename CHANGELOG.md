@@ -2,6 +2,19 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.19.0 (10 Nov 2026)
+
+**A pull request's gate runs less** (approved by the repo owner on 10 Nov 2026, after a 45-minute PR gate in a repo with 60 checks run one after another, 3 times each; issue #60). Every new setting is opt-in, and a repo that sets none of them runs and renders exactly as in 0.18.1.
+
+- **`eng gate --event pr|main`.** `--event pr` marks a pull request's gate. `--event main`, or no `--event`, is every other run, `eng run --by` and `eng verdict` included, and keeps the full rule. Any other value is an error and runs nothing. `--base <ref>` names the PR's base; the default is the CI's PR base branch (`GITHUB_BASE_REF`, `BUILDKITE_PULL_REQUEST_BASE_BRANCH`), then `project.default_branch`, as for `eng e2e --required`.
+- **`verification.flake_runs_pr`.** `--event pr` runs each check this many times (default `flake_runs`). It must be a whole number from 1 to `flake_runs`, so it can only lower the count. A PR cannot act on a flake, because a flaky check fails the PR either way; main's run after every merge still runs `flake_runs` times and catches it. The gate prints which count it used: `each runs 1 time (verification.flake_runs_pr, --event pr)`.
+- **`verification.pr_checks: affected`.** `--event pr` runs only the checks whose `# covers:` paths the change touched: a changed path equal to a covered path or under a covered folder, committed or not, and both paths of a rename. Every other check shows as `unaffected` and does not fail the gate. It fails closed: a check with no `# covers:` line always runs, and every check runs when `eng.config.yml`, `.eng/lock.json` or anything in `checks_dir` changed, when the diff is empty, or when eng cannot compute it (a shallow clone, a base that is not fetched). The gate prints why. A check named on the command line (`eng gate check:<id> --event pr`) always runs. Default `all`.
+- **`verification.parallel: <n>`.** A whole number runs at most n checks at once, side by side while their budgets fit. `true` now means at most 4 at once (before: as many as the budgets fit). `false` or unset still runs them one after another.
+- **`# serial: <why>`.** A check that must not run beside another (fixed ports, containers, one shared database) declares it in its header. Under `verification.parallel` it starts only when nothing else runs, and nothing starts beside it. An empty reason fails the check. One after another, it changes nothing.
+- **Rendered text.** With `flake_runs_pr` or `pr_checks` set, SHIPPING.md adds what a PR runs and that main runs every check `flake_runs` times. With `verification.parallel` set, AGENTS.md states the cap and `# serial:`. Unset, both render byte for byte as in 0.18.1 (`test/profile.test.mjs`).
+- **`eng e2e --required`** now lists both paths of a rename. It can only add files, so it can only make e2e required more often.
+- **Upgrade:** zero manual edits. To use it, set the keys and pass the event from CI, for example `eng gate checks --event pr` on `pull_request` and `eng gate checks --event main` on a push to main. A repo whose CI checks out one commit needs enough history for the merge base (`fetch-depth: 0`); without it every check runs. A repo on `parallel: true` with more than 4 checks that fit side by side now runs 4 at a time; set a number to keep more.
+
 ## 0.18.1 (10 Nov 2026)
 
 **Two gate fixes from an independent sweep.**

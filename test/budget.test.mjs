@@ -378,7 +378,7 @@ test('checks run one after another unless verification.parallel is true; in para
     [a, b] = spans(times, ['a', 'b']);
     assert.ok(b[0] >= a[1], `parallel: true still waits when the budgets do not fit: ${JSON.stringify({ a, b })}`);
     c.verification.parallel = 'yes'; fs.writeFileSync(cfgFile, YAML.stringify(c));
-    r = eng(['gate', 'checks']); assert.equal(r.status, 1, out(r)); assert.match(out(r), /verification\.parallel must be true or false/);
+    r = eng(['gate', 'checks']); assert.equal(r.status, 1, out(r)); assert.match(out(r), /verification\.parallel must be true, false or a whole number/);
   } finally { fs.writeFileSync(cfgFile, orig); git('commit -qam unparallel --allow-empty'); }
 });
 
