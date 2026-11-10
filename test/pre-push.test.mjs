@@ -111,7 +111,7 @@ const KINDS = {
 const TARGETS = { main: 'main', 'a protected branch': 'dev', 'a feature branch': 'feat/x' };
 const MODES = ['never', 'protected'];
 // The text 0.19.1 added on purpose (blocks name the allowed route). Taking it out must give the v0.16.2 hook byte for byte.
-const ROUTES = ['. To keep your local work: git reset --soft $rsha (your changes stay staged), commit them, then push again', '. Cut a new tag instead'];
+const ROUTES = ['        case "$lref" in refs/heads/*) on="git switch ${lref#refs/heads/}, then " ;; *) on="on the commit you pushed, " ;; esac\n', '. To keep your work and what is already on $b: git fetch $1 $rref, ${on}git merge $rsha (resolve any conflicts), then push again', '. Cut a new tag instead'];
 const asV0162 = (hook, mode) => { for (const r of ROUTES) assert.equal(hook.split(r).length - 1, 1, `${mode}: the hook names the route once: ${r}`); return ROUTES.reduce((h, r) => h.replace(r, ''), hook); };
 
 // The oracle, from the requirement: eng's own refusals (git.rewrite_pushed), then the Kalsigns-shaped rules.

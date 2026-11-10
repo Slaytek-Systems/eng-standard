@@ -57,20 +57,36 @@ test('never: a feature-branch rewrite, a protected-branch rewrite or delete, and
 });
 
 // Every refusal names the allowed route, and following it works (AGENTS.md: "take the route its message names").
-test('never: each refusal names its route, and following the push route keeps the work and pushes', () => {
+// PR #68 verdict 1: the push route must keep what others pushed, act on the refused branch whatever is checked out, and
+// work when the remote tip was never fetched. So: someone else pushes to the branch, nothing is fetched, the local branch
+// is rewritten with real work, and another branch is checked out when the push is refused.
+const followPushRoute = (r, stderr) => {
+  const m = stderr.match(/To keep your work and what is already on (\S+): git fetch (\S+) (\S+), git switch (\S+), then git merge ([0-9a-f]{40}) \(resolve any conflicts\), then push again/);
+  assert.ok(m, stderr);
+  const [, , remote, rref, branch, sha] = m;
+  for (const a of [['fetch', '-q', remote, rref], ['switch', '-q', branch], ['-c', 'core.hooksPath=/dev/null', 'merge', '-q', '--no-edit', sha]]) {
+    const x = r.git(...a); assert.equal(x.status, 0, `${a.join(' ')}: ${x.stderr}`);
+  }
+  return { branch, sha };
+};
+test('each refusal names its route, and following the push route keeps both sides\' work and pushes', () => {
+  for (const [mode, target] of [['never', 'feat'], ['protected', 'main']]) {
+    const r = pushedRepo(withMode(mode)), { git } = r, remote = path.join(path.dirname(r.w), 'remote.git'), peer = path.join(path.dirname(r.w), 'peer');
+    execSync(`git clone -q -b ${target} ${remote} ${peer} && cd ${peer} && echo theirs > peer.txt && git add peer.txt && git -c user.email=p@p -c user.name=p -c core.hooksPath=/dev/null commit -qm peer && git push -q origin ${target}`);
+    git('checkout', '-q', target);
+    fs.writeFileSync(path.join(r.w, 'work.txt'), 'mine\n');
+    git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'rewritten with my work');
+    git('checkout', '-q', target === 'main' ? 'feat' : 'main');
+    const f = git('push', '-q', '--force', 'origin', target);
+    assert.notEqual(f.status, 0, `${mode}: the rewrite is refused`);
+    const { sha } = followPushRoute(r, f.stderr);
+    const again = git('push', '-q', 'origin', target);
+    assert.equal(again.status, 0, `${mode}: ${again.stderr}`);
+    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode}: my work reached the remote`);
+    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode}: what was already pushed is kept`);
+    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode}: no pushed commit was rewritten`);
+  }
   const r = pushedRepo(withMode('never')), { git } = r;
-  fs.writeFileSync(path.join(r.w, 'work.txt'), 'my change\n');
-  git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'b3');
-  const f = git('push', '-q', '--force', 'origin', 'feat');
-  assert.notEqual(f.status, 0);
-  const route = f.stderr.match(/To keep your local work: git reset --soft ([0-9a-f]{40}) \(your changes stay staged\), commit them, then push again/);
-  assert.ok(route, f.stderr);
-  assert.equal(git('reset', '--soft', route[1]).status, 0);
-  assert.equal(git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'b3 as a new commit', '--allow-empty').status, 0);
-  const again = git('push', '-q', 'origin', 'feat');
-  assert.equal(again.status, 0, again.stderr);
-  assert.equal(git('show', 'origin/feat:work.txt').stdout, 'my change\n', 'the work reached the remote');
-  assert.equal(git('merge-base', '--is-ancestor', route[1], 'origin/feat').status, 0, 'no pushed commit was rewritten');
   assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves or is deleted\. Cut a new tag instead/);
   git('checkout', '-q', 'main');
   assert.match(git('rebase', '-q', '-f', 'HEAD~1').stderr, /rebasing protected branch main is blocked: its history is never rewritten\. To update it, git pull --ff-only; to change it, open a pull request/);
