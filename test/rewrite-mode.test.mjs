@@ -85,20 +85,21 @@ test('each refusal names its route, and following the push route keeps both side
     assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode}: no pushed commit was rewritten`);
   }
   // PR #68 verdict 2: a push from something that is not a branch (a commit id, HEAD~1:feat) gets a route whose last step
-  // pushes the merge it made.
-  for (const mode of ['never', 'protected']) {
+  // pushes the merge it made. Verdict 3: a branch that shares its name with a tag still pushes (the route pushes HEAD).
+  for (const [mode, source] of [['never', 'HEAD~1'], ['protected', 'HEAD~1'], ['never', 'refs/heads/same'], ['protected', 'refs/heads/same']]) {
     const r = pushedRepo(withMode(mode)), { git } = r, remote = path.join(path.dirname(r.w), 'remote.git'), peer = path.join(path.dirname(r.w), 'peer');
     const target = mode === 'never' ? 'feat' : 'main';
     execSync(`git clone -q -b ${target} ${remote} ${peer} && cd ${peer} && echo theirs > peer.txt && git add peer.txt && git -c user.email=p@p -c user.name=p -c core.hooksPath=/dev/null commit -qm peer && git push -q origin ${target}`);
     git('checkout', '-q', target); fs.writeFileSync(path.join(r.w, 'work.txt'), 'mine\n');
     git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'rewritten with my work');
     git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'later, not to push', '--allow-empty');
-    const f = git('push', '-q', '--force', 'origin', `HEAD~1:refs/heads/${target}`);
-    assert.notEqual(f.status, 0, `${mode} HEAD~1: the rewrite is refused`);
+    if (source !== 'HEAD~1') { git('branch', '-q', 'same', 'HEAD~1'); git('tag', 'same', 'HEAD~1'); git('checkout', '-q', 'feat' === target ? 'main' : 'feat'); }
+    const f = git('push', '-q', '--force', 'origin', `${source}:refs/heads/${target}`);
+    assert.notEqual(f.status, 0, `${mode} ${source}: the rewrite is refused`);
     const { sha } = followPushRoute(r, f.stderr);
-    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode} HEAD~1: my work reached the remote`);
-    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode} HEAD~1: what was already pushed is kept`);
-    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode} HEAD~1: no pushed commit was rewritten`);
+    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode} ${source}: my work reached the remote`);
+    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode} ${source}: what was already pushed is kept`);
+    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode} ${source}: no pushed commit was rewritten`);
   }
   const r = pushedRepo(withMode('never')), { git } = r;
   assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves or is deleted\. Cut a new tag instead/);
