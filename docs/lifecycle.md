@@ -51,13 +51,21 @@ A repo may lower any merge gate, in any PR, including the PR that changes it. en
 never silent:
 
 - For a repo set up from 0.18.2 on, the template's `ship.high_risk.paths` include `eng.config.yml` and
-  `.eng/checks/**`, so any change to gate settings is risk:high and needs the repo owner. Older configs keep their own
+  `.eng/checks/**`, so a change to gate settings is risk:high and needs the repo owner. Older configs keep their own
   paths until the owner adds these two; `eng doctor` lists them as missing.
+- A change to the `ship.high_risk` block itself (its paths, verifiers or label) is risk:high in every repo, whatever
+  the new block says, so a PR cannot take itself out of risk:high. `lib/risk.mjs` compares the block at the base and
+  the head only to see the change; it applies the head's levels. `eng verdict check` prints a line saying so, and the
+  risk label and self-merge use the same classifier.
 - `eng doctor` prints "Gates below the standard default". Each line names the setting, the repo's value, the standard
   default (what `templates/eng.config.yml` sets, else the code's fallback) and the config line that restores it. It is
   information only and never changes doctor's exit code. A supported lowering, such as a disk rule or `ephemeral_runs`
   at `mode: off` or `hygiene.tmp_lint: false`, is a row here, not a doctor failure; an invalid value still fails. The
   settings it compares are one table in `lib/gate-levels.mjs`; the 0.18.2 CHANGELOG entry lists them.
+- Below that, "Other gate settings changed from the standard (direction not judged)" lists every other setting the
+  repo sets in a gate block (`gates`, `renovation.gates`, `verification`, `ship`, `merge`, `hygiene`, `laws`, `flags`,
+  `db`, `e2e`, `constraints`) to something other than the standard for its profile, with both values. It does not say
+  whether the change lowers anything, and it never changes doctor's exit code either.
 - Gates use the PR's own config. `eng lint` reads the checkout's `eng.config.yml`, and `eng merge gate` reads the PR
   head's, so a lowering applies in the PR that makes it. Only `merge.auto.check`, the required check's name, comes from
   the trusted checkout.

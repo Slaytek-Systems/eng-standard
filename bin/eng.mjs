@@ -24,12 +24,12 @@ import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profil
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
-import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { classifyRisk, versionOnly, highRiskBlock, touchesConfig, CONFIG } from '../lib/risk.mjs';
 import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
-import { belowDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
+import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -749,16 +749,16 @@ function verdictCheck() {
   if (risk.risk === 'high') {
     if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
     console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
+    if (risk.hits.some(h => h.file === 'ship.high_risk')) console.log('  ship.high_risk changed in this change (paths, verifiers or label): risk:high whatever the new block says, so the owner sees it');
     if (counted.length < need) die(`verdict: risk:high needs ${need} distinct verifiers on ${H.slice(0, 8)}; have ${counted.length} (${counted.map(x => x.by).join(', ')})`);
     return console.log(`eng verdict: PASS (risk:high, ${counted.length} of ${need} verifiers: ${counted.map(x => `${x.result} ${methodOf(x)} by ${x.by}`).join(', ')} on ${H.slice(0, 8)})`);
   }
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 // The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
-// No ship.high_risk block: low, as before 0.18.1.
+// No ship.high_risk block: low, as before 0.18.1, unless this change removed it.
 function riskOf(cfg, mb) {
   const hr = cfg.ship?.high_risk;
-  if (!hr) return { risk: 'low', hits: [] };
   const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
   for (let i = 0; i < z.length && z[i];) {
     const k = z[i][0];
@@ -766,8 +766,10 @@ function riskOf(cfg, mb) {
     else { files.push({ filename: z[i + 1], status: status[k] || 'modified' }); i += 2; }
   }
   const show = (ref, f) => { const r = spawnSync('git', ['show', `${ref}:${f}`], { cwd: ROOT, encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
-  const bump = new Set((hr.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
-  return classifyRisk(files, hr, bump);
+  const block = touchesConfig(files) ? { base: highRiskBlock(show(mb, CONFIG)), head: highRiskBlock(show('HEAD', CONFIG)) } : undefined;
+  if (!hr && !block) return { risk: 'low', hits: [] };
+  const bump = new Set((hr?.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
+  return classifyRisk(files, hr, bump, block);
 }
 
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
@@ -970,7 +972,8 @@ async function doctor() {
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
   for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
   hits = hits.filter(h => !h.warn);
-  for (const l of belowDefaultLines(belowDefault(cfg, YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'))))) console.log(l);
+  const tpl = YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
+  for (const l of belowDefaultLines(belowDefault(cfg, tpl), changedFromDefault(cfg, tpl))) console.log(l);
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (merges.some(c => !c.ok)) mergeSettings(cfg);
   if (bad) die(`doctor: ${bad} problem(s) above`);
