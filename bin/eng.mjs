@@ -21,14 +21,15 @@ import { formalErrors } from '../lib/formal.mjs';
 import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profile.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
-import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { classifyRisk, versionOnly, highRiskBlock, touchesConfig, CONFIG } from '../lib/risk.mjs';
 import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
+import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -365,10 +366,9 @@ function lintHits(cfg) {
   return builtinRules(cfg).flatMap(r => lintFiles(r, own, ROOT));
 }
 function lint() {
-  // --config-from <ref>: take the rules from that ref's eng.config.yml (CI uses main's copy, so a PR cannot delete its own rule).
-  const i = process.argv.indexOf('--config-from'), ref = i > 0 ? process.argv[i + 1] : null;
-  const cfg = ref ? YAML.parse(sh(`git show ${ref}:eng.config.yml`)) : loadConfig();
-  if (ref) console.log(`  rules from ${ref}:eng.config.yml`);
+  // Lint gates on this checkout's own config, so a PR's own gate level applies in that PR (Matt, 10 Nov 2026).
+  if (process.argv.includes('--config-from')) console.log('  --config-from is ignored since 0.18.2: lint uses this checkout\'s eng.config.yml');
+  const cfg = loadConfig();
   let hits = lintHits(cfg);
   // A repo that adopted the standard while shipping (eng init): findings in renovation/baselines/ pass; only new ones fail. warn mode reports only.
   const bl = readOr(baselinePath('lint'));
@@ -382,7 +382,7 @@ function lint() {
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
-  if (hits.length && cfg.renovation?.gates?.mode === 'warn')  // mode from the config the rules came from: a branch cannot switch the base to warn
+  if (hits.length && cfg.renovation?.gates?.mode === 'warn')
     return console.log(`  ${hits.map(hitText).join('\n  ')}\neng lint: WARN (renovation.gates.mode warn; ${hits.length} new finding(s) would fail in enforce mode)`);
   if (hits.length) die(`lint:\n  ${hits.map(hitText).join('\n  ')}`);
   console.log(`eng lint: PASS (${builtinRules(cfg).length} rules${bl ? ', new findings only' : ''}${warned.length ? `; ${warned.length} warning(s) above` : ''})`);
@@ -749,16 +749,16 @@ function verdictCheck() {
   if (risk.risk === 'high') {
     if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
     console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
+    if (risk.hits.some(h => h.file === 'ship.high_risk')) console.log('  ship.high_risk changed in this change (paths, verifiers or label): risk:high whatever the new block says, so the owner sees it');
     if (counted.length < need) die(`verdict: risk:high needs ${need} distinct verifiers on ${H.slice(0, 8)}; have ${counted.length} (${counted.map(x => x.by).join(', ')})`);
     return console.log(`eng verdict: PASS (risk:high, ${counted.length} of ${need} verifiers: ${counted.map(x => `${x.result} ${methodOf(x)} by ${x.by}`).join(', ')} on ${H.slice(0, 8)})`);
   }
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 // The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
-// No ship.high_risk block: low, as before 0.18.1.
+// No ship.high_risk block: low, as before 0.18.1, unless this change removed it.
 function riskOf(cfg, mb) {
   const hr = cfg.ship?.high_risk;
-  if (!hr) return { risk: 'low', hits: [] };
   const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
   for (let i = 0; i < z.length && z[i];) {
     const k = z[i][0];
@@ -766,8 +766,10 @@ function riskOf(cfg, mb) {
     else { files.push({ filename: z[i + 1], status: status[k] || 'modified' }); i += 2; }
   }
   const show = (ref, f) => { const r = spawnSync('git', ['show', `${ref}:${f}`], { cwd: ROOT, encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
-  const bump = new Set((hr.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
-  return classifyRisk(files, hr, bump);
+  const block = touchesConfig(files) ? { base: highRiskBlock(show(mb, CONFIG)), head: highRiskBlock(show('HEAD', CONFIG)) } : undefined;
+  if (!hr && !block) return { risk: 'low', hits: [] };
+  const bump = new Set((hr?.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
+  return classifyRisk(files, hr, bump, block);
 }
 
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
@@ -957,7 +959,7 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = repoFiles().filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
@@ -965,11 +967,13 @@ async function doctor() {
   if (v) console.log(visibilityLine(v));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
-  let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
+  let hits = lintHits({ ...cfg, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
   for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
   hits = hits.filter(h => !h.warn);
+  const tpl = YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
+  for (const l of belowDefaultLines(belowDefault(cfg, tpl), changedFromDefault(cfg, tpl))) console.log(l);
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (merges.some(c => !c.ok)) mergeSettings(cfg);
   if (bad) die(`doctor: ${bad} problem(s) above`);
@@ -981,13 +985,13 @@ const [cmd, ...a] = process.argv.slice(2);
 const COMMANDS = [
   ['init', 'init [--owner <@handle>]', 'set up this repo: an empty repo gets the starter config; a repo that already ships also gets baselines, so only new findings fail', init],
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
-  ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
+  ['lint', 'lint', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],
-  ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
+  ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
 function runCmd() {

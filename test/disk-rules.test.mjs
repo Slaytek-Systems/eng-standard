@@ -107,11 +107,11 @@ test('eng lint: cargo-target-per-run flags a Cargo target built inside a run dir
   fs.rmSync(path.join(dir, 'scripts'), { recursive: true }); setCfg(c => { delete c.hygiene.disk_rules; });
 });
 
-test('eng doctor fails a rule turned off; the retired evidence and downloads gates are config errors that name the replacement', () => {
+test('eng doctor lists a rule turned off as below the standard, and passes; the retired evidence and downloads gates are config errors that name the replacement', () => {
   rules({ evidence_budget: { mode: 'off' } });
   let r = eng('doctor');
-  assert.match(r.stdout, /FAIL hygiene\.disk_rules\.evidence_budget is on \(Evidence folders have a size budget\)/);
-  assert.match(r.stdout, /ok   hygiene\.disk_rules\.tests_leave_nothing is on/);
+  assert.match(r.stdout, /hygiene\.disk_rules\.evidence_budget\.mode: off \(standard: fail\)\. Restore: hygiene\.disk_rules\.evidence_budget\.mode: fail/);
+  assert.doesNotMatch(r.stdout, /FAIL hygiene\.disk_rules/, 'a supported lowering is not a doctor failure');
   setCfg(c => { delete c.hygiene.disk_rules; c.gates.required = ['evidence', 'downloads']; c.project.commands.test = 'true'; });
   r = eng('gate');
   assert.equal(r.status, 1, r.stdout + r.stderr);

@@ -44,6 +44,6 @@ jobs:
         with:
           node-version: 20
       - run: npm ci --ignore-scripts
-      - run: node bin/eng.mjs merge gate --post-status --config-from origin/main
+      - run: node bin/eng.mjs merge gate --post-status
         env:
           GH_TOKEN: ${{ github.token }}

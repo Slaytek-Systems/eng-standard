@@ -68,14 +68,15 @@ test('evidence is per PR', () => {
   assert.equal(evidenceKey({ GITHUB_REF: 'refs/heads/main', ENG_BRANCH: 'main' }), 'branch-main', 'a push ref is not a PR');
 });
 
-test('doctor config: every skipped piece fails; the template declares them all', () => {
+test('doctor config: every skipped required piece fails; the template declares them all', () => {
   const tpl = YAML.parse(fs.readFileSync(TPL, 'utf8'));
   const files = ['Cargo.toml', 'bun.lock', 'deno.json', 'web/vite.config.ts', 'Dockerfile'];
   const read = f => f === 'web/vite.config.ts' ? 'export default { cacheDir: process.env.ENG_VITE_CACHE_DIR ?? "node_modules/.vite" }' : '';
   assert.deepEqual(doctorConfig(tpl, files, read).filter(c => !c.ok), []);
   const bare = { project: { name: 'x' }, hygiene: { scratch_root: '/tmp/eng', disk_lint: false } };
   const bad = doctorConfig(bare, files, () => '').filter(c => !c.ok).map(c => c.what);
-  for (const m of [/scratch_root/, /disk_lint/, /evidence is per_pr/, /caches.cargo_target/, /caches.bun/, /caches.vite/, /caches.deno/, /vite.config.ts uses the shared Vite cache/, /containers.label/]) assert.ok(bad.some(b => m.test(b)), `fails: ${m}`);
+  assert.ok(!bad.some(b => /disk_lint/.test(b)), 'disk_lint: false is a listed lowering, not a doctor failure');
+  for (const m of [/scratch_root/, /evidence is per_pr/, /caches.cargo_target/, /caches.bun/, /caches.vite/, /caches.deno/, /vite.config.ts uses the shared Vite cache/, /containers.label/]) assert.ok(bad.some(b => m.test(b)), `fails: ${m}`);
   assert.ok(doctorConfig(tpl, ['scripts/db.sh'], () => 'docker run -d postgres').some(c => /containers.label/.test(c.what)), 'a docker run in a script needs the container policy');
   const viteRead = pkgs => f => pkgs.includes(f) ? '{"devDependencies":{"vite":"^7.3.1"}}' : /vite\.config/.test(f) ? 'export default { cacheDir: process.env.ENG_VITE_CACHE_DIR }' : '';
   const failsFor = (fs_, pkgs) => doctorConfig(tpl, fs_, viteRead(pkgs)).filter(c => !c.ok).map(c => c.what);
@@ -86,7 +87,7 @@ test('doctor config: every skipped piece fails; the template declares them all',
   assert.equal(HYGIENE_DEFAULTS.scratch_root.includes('/tmp'), false);
   const rel = doctorConfig({ ...tpl, hygiene: { ...tpl.hygiene, scratch_root: '.eng/scratch', caches: { ...tpl.hygiene.caches, vite: 'node_modules/.vite' } } }, files, read).filter(c => !c.ok).map(c => c.what);
   assert.ok(rel.some(w => /scratch_root/.test(w)) && rel.some(w => /caches.vite/.test(w)), 'relative paths are a new cache per round or worktree, so doctor fails them');
-  assert.ok(doctorConfig({ ...tpl, hygiene: { ...tpl.hygiene, tmp_lint: false } }, files, read).some(c => !c.ok && /tmp_lint/.test(c.what)), 'doctor fails tmp_lint: false');
+  assert.deepEqual(doctorConfig({ ...tpl, hygiene: { ...tpl.hygiene, tmp_lint: false, disk_rules: { tests_leave_nothing: { mode: 'off' } } } }, files, read).filter(c => !c.ok), [], 'tmp_lint: false and a disk rule off are listed lowerings, not doctor failures');
   for (const p of ['/tmp/${repo}/scratch', '/var/tmp/eng/${repo}', '${TMPDIR}/eng', '$TMP/x']) {
     const bad = doctorConfig({ ...tpl, hygiene: { ...tpl.hygiene, scratch_root: p, caches: { ...tpl.hygiene.caches, cargo_target: p } } }, files, read).filter(c => !c.ok).map(c => c.what);
     assert.ok(bad.some(w => /scratch_root/.test(w)) && bad.some(w => /caches.cargo_target/.test(w)), `doctor fails a temp path with variables: ${p}`);
@@ -210,6 +211,7 @@ test('eng doctor and eng rules prove on a repo with the Warden cases', () => {
   r = eng('doctor'); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL hygiene.containers.label/);
   c.hygiene.containers = { label: 'eng.repo' }; c.hygiene.tmp_lint = false; fs.writeFileSync(p, YAML.stringify(c));
   fs.mkdirSync(path.join(dir, 'test')); fs.writeFileSync(path.join(dir, 'test/a.test.mjs'), "fs.writeFileSync('/tmp/x', '')\n");
-  r = eng('doctor'); assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, /FAIL hygiene.tmp_lint is on/); assert.match(r.stdout, /test\/a\.test\.mjs:1: \[test-bare-tmpdir\]/, 'doctor scans tests even when tmp_lint is off');
+  r = eng('doctor'); assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /hygiene\.tmp_lint: false \(standard: true\)\. Restore: hygiene\.tmp_lint: true/, 'tmp_lint off is a listed lowering, not a failure');
+  assert.doesNotMatch(r.stdout, /test-bare-tmpdir/, 'doctor follows the repo\'s own lint switch');
 });

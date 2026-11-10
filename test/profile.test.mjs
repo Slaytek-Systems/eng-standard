@@ -1,12 +1,14 @@
 // profile: generic by default (no person, company, private tool or note in what eng renders); `profile: slaytek`
-// renders exactly what v0.17.2 rendered. test/fixtures/profile/v0.17.2.json holds the v0.17.2 output hashes, made with
-// scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml.
+// renders what v0.17.2 rendered, apart from one reviewed line (LINT_LINE). test/fixtures/profile/v0.17.2.json holds the
+// v0.17.2 output hashes, made with scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml;
+// v0.18.2.json holds this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import YAML from 'yaml';
 import { findLeftovers, runRules } from '../lib/ephemeral.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -69,16 +71,28 @@ test('outcome 2: STACK.md frames picks as recommendations the owner adopts; DRAF
   assert.doesNotMatch(stack, /draft decision for Matt/);
 });
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.17.2 did', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+// The one line 0.18.2 changed on purpose (Matt, 10 Nov 2026): the pipeline's lint step reads the PR's own config.
+const LINT_LINE = { file: '.eng/ci/pipeline.yml', old: '    command: "npx eng lint --config-from origin/main"', new: '    command: "npx eng lint"' };
+const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.18.2.json, which differs from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+  assert.deepEqual(Object.keys(want), Object.keys(old));
   const fixtures = Object.keys(want).map(f => path.join(FIX, f));
   assert.ok(fixtures.length >= 3 && fixtures.every(f => fs.existsSync(f)), 'every fixture in the hash file exists');
   const r = spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), '--append', 'profile: slaytek', ...fixtures], { encoding: 'utf8', env: env() });
   assert.equal(r.status, 0, r.stderr);
-  const got = JSON.parse(r.stdout);
+  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.18.2 output');
   for (const [name, w] of Object.entries(want)) {
-    const g = got[name], paths = [...new Set([...Object.keys(w), ...Object.keys(g)])];
-    assert.deepEqual(paths.filter(p => JSON.stringify(w[p]) !== JSON.stringify(g[p])), [], `${name}: files that differ from v0.17.2`);
+    const o = old[name], changed = [...new Set([...Object.keys(w), ...Object.keys(o)])].filter(p => JSON.stringify(w[p]) !== JSON.stringify(o[p]));
+    if (!changed.length) continue;
+    assert.deepEqual(changed, [LINT_LINE.file], `${name}: the only file that differs from v0.17.2`);
+    const dir = repo(`lint-line-${name}`);
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), `${fs.readFileSync(path.join(FIX, name), 'utf8')}\nprofile: slaytek\n`);
+    assert.equal(eng(dir, 'sync').status, 0);
+    const lines = fs.readFileSync(path.join(dir, LINT_LINE.file), 'utf8').split('\n');
+    assert.equal(lines.filter(l => l === LINT_LINE.new).length, 1, `${name}: the pipeline has the new lint line once`);
+    assert.equal(sha(lines.map(l => l === LINT_LINE.new ? LINT_LINE.old : l).join('\n')), o[LINT_LINE.file], `${name}: putting the old lint line back gives the v0.17.2 bytes exactly`);
   }
   assert.ok(Object.values(want).some(w => Object.keys(w).length > 100), 'at least one fixture renders the full set');
   const tpl = path.join(FIX, 'template-v0.17.2.yml'), plain = JSON.parse(spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), tpl], { encoding: 'utf8', env: env() }).stdout);

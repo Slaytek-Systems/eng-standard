@@ -290,7 +290,7 @@ test('rule 6 (pure): only the bot\'s single-commit exact inverse of the red tip 
 
 // scripts/pr-gate.mjs merge against a fake gh: routes are "METHOD path" -> JSON, every call is logged.
 // A route value { seq: [a, b, ...] } answers its nth call with the nth item (the last one repeats).
-function gate(routes, event = null) {
+function gate(routes, event = null, args = ['merge']) {
   const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-prgate-'));
   fs.writeFileSync(path.join(d, 'routes.json'), JSON.stringify(routes));
   fs.writeFileSync(path.join(d, 'gh'), `#!/usr/bin/env node
@@ -305,7 +305,7 @@ process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
 `, { mode: 0o755 });
   if (event) fs.writeFileSync(path.join(d, 'event.json'), JSON.stringify(event.payload));
   const ev = event ? { GITHUB_EVENT_NAME: event.name, GITHUB_EVENT_PATH: path.join(d, 'event.json') } : { GITHUB_EVENT_NAME: '', GITHUB_EVENT_PATH: '' };
-  const r = spawnSync(process.execPath, [path.resolve(new URL('../scripts/pr-gate.mjs', import.meta.url).pathname), 'merge'], { encoding: 'utf8', env: { ...process.env, PATH: `${d}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', PR: '', ...ev } });
+  const r = spawnSync(process.execPath, [path.resolve(new URL('../scripts/pr-gate.mjs', import.meta.url).pathname), ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${d}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', PR: '', ...ev } });
   const calls = fs.existsSync(path.join(d, 'calls')) ? fs.readFileSync(path.join(d, 'calls'), 'utf8').trim().split('\n').map(JSON.parse) : [];
   fs.rmSync(d, { recursive: true, force: true });
   return { ...r, calls, sent: calls.filter(c => c[0] !== 'GET') };
@@ -313,6 +313,23 @@ process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
 const TIP = 'c'.repeat(40), PARENT = 'd'.repeat(40), HEAD = 'e'.repeat(40), R = 'repos/o/r';
 const run = (sha, conclusion) => ({ check_runs: [{ head_sha: sha, status: 'completed', conclusion, completed_at: '2026-10-19T05:00:00Z', started_at: '2026-10-19T04:55:00Z', app: { slug: 'github-actions' } }] });
 const runs = (sha, c) => ({ [`GET ${R}/commits/${sha}/check-runs?check_name=test&filter=latest&per_page=100`]: run(sha, c) });
+
+test('the risk label: a PR that changes the ship.high_risk block is risk:high and names the block; an unchanged block adds nothing', () => {
+  const base = YAML.parse(fs.readFileSync(ROOTCFG, 'utf8')), head = structuredClone(base);
+  head.ship.high_risk.paths = head.ship.high_risk.paths.filter(p => p !== 'eng.config.yml');
+  const label = h => gate({
+    [`GET ${R}/pulls/4`]: { number: 4, labels: [], changed_files: 1, commits: 1, base: { sha: PARENT }, head: { sha: HEAD } },
+    [`GET ${R}/pulls/4/files?per_page=100`]: [{ filename: 'eng.config.yml', status: 'modified' }],
+    [`GET ${R}/contents/eng.config.yml?ref=${PARENT}`]: base, [`GET ${R}/contents/eng.config.yml?ref=${HEAD}`]: h,
+  }, null, ['label', '4', '--dry-run']);
+  let r = label(head);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^#4 eeeeeeee: risk:high$/m);
+  assert.match(r.stdout, /^ {2}ship\.high_risk {2}\(the high-risk rule itself changed\)$/m);
+  r = label(base);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /ship\.high_risk/);
+});
 
 test('rule 6: a red post-merge check on main opens the tip\'s exact inverse from the bot and merges nothing else', () => {
   const r = gate({

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { classifyRisk, versionOnly, highRiskBlock, touchesConfig, CONFIG } from '../lib/risk.mjs';
 import { selfMergeConfig, decide, eventTarget, parseVerdicts, isAutoRevert, REVERT_MARK } from '../lib/self-merge.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +41,8 @@ function riskFor(pr) {
   if (files.length !== want) return { risk: 'high', hits: [{ file: `(${files.length} of ${want ?? '?'} changed files listed)`, pattern: 'incomplete file list' }], files: null };
   const bump = new Set((HR.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified'))
     .filter(f => versionOnly(f, raw(f, pr.base.sha), raw(f, pr.head.sha))));
-  return { ...classifyRisk(files, HR, bump), files: files.length ? files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)) : null };
+  const block = touchesConfig(files) ? { base: highRiskBlock(raw(CONFIG, pr.base.sha)), head: highRiskBlock(raw(CONFIG, pr.head.sha)) } : undefined;
+  return { ...classifyRisk(files, HR, bump, block), files: files.length ? files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)) : null };
 }
 
 function label(n) {
