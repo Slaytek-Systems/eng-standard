@@ -4,9 +4,9 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## 0.20.1 (10 Nov 2026)
 
-**eng run runs the exact command it was given.** On a machine where eng's budget uses a systemd user scope, some systemd versions expand `${VAR}` in `systemd-run`'s command arguments. In CI on 10 Nov 2026, `eng run -- sh -c 'exit ${E-3}'` ran as `exit` and was recorded as exit 0, so recorded verification evidence could describe a different command from the one given. Nothing else in eng's output showed it.
+**eng run runs the exact command it was given.** On a machine where eng's budget uses a systemd user scope, some systemd versions expand `${VAR}` in `systemd-run`'s command arguments. In CI on 10 Nov 2026, `eng run -- sh -c 'exit ${E-3}'` ran as `exit` and was recorded as exit 0, so recorded verification evidence could describe a different command from the one given. systemd printed a warning (`Invalid environment variable name evaluates to an empty string: E-3`), but eng still recorded exit 0.
 
-- `systemd-run` now gets `--expand-environment=no` when it accepts the flag (systemd 254 and later; probed once per `PATH`). An older `systemd-run` without the flag also has no such expansion.
+- `systemd-run` now gets `--expand-environment=no` when it accepts the flag (probed once per `PATH`). Expansion arrived in systemd 254 and is on by default for scopes from 258 ([NEWS](https://github.com/systemd/systemd/blob/v258/NEWS)); an older `systemd-run` without the flag has no such expansion. The flag keeps `${VAR}`, `$VAR` and `$$` as written.
 - `test/run-no-expand.test.mjs` reproduces the expansion with a stand-in `systemd-run` on `PATH`, so the bug shows on any machine, not only where systemd expands.
 - **Upgrade:** zero manual edits.
 
