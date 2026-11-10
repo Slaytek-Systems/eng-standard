@@ -83,10 +83,32 @@ test('a broken link is reported as broken and sees nothing', () => {
   assert.equal(r.fixes()[0], 'add the missing entries to .claude/skills, or point .claude/skills at .agents/skills');
 });
 
-test('an unreadable SKILL.md is not visible, and a missing rendered skill says run eng sync', { skip: ROOT_USER && 'root reads every file' }, () => {
+test('an unreadable SKILL.md is not visible, and the first fix makes it readable (eng sync would fail on it)', { skip: ROOT_USER && 'root reads every file' }, () => {
   const r = fixture(); fs.chmodSync(r.f('.agents/skills/alpha/SKILL.md'), 0o000);
   assert.deepEqual(r.seen(), { codex: '2/3', cursor: '2/3', 'claude-code': '0/4' });
-  assert.equal(r.fixes()[0], 'run eng sync');
+  assert.equal(r.fixes()[0], "make eng's files readable: chmod u+r .agents/skills/alpha/SKILL.md");
+});
+
+// PR #71 review: with a custom skills_dir and one rendered skill gone, the links alone left every tool one short. The
+// source is repaired first (eng sync), and following the whole printed fix makes every tool see everything.
+test('a skill missing from a custom skills_dir: eng sync comes first, and the whole fix makes every tool see all', () => {
+  const r = fixture('tools/skills');
+  fs.rmSync(r.f('tools/skills/beta'), { recursive: true });
+  const fixes = r.fixes();
+  assert.equal(fixes[0], 'run eng sync');
+  for (const n of ['beta']) { fs.mkdirSync(r.f(`tools/skills/${n}`), { recursive: true }); fs.writeFileSync(r.f(`tools/skills/${n}/SKILL.md`), `# ${n}\n`); }
+  for (const cmd of fixes.slice(1)) assert.equal(spawnSync('sh', ['-c', cmd], { cwd: r.dir }).status, 0, cmd);
+  assert.deepEqual(r.seen(), { codex: '3/3', cursor: '3/3', 'claude-code': '4/4' });
+  assert.deepEqual(r.fixes(), []);
+});
+
+test('a .claude or .agents that is a file or a broken link is named, never given a link command that would fail', () => {
+  const r = fixture(); fs.writeFileSync(r.f('.claude'), 'not a folder\n');
+  assert.deepEqual(r.fixes(), ['.claude is a file, so no link can go inside it: move it aside or repair it, then run eng doctor again']);
+  const b = fixture(); fs.symlinkSync('missing-target', b.f('.claude'));
+  assert.match(b.fixes()[0], /^\.claude is a broken link, so no link can go inside it/);
+  const c = fixture('tools/skills'); fs.writeFileSync(c.f('.agents'), 'not a folder\n');
+  assert.ok(c.fixes().includes('.agents is a file, so no link can go inside it: move it aside or repair it, then run eng doctor again'), c.fixes().join(' | '));
 });
 
 test('the report marks a tool outside agents.harnesses info, not WARN, and always says what is not checked', () => {
