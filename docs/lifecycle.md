@@ -55,10 +55,12 @@ never silent:
   paths until the owner adds these two; `eng doctor` lists them as missing.
 - `eng doctor` prints "Gates below the standard default". Each line names the setting, the repo's value, the standard
   default (what `templates/eng.config.yml` sets, else the code's fallback) and the config line that restores it. It is
-  information only and never changes doctor's exit code. The settings it compares: `renovation.gates.mode`,
-  `gates.required`, `ship.high_risk.verifiers`, `ship.high_risk.paths`, `merge.auto.high_risk_verifiers`,
-  `verification.flake_runs`, and the modes of `hygiene.disk_rules` (`tests_leave_nothing`, `no_cache_in_evidence`,
-  `evidence_budget`) and `hygiene.run_rules.ephemeral_runs`.
+  information only and never changes doctor's exit code. A supported lowering, such as a disk rule or `ephemeral_runs`
+  at `mode: off` or `hygiene.tmp_lint: false`, is a row here, not a doctor failure; an invalid value still fails. The
+  settings it compares are one table in `lib/gate-levels.mjs`; the 0.18.2 CHANGELOG entry lists them.
+- Gates use the PR's own config. `eng lint` reads the checkout's `eng.config.yml`, and `eng merge gate` reads the PR
+  head's, so a lowering applies in the PR that makes it. Only `merge.auto.check`, the required check's name, comes from
+  the trusted checkout.
 
 ## Upgrade
 
