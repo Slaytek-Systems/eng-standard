@@ -139,6 +139,25 @@ test('whatever the network does, the command runs as it would have and waits at 
   } finally { held.forEach(s => s.destroy()); for (const srv of [silent, cut, good]) srv.close(); }
 });
 
+// A native DNS stall (PR #69 review 4): a JS-level stall cannot show it, because process.exit waits for a native
+// getaddrinfo to return. Built with the system C compiler; the cases that need it skip where there is none.
+const NATIVE_STALL = (() => {
+  if (process.platform !== 'linux' || spawnSync('cc', ['--version']).status !== 0) return null;
+  const d = tmp('eng-shim-'), c = path.join(d, 'stall.c'), so = path.join(d, 'stall.so');
+  fs.writeFileSync(c, `#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <netdb.h>
+#include <string.h>
+#include <unistd.h>
+int getaddrinfo(const char *n, const char *s, const struct addrinfo *h, struct addrinfo **r) {
+  if (n && strcmp(n, "stall.invalid") == 0) { sleep(8); return EAI_AGAIN; }
+  int (*next)(const char *, const char *, const struct addrinfo *, struct addrinfo **) = dlsym(RTLD_NEXT, "getaddrinfo");
+  return next(n, s, h, r);
+}
+`);
+  return spawnSync('cc', ['-shared', '-fPIC', '-o', so, c, '-ldl']).status === 0 ? so : null;
+})();
+
 // PR #69 verdict 3: the read's child ends itself at the deadline, so killing eng while the child waits on the network
 // (a runner cancelling the job) leaves no process behind. Children are found by their unique source URL in /proc.
 const childrenFor = src => fs.readdirSync('/proc').filter(p => /^\d+$/.test(p)).filter(p => {
@@ -150,7 +169,8 @@ test('killing eng while the version read waits leaves no child process past the 
   try {
     for (const [name, src, extra, ready] of [
       ['silent server', `http://127.0.0.1:${silent.address().port}/`, {}, () => new Promise(ok => silent.once('accepted', ok))],
-      ['dns stall', `http://stall.invalid:${silent.address().port + 1}/`, { NODE_OPTIONS: `--import=${STALL}` }, () => new Promise(ok => setTimeout(ok, 700))],
+      ['dns stall (js)', 'http://stall.invalid/js/', { NODE_OPTIONS: `--import=${STALL}` }, () => new Promise(ok => setTimeout(ok, 700))],
+      ...(NATIVE_STALL ? [['dns stall (native getaddrinfo)', 'http://stall.invalid/native/', { LD_PRELOAD: NATIVE_STALL }, () => new Promise(ok => setTimeout(ok, 700))]] : []),
     ]) for (const signal of ['SIGTERM', 'SIGKILL']) {
       const dir = tmp('eng-nudge-'), xdg = tmp('eng-xdg-');
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
