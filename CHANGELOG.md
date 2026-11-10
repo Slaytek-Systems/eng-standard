@@ -2,6 +2,19 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.19.1 (10 Nov 2026)
+
+**Blocks name the allowed route.** The AGENTS.md block (0.19.0) tells agents to take the route a blocking message names. These messages named none, or the wrong one:
+
+- **`eng sync --check`** said "edit eng.config.yml, then run eng sync" for every drift, even when only `eng sync` was needed (a new check). It now says to run `eng sync` and commit what it writes, and first to move any hand edit into `eng.config.yml`, or for AGENTS.md outside the eng markers, because `eng sync` overwrites it.
+- **A stale check** now says which file to fix: point the `# covers:` line in `<checks_dir>/<id>.sh` at the files the check protects now (after a rename, the new path), then run `eng gate` again.
+- **`.githooks/pre-push`, rewritten branch:** it adds how to recover without losing anyone's work: `git fetch <remote> <branch>`, `git switch <the branch you pushed>` (or `git switch --detach <the commit you pushed>` when you pushed a commit rather than a branch), `git merge <the remote tip>` (resolve any conflicts), then `git push <remote> <source>:<the remote branch>`, where the source is the full branch ref (`refs/heads/<branch>`) or, for a pushed commit, `$(git rev-parse HEAD)`, so a tag that shares the name cannot be pushed instead. A merge keeps both your rewritten work and anything others pushed to that branch; it works whichever branch is checked out and whether or not the remote tip was fetched. A test follows those steps in both rewrite modes, from a branch and from `HEAD~1`, with another person's push on the branch, and pushes.
+- **`.githooks/pre-push`, moved tag:** "Cut a new tag instead".
+- **`.githooks/pre-rebase`:** a protected branch says "To update it, git pull --ff-only; to change it, open a pull request". Pushed commits name `gh pr update-branch`.
+- Each message keeps its old opening, so anything matching it still matches.
+- **Not in this release:** git's own `git worktree remove` message (it suggests `--force`) and Claude Code's deny-list message are not eng's text. Both need agent-side hooks (Safe YOLO lite).
+- **Upgrade:** run `eng sync` to render the new hooks.
+
 ## 0.19.0 (10 Nov 2026)
 
 **eng writes almost nothing into AGENTS.md** (Matt, 10 Nov 2026: "eng writes almost nothing into AGENTS.md"). AGENTS.md is read on every agent turn, and research on context files found that extra instructions cost steps without raising success. The generated block went from about 2,800 words to 96, and it no longer grows with each check or rule.

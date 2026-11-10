@@ -276,7 +276,7 @@ test('eng gate runs every check first: a failing, flaky or stale check fails the
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /FAIL\s+check:broken eng: FAIL check broken: failed 2\/2/);
   assert.match(r.stdout, /FAIL\s+check:flaky eng: FAIL check flaky: FLAKY, passed 1\/2/);
-  assert.match(r.stdout, /FAIL\s+check:stale check stale is stale: covers missing path\(s\) lib\/gone\.mjs/);
+  assert.match(r.stdout, /FAIL\s+check:stale check stale is stale: covers missing path\(s\) lib\/gone\.mjs\. Point the "# covers:" line in \.eng\/checks\/stale\.sh at the files this check protects now \(after a rename, the new path\), then run eng gate again/);
   assert.match(r.stdout, /pass\s+verdict/);
   r = eng('gate', 'checks');
   assert.equal(r.status, 1, out(r)); assert.doesNotMatch(r.stdout, /verdict/, 'gate checks runs only the checks');

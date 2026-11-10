@@ -301,7 +301,7 @@ function syncCheck() {
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');
   const std = standardProblems();
-  if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: edit eng.config.yml, then run eng sync.' : ''}`);
+  if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: run eng sync and commit what it writes. It overwrites hand edits to generated files, so move any first: into eng.config.yml, or for AGENTS.md outside the <!-- eng:begin --> and <!-- eng:end --> markers.' : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
 
