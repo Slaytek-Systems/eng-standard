@@ -209,6 +209,24 @@ test('eng merge gate, strict (pull_request): PASS bound to the exact head; a beh
   assert.equal(r.status, 1); assert.match(r.stdout, /behind main: update the branch/);
 });
 
+test('eng merge gate reads the PR\'s own gate levels, even when the PR lowers them; the required check name stays the trusted one', () => {
+  setMode('strict');
+  git('checkout -q -B lower origin/main');
+  const p = path.join(dir, 'eng.config.yml'), c = YAML.parse(fs.readFileSync(p, 'utf8'));
+  c.merge.auto.high_risk_verifiers = 1; c.merge.auto.check = 'renamed-gate'; fs.writeFileSync(p, YAML.stringify(c));
+  fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.writeFileSync(path.join(dir, 'bin/lower.mjs'), 'x\n');
+  git('add -A'); git('commit -qm "lower verifiers" -m "Agent: builder-1"');
+  const head = git('rev-parse HEAD'), patch = pidOf(`origin/main ${head}`), evp = path.join(dir, '.gh/event-lower.json');
+  fs.writeFileSync(evp, JSON.stringify({ pull_request: { number: 7, head: { sha: head } } }));
+  put('repos/o/r/pulls/7', { number: 7, labels: [], body: '', user: { login: 'builder' }, head: { sha: head, ref: 'lower' }, base: { ref: 'main' } });
+  put('repos/o/r/pulls/7/commits?per_page=100', [[{ commit: { message: 'lower verifiers\n\nAgent: builder-1', author: { email: 't@t' } } }]]);
+  comments([V({ patch_id: patch, sha: head })]);
+  git('checkout -q --detach origin/main');
+  const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
+  assert.equal(r.status, 0, `the PR's own high_risk_verifiers: 1 applies in that PR: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /^eng-merge-gate: PASS/m, 'the status keeps the trusted checkout\'s check name');
+});
+
 test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files need two distinct verifiers', () => {
   setMode('queue');
   let pr = prWith('docs/q.md');

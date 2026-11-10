@@ -14,11 +14,12 @@ node -e "const Y=require('$repo/node_modules/yaml'),fs=require('fs'),c=Y.parse(f
 mkdir -p .eng/checks && printf '#!/bin/sh\nexit 1\n' > .eng/checks/broken.sh
 echo x > a.txt && git add -A && git commit -qm base
 git checkout -qb feat && echo y > a.txt && git commit -qam change
-$eng run --by check -- true >/dev/null && $eng verdict PASS --by check >/dev/null && $eng verdict check >/dev/null
+pass() { for v in check check-2; do $eng run --by $v -- true >/dev/null && $eng verdict PASS --by $v >/dev/null; done; }  # .eng/checks/** is risk:high: two distinct verifiers
+pass && $eng verdict check >/dev/null
 status=0; out=$($eng gate 2>&1) || status=$?  # nested gate: the fixture repo's gate is the subject under test
 [ "$status" -ne 0 ] || { echo "eng gate passed with a failing check: $out"; exit 1; }
 grep -q 'FAIL check broken: failed 1/1' <<<"$out" || { echo "eng gate did not run the check: $out"; exit 1; }
 printf '#!/bin/sh\nexit 0\n' > .eng/checks/broken.sh && git commit -qam fix
-$eng run --by check -- true >/dev/null && $eng verdict PASS --by check >/dev/null
+pass
 $eng gate >/dev/null || { echo 'eng gate failed with every check passing'; exit 1; }  # nested gate: the fixture repo's gate is the subject under test
 echo 'a failing check fails eng gate despite a passing verdict; a passing one does not'

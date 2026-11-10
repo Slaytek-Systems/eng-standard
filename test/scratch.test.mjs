@@ -210,6 +210,7 @@ test('eng doctor and eng rules prove on a repo with the Warden cases', () => {
   r = eng('doctor'); assert.equal(r.status, 1, out(r)); assert.match(r.stdout, /FAIL hygiene.containers.label/);
   c.hygiene.containers = { label: 'eng.repo' }; c.hygiene.tmp_lint = false; fs.writeFileSync(p, YAML.stringify(c));
   fs.mkdirSync(path.join(dir, 'test')); fs.writeFileSync(path.join(dir, 'test/a.test.mjs'), "fs.writeFileSync('/tmp/x', '')\n");
-  r = eng('doctor'); assert.equal(r.status, 1, out(r));
-  assert.match(r.stdout, /FAIL hygiene.tmp_lint is on/); assert.match(r.stdout, /test\/a\.test\.mjs:1: \[test-bare-tmpdir\]/, 'doctor scans tests even when tmp_lint is off');
+  r = eng('doctor'); assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /hygiene\.tmp_lint: false \(standard: true\)\. Restore: hygiene\.tmp_lint: true/, 'tmp_lint off is a listed lowering, not a failure');
+  assert.doesNotMatch(r.stdout, /test-bare-tmpdir/, 'doctor follows the repo\'s own lint switch');
 });
