@@ -83,8 +83,8 @@ test('pstack roles come from setup-pstack, and models config is checked', () => 
 test('eng sync on the starter: AGENTS.md and SHIPPING.md name no model, and every pstack role runs on the parent model', () => {
   const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
   const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), shipping = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
-  assert.match(agents, /Models: this standard names no models\. pstack role lines .* A repo that keeps a routing note .* names it in `models.routing`\./);
-  assert.match(agents, /pstack role lines are in `.eng\/pstack-models.md`/);
+  assert.match(shipping, /Models: this standard names no models\. pstack role lines .* A repo that keeps a routing note .* names it in `models.routing`\./);
+  assert.match(shipping, /pstack role lines are in `.eng\/pstack-models.md`/);
   for (const [n, t] of [['AGENTS.md', agents], ['SHIPPING.md', shipping]]) assert.doesNotMatch(t, MODEL_ID, n);
   const lines = fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n');
   for (const role of pstackRoles()) assert.ok(lines.some(l => new RegExp(`^${role}: inherit-parent(, inherit-parent)*$`).test(l)), `starter sets ${role} to inherit-parent; add the role under models.pstack in templates/eng.config.yml`);
@@ -96,12 +96,12 @@ test('eng sync on the starter: AGENTS.md and SHIPPING.md name no model, and ever
 test('the slaytek profile points at its Core routing note, and models.routing points anywhere else', () => {
   withConfig(slaytek, () => {
     const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
-    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), new RegExp(`Models: this standard names no models\\. .*'Model routing: who uses which model' \\(\`${ROUTING}\`\\)`));
+    assert.match(fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), new RegExp(`Models: this standard names no models\\. .*'Model routing: who uses which model' \\(\`${ROUTING}\`\\)`));
     assert.ok(fs.readFileSync(path.join(dir, '.eng/pstack-models.md'), 'utf8').split('\n').includes(`# Routing source: ${ROUTING}. It wins over these lines.`));
   });
   withConfig(s => s.replace('models:', 'models:\n  routing: docs/models.md'), () => {
     const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
-    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /is set in the routing note `docs\/models.md`\. Read it before/);
+    assert.match(fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), /is set in the routing note `docs\/models.md`\. Read it before/);
   });
 });
 
@@ -113,7 +113,7 @@ test('models.pstack renders as written, and removing it removes .eng/pstack-mode
   withConfig(noPstack, () => {
     const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /removed .eng\/pstack-models.md/);
-    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /add it under `models.pstack` in eng.config.yml/);
+    assert.match(fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), /add it under `models.pstack` in eng.config.yml/);
   });
 });
 

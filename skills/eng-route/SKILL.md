@@ -30,7 +30,7 @@ Rules for the message:
 - When the change adds a surface (route, screen, command, API, job) the repo's `verify-<app>` skill does not cover, the spawn must require `maintain-verification-skill` for that surface before the verdict.
 - Plain prose with normal spacing between words. Re-read before sending; never send a message with its spaces stripped out.
 
-The router below (also in AGENTS.md) is the fallback when no skill was named.
+The router below (also in SHIPPING.md, Reference) is the fallback when no skill was named.
 
 ## Router
 

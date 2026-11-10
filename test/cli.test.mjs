@@ -67,7 +67,7 @@ test('invalid policy is rejected', () => {
   assert.match(r.stderr, /on_merge must be full/);
 });
 
-test('rendered pipeline, SHIPPING.md and AGENTS.md carry the policy; sync --check passes', () => {
+test('rendered pipeline and SHIPPING.md carry the policy; sync --check passes', () => {
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const pipe = fs.readFileSync(path.join(dir, '.eng/ci/pipeline.yml'), 'utf8');
   assert.match(pipe, /npx eng e2e --if-required/);
@@ -78,7 +78,7 @@ test('rendered pipeline, SHIPPING.md and AGENTS.md carry the policy; sync --chec
   assert.match(ship, /E2E is path-based on PRs/);
   assert.match(ship, /red e2e on `main` means the shipping manager reverts/);
   assert.match(ship, /no fix-forward on `main`: every later merge would build on the break\./, 'the rule states its reason');
-  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /eng e2e --required/);
+  assert.match(ship, /eng e2e --required/);
   assert.ok(!fs.existsSync(path.join(dir, '.eng/ci/e2e-nightly.yml')));
   assert.equal(eng('sync', '--check').status, 0);
 });
@@ -149,7 +149,7 @@ test('e2e.flake_runs is validated', () => {
   assert.equal(r.status, 1); assert.match(r.stderr, /flake_runs must be an integer >= 2/);
 });
 
-test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md carry it, the spawn template and CI hygiene', () => {
+test('eng init advises non-strict required checks; SHIPPING.md carries it, the spawn template and CI hygiene', () => {
   const r = eng('init'); assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /Branch ruleset advice/);
   assert.match(r.stdout, /Required checks are NOT strict/);
@@ -157,8 +157,8 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
   assert.match(r.stdout, /full run on `main` after every merge plus an immediate revert on red/);
   assert.match(r.stdout, /A verdict counts only for the exact commit it ran on/);
   assert.match(r.stdout, /\/poteto-mode -> Shipping playbook: verify commit <sha>/);
-  let ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
-  for (const doc of [ship, agents]) {
+  let ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
+  for (const doc of [ship]) {
     assert.match(doc, /\/poteto-mode -> Shipping playbook: verify commit <sha> with verify-<app>, record eng verdict/);
     assert.match(doc, /\| Babysit \| `playbooks\/babysit.md`/);
     assert.match(doc, /`playbooks\/autopilot-full.md`/);
@@ -172,7 +172,7 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
   assert.match(ship, /must pass 3 consecutive runs/);
   assert.doesNotMatch(ship, /<(SPAWN|RULESET|CI_HYGIENE|FLAKE_RUNS)>/);
   // Fixed rules 16 (red-main recovery), 17 (live GitHub state) and 18 (clean up) carry their reasons; 19-21 are Slaytek's.
-  for (const doc of [ship, agents]) {
+  for (const doc of [ship]) {
     assert.match(doc, /16\. \*\*A red-`main` recovery must end in either `main` green or an explicit escalation\.\*\* Escalate to the repo lead \(and the repo owner if the change needs their approval\)/);
     assert.match(doc, /\(two recovery threads once ended with main still red\)/);
     assert.match(doc, /\(A thread once reported "no merge SHA yet" for a PR that had already merged\.\)/);
@@ -182,8 +182,8 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
   const p = path.join(dir, 'eng.config.yml');
   fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(/^profile: generic\b/m, 'profile: slaytek'));
   assert.equal(eng('sync').status, 0);
-  [ship, agents] = ['SHIPPING.md', 'AGENTS.md'].map(f => fs.readFileSync(path.join(dir, f), 'utf8'));
-  for (const doc of [ship, agents]) {
+  ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
+  for (const doc of [ship]) {
     assert.match(doc, /16\. \*\*A red-`main` recovery must end in either `main` green or an explicit escalation/);
     assert.match(doc, /Motus f193b345, 14 Oct 2026/);
     assert.match(doc, /17\. \*\*Before reporting merge or ship status, read live state from GitHub/);
@@ -191,16 +191,17 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
     assert.match(doc, /ec67f831/);
   }
   assert.match(ship, /two recovery threads ended with main still red/);
-  assert.doesNotMatch(agents, /eng ship next/);
+  const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  assert.doesNotMatch(agents + ship, /eng ship next/);
   // Fixed rule 19: briefs live in Core (approved by Matt, 19 Oct 2026)
-  for (const doc of [ship, agents]) {
+  for (const doc of [ship]) {
     assert.match(doc, /19\. \*\*Briefs live in Core\.\*\* Any brief one agent hands another \(a builder, reviewer or verifier thread\) is written to Core first, as a note in the repo's Core space tagged `brief`/);
     assert.match(doc, /prompt names the Core note id/);
     assert.match(doc, /`\/tmp` or any other scratch path is never the only copy/);
     assert.match(doc, /A revision updates the same note \(Core keeps the history\); never create a second note such as r2/);
   }
   // Fixed rules 20 (callback contract) and 21 (hand off by default), approved by Matt, 19 Oct 2026
-  for (const doc of [ship, agents]) {
+  for (const doc of [ship]) {
     assert.match(doc, /20\. \*\*Callback contract\.\*\* Scripts, CI jobs and T3 threads that wake a bot post only when work is done, blocked or needs a decision\. No progress pings, no all-clears\./);
     assert.match(doc, /The post is one line: `<status> <thread-id> <one short clause>`, where status is `done`, `blocked` or `needs-decision`/);
     assert.match(doc, /at most the last 2 messages of the named thread, never the whole history/);
@@ -218,7 +219,7 @@ test('eng init advises non-strict required checks; SHIPPING.md and AGENTS.md car
 
 test('spawn table names playbooks that exist in vendored poteto-mode', () => {
   const pb = path.resolve(new URL('../vendor/pstack/skills/poteto-mode/playbooks', import.meta.url).pathname);
-  const agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  const agents = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   const named = [...agents.matchAll(/playbooks\/([a-z-]+\.md)/g)].map(m => m[1]);
   assert.ok(named.length >= 4);
   for (const f of named) assert.ok(fs.existsSync(path.join(pb, f)), f);

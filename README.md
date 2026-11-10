@@ -4,7 +4,7 @@ One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md fi
 
 ## Start here
 
-How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `AGENTS.md` carries the short version (section "This standard").
+How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `SHIPPING.md` carries the short version (Reference, section "This standard"). The `AGENTS.md` block is three lines: take the route a blocking hook or check names (or find the rule in `SHIPPING.md` when it names none) and never bypass one, where the skills are, and that `SHIPPING.md` has the rest.
 
 ## Profiles
 

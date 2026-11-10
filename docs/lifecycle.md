@@ -1,6 +1,6 @@
 # Living with eng-standard: pin, keep current, upgrade, uninstall
 
-This is the one guide to eng-standard in a repo. Every rendered `AGENTS.md` points here (section "This standard"), and
+This is the one guide to eng-standard in a repo. Every rendered `SHIPPING.md` points here (Reference, section "This standard"), and
 the package ships this file, so an agent finds it at `node_modules/@slayteksystems/eng-standard/docs/lifecycle.md` or at
 https://github.com/Slaytek-Systems/eng-standard/blob/main/docs/lifecycle.md.
 
@@ -8,7 +8,7 @@ https://github.com/Slaytek-Systems/eng-standard/blob/main/docs/lifecycle.md.
 
 | You need | Read |
 |---|---|
-| The rules for this repo, day to day | the rendered `AGENTS.md` block, then `SHIPPING.md`, then `STACK.md` |
+| The rules for this repo, day to day | the rendered `AGENTS.md` block (three lines), then `SHIPPING.md` (its Reference section holds the commands, checks, skill router and rule-to-enforcer table), then `STACK.md` |
 | Every `eng` command | `eng --help`, then the [README](../README.md) table. There are ten. `eng <command> --help` (or `-h`) prints one command's usage and runs nothing |
 | What changed between versions | [CHANGELOG.md](../CHANGELOG.md), also shipped in the package |
 | Every setting | `eng.config.yml`; the reference with a comment on each key is `templates/eng.config.yml` |
@@ -104,7 +104,7 @@ never silent:
 
 ## Joining agent
 
-1. Read the rendered `AGENTS.md` block in full, then `SHIPPING.md`. Claude Code gets the same text through `CLAUDE.md`
+1. Read the rendered `AGENTS.md` block, then `SHIPPING.md`. Claude Code gets the same text through `CLAUDE.md`
    (`@AGENTS.md`). Codex reads `AGENTS.md` directly.
 2. Put `Agent:` and `Agent-Family:` trailers on every commit.
 3. Run `eng gate` before you ask for review. Never merge your own PR.

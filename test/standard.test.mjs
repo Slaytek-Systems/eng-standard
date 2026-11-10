@@ -57,10 +57,10 @@ test('changesSince lists every CHANGELOG heading above the installed entry', () 
   assert.deepEqual(changesSince(cl, '0.1.5'), ['0.3.0 (3 Nov)', '0.2.0 (1 Nov)']);
 });
 
-test('rendered AGENTS.md says what the standard is, how to keep it current, upgrade, remove it, and work inside it', () => {
-  const a = fs.readFileSync(repo().file('AGENTS.md'), 'utf8');
+test('rendered SHIPPING.md says what the standard is, how to keep it current, upgrade, remove it, and work inside it', () => {
+  const a = fs.readFileSync(repo().file('SHIPPING.md'), 'utf8');
   for (const s of ['### This standard (eng-standard)', 'https://github.com/Slaytek-Systems/eng-standard', '`eng sync --check`', '`eng doctor`', '`eng init`', 'Uninstall', 'docs/lifecycle.md', 'every follow-up is a new commit', 'comes in by merge'])
-    assert.ok(a.includes(s), `AGENTS.md lacks ${s}`);
+    assert.ok(a.includes(s), `SHIPPING.md lacks ${s}`);
 });
 
 test('sync --check fails a floating pin and a lock rendered by another version, naming the fix, and passes once fixed', () => {
