@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.4 (11 Nov 2026)
+
+**A command under `eng run --` can bind a unix socket in its TMPDIR** (Core task p571afvqnm9bsqkjh0y44y0tkd8j0ea9). The command's TMPDIR was the round's `tmp` folder under the scratch root, about 98 bytes on the devbox, so a socket under it went past the 107-byte limit. tsx's IPC pipe (`$TMPDIR/tsx-<uid>/<pid>.pipe`) failed with EINVAL, and so did the tmux test in `test/ephemeral.test.mjs`, whose socket is in a folder under `ENG_TMP`. That is why every verifier of PR #73 had to skip it by name or shorten `XDG_CACHE_HOME`. 0.17.1 fixed the same limit for `eng gate` steps and left `eng run -- <cmd>` unchanged.
+
+- **The command's TMPDIR is now short.** `eng run -- <cmd>` sets `TMPDIR`, `TMP`, `TEMP` and `ENG_TMP` to a fresh 0700 folder in its own socket folder (`$HOME/.cache/eng/s/<8 hex>/<6>`, 38 bytes for `/home/dev`), as a gate step's is. eng removes it with the round on a pass, a failure or a signal. When an eng run is killed with SIGKILL, the next `eng run`, `eng gate` or `eng run <name>` removes its folder once its eng process is gone. With no usable home the TMPDIR stays the round's `tmp`, as before. `eng run --keep` is unchanged.
+- `test/adoption.test.mjs` binds `$TMPDIR/tsx-1000/12345.pipe` and a 40-character socket name through `eng run --` with a long repo name, and checks the folder is gone afterwards. Before the fix the pipe path was 189 bytes and binding it failed with EINVAL. `test/ephemeral.test.mjs` shows a killed `eng run`'s socket folder counts as stale.
+- **Upgrade:** zero manual edits.
+
 ## 0.20.3 (11 Nov 2026)
 
 **The pre-commit hook runs eng in bun repos whose overrides npm rejects** (issue #55). The hook ran `npx --no-install eng` unless `ENG` was set. In a bun repo whose package.json has an `overrides` entry npm rejects, npx fails with `EOVERRIDE` before eng starts, so every commit failed unless people remembered to set `ENG`, and that invites `--no-verify`.
