@@ -86,6 +86,15 @@ for (const how of ['systemd', 'watchdog']) for (const via of ['eng gate', 'eng r
     assert.equal(r.status, 0, out(r));
     assert.match(r.stdout, /pass\s+check:sock/);
   });
+test('a command binds unix sockets in its TMPDIR through eng run --, and the folder is gone after the run', () => {
+  const { eng, checks } = repo(c => { c.project.name = 'kalsigns-quote-versions-workspace'; return c; });
+  checks({ sock: SOCK_CHECK });
+  const r = eng(['run', '--', 'bash', '.eng/checks/sock.sh']);
+  assert.equal(r.status, 0, out(r));
+  assert.equal(out(r).match(/^bound /gm)?.length, 2, out(r));
+  const tmp = r.stdout.match(/TMPDIR=(\S+);/)?.[1];
+  assert.ok(tmp && !fs.existsSync(tmp), `the run's TMPDIR ${tmp} is removed on exit`);
+});
 
 // ---------- 3. a failing step's reason names a failing line, and the end of its output is printed; eng keeps no file ----------
 const TAP = `TAP version 13
