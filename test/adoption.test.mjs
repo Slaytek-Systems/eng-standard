@@ -139,9 +139,10 @@ for (const [what, makeHome] of Object.entries(noShortFolder))
   test(`eng gate warns on stderr, with the real TMPDIR length, when it has no short folder because of ${what}`, t => {
     if (realHome.startsWith('/tmp/')) return t.skip('needs a real home outside /tmp');
     const home = makeHome(t), lenFile = path.join(home, 'len');
+    const xdg = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
     const { eng, checks } = repo();
     checks({ len: `#!/usr/bin/env bash\nprintf '%s' "\${#TMPDIR}" > "$LEN_FILE"\n` });
-    const r = eng(['gate', 'checks'], { HOME: home, LEN_FILE: lenFile, ENG_TMP: '', ENG_TMP_BASE: '', XDG_CACHE_HOME: fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-')) });
+    const r = eng(['gate', 'checks'], { HOME: home, LEN_FILE: lenFile, ENG_TMP: '', ENG_TMP_BASE: '', XDG_CACHE_HOME: xdg });
     assert.equal(r.status, 0, out(r));
     const real = fs.readFileSync(lenFile, 'utf8');
     assert.match(r.stderr, /WARN no short TMPDIR for the gate's steps/, `no warning: ${out(r)}`);
