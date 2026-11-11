@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.5 (11 Nov 2026)
+
+**A gate step's TMPDIR survives a sandboxed `eng run <name>` the step starts, and `eng gate` reaps a killed run's TMPDIR folder** (Core task p57ab63hm8x5x0pqs6v93hzjsh8j0hgy; found reviewing PR #75).
+
+- **The step's TMPDIR moved out of the socket root.** Each `eng gate` step's TMPDIR was a folder in the gate's own folder under `$HOME/.cache/eng/s`. A step that starts a sandboxed `eng run <name>` runs it with a tmpfs over that socket root, so the nested command lost the TMPDIR it inherited (`test -d "$TMPDIR"` failed) and the gate step failed. It is now `$HOME/.cache/eng/t/<8 hex>/<6>`, the root `eng run --` has used since 0.20.4, which the sandbox leaves alone. Length, mode, symlink checks and removal on exit are unchanged (38 bytes for `/home/dev`).
+- **`eng gate` reaps stale folders in `.cache/eng/t`.** The docs for 0.20.4 said the next run or gate removes the folder of a killed `eng run --`. Only the next `eng run` did. A gate now removes any folder there whose eng process is gone, and still sweeps the socket root as before. A live run's folder is kept.
+- `test/adoption.test.mjs` has both cases: a gate check whose nested sandboxed `eng run probe` must see and write the check's TMPDIR (skipped where bwrap is unusable), and a dead run's folder that `eng gate` removes.
+- **Upgrade:** zero manual edits.
+
 ## 0.20.4 (11 Nov 2026)
 
 **A command under `eng run --` can bind a unix socket in its TMPDIR** (Core task p571afvqnm9bsqkjh0y44y0tkd8j0ea9). The command's TMPDIR was the round's `tmp` folder under the scratch root, about 98 bytes on the devbox, so a socket under it went past the 107-byte limit. tsx's IPC pipe (`$TMPDIR/tsx-<uid>/<pid>.pipe`) failed with EINVAL, and so did the tmux test in `test/ephemeral.test.mjs`, whose socket is in a folder under `ENG_TMP`. That is why every verifier of PR #73 had to skip it by name or shorten `XDG_CACHE_HOME`. 0.17.1 fixed the same limit for `eng gate` steps and left `eng run -- <cmd>` unchanged.

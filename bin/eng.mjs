@@ -10,7 +10,7 @@ import { renderAll, renderErrors, harnessRel, harnessLines, executables, expandS
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath, openSockDir, staleSockDirs } from '../lib/hygiene.mjs';
+import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath, openSockDir, staleSockDirs, runTmpRoot } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
 import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
@@ -888,15 +888,16 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
 // writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
 // A step's TMPDIR holds unix sockets (tsx IPC: $TMPDIR/tsx-<uid>/<pid>.pipe), and a socket path is capped at 107 bytes (103 on
 // macOS). ENG_TMP sits under the scratch root and names the repo, so it is as deep as those make it (123 bytes for a Kalsigns
-// check). Each step's TMPDIR is instead a folder in this gate's own socket folder ($HOME/.cache/eng/s/<8 hex>, or inside the
-// enclosing eng run's): 0700, symlink-free, removed on exit, and reaped by the next gate or run if this one is killed. With
-// no usable home it stays inside ENG_TMP.
+// check). Each step's TMPDIR is instead a folder in this gate's own short folder ($HOME/.cache/eng/t/<8 hex>), the same root as
+// eng run --'s: 0700, symlink-free, removed on exit, and reaped by the next gate or run if this one is killed. It is beside the
+// socket root (.cache/eng/s), not in it, because a sandboxed eng run <name> that a step starts hides the socket root under a
+// tmpfs, and the step's temp files must stay visible to it. With no usable home it stays inside ENG_TMP.
 let STEP_ROOT;
 function stepTmp(t, name) {
   if (STEP_ROOT === undefined) {
-    const env = { ...process.env, ENG_SOCK_DIR: PARENT_SOCK_DIR ?? '' };
-    for (const d of staleSockDirs(Infinity, { env })) if (d.stale) fs.rmSync(d.path, { recursive: true, force: true });
-    try { STEP_ROOT = openSockDir(env, `eng-gate-${Date.now().toString(36)}-${process.pid}-0`); } catch { STEP_ROOT = null; }
+    const root = runTmpRoot(process.env), sockEnv = { ...process.env, ENG_SOCK_DIR: PARENT_SOCK_DIR ?? '' };
+    for (const d of [...staleSockDirs(Infinity, { root }), ...staleSockDirs(Infinity, { env: sockEnv })]) if (d.stale) fs.rmSync(d.path, { recursive: true, force: true });
+    try { STEP_ROOT = openSockDir(process.env, `eng-gate-${Date.now().toString(36)}-${process.pid}-0`, root); } catch { STEP_ROOT = null; }
     if (STEP_ROOT) process.on('exit', () => fs.rmSync(STEP_ROOT, { recursive: true, force: true }));
   }
   return fs.mkdtempSync(STEP_ROOT ? `${STEP_ROOT}/` : path.join(t.dir, `${slug(name)}-`));
