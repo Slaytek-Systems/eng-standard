@@ -2,6 +2,13 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.6 (12 Nov 2026)
+
+**The lib modules that decide what a gate runs, passes or requires are risk:high in eng-standard's own merge rule** (Core task p57ejat07k4vxe9q9y78d1m4vd8j1fvz). Before, a risk:low PR could point `GATE_COMMANDS.verdict` in `lib/render.mjs` at a command that always passes, merge on one PASS, and reach consumers as a version bump. Matt, 10 Nov 2026: a change to gate settings is high risk and never silent.
+
+- `eng.config.yml` `ship.high_risk.paths` gains `lib/render.mjs`, `lib/gate-levels.mjs`, `lib/flake.mjs`, `lib/ephemeral.mjs`, `lib/disk-rules.mjs`, `lib/hygiene.mjs`, `lib/standard.mjs` and `lib/lock.mjs`, each with its reason. Left out because they change no gate, run evidence or verdict: `lib/step-output.mjs` (display of a step's output; the exit code decides) and `lib/guards.mjs` (only a test imports it).
+- `test/self-merge.test.mjs` asserts each added path classifies high and a docs-only change low. This repo only: no template or consumer default changes. **Upgrade:** zero manual edits.
+
 ## 0.20.5 (11 Nov 2026)
 
 **A gate step's TMPDIR survives a sandboxed `eng run <name>` the step starts, and `eng gate` reaps a killed run's TMPDIR folder** (Core task p57ab63hm8x5x0pqs6v93hzjsh8j0hgy; found reviewing PR #75).
