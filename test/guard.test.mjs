@@ -239,6 +239,81 @@ test('editing the guard: shell writes, moves and removals of guard files are blo
   assert.match(bash('rm -rf .eng/guard', probe).reason, /eng sync renders it from eng\.config\.yml: change the config \(guard: off turns the guard off/);
 });
 
+// Fix round 2 (11 Nov 2026): when the guard cannot tell which repo a command acts on, it denies destructive git and
+// names the route. Rows include both verifiers' exact probe strings; /r is dirty and /r/clean is clean.
+const at = (cwd, command, probe) => { const d = decide({ tool: 'bash', command, cwd }, NEVER, probe); return d.allow ? null : d.rule; };
+const parentDirty = () => fake({ dirty: ['/r'], safe: { gone: false } });
+
+test('git repository selectors: --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE make the repo uncertain, so destructive git is denied', () => {
+  const cases = [
+    ['/r', 'git -C clean --git-dir=../.git --work-tree=.. reset --hard', 'discard-local-work'],
+    ['/r', 'git -C clean --git-dir ../.git --work-tree .. reset --hard', 'discard-local-work'],
+    ['/r/clean', 'git --git-dir=../.git --work-tree=.. reset --hard', 'discard-local-work'],
+    ['/r/clean', 'git --git-dir ../.git --work-tree .. reset --hard', 'discard-local-work'],
+    ['/r/clean', 'git --git-dir=../.git --work-tree=.. rm .eng/guard/hook.mjs', 'guard-files'],
+    ['/r', 'GIT_DIR=../.git GIT_WORK_TREE=.. git -C clean reset --hard', 'discard-local-work'],
+    ['/r', 'export GIT_DIR=/r/.git; cd clean && git reset --hard', 'discard-local-work'],
+    ['/r', 'GIT_WORK_TREE=/r; export GIT_WORK_TREE; git -C clean checkout -- .', 'discard-local-work'],
+    ['/r', 'git -C "$D" reset --hard', 'discard-local-work'], ['/r', 'git --git-dir=.git branch -D gone', 'discard-local-work'],
+    ['/r', 'git -C clean reset --hard', null], ['/r/clean', 'git --git-dir=../.git status', null], ['/r', 'GIT_DIR=x git diff', null],
+    ['/r', 'git --work-tree=.. log', null], ['/r', 'git -C "$D" status', null],
+  ];
+  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, parentDirty())]), cases.map(([, c, r]) => [c, r]));
+  assert.match(bash('git --git-dir=.git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root/);
+});
+
+test('a wrapper that changes the folder carries it into the shell it starts; env -C .. sh -c resets the parent', () => {
+  const cases = [
+    ['/r/clean', "env -C .. sh -c 'git reset --hard'", 'discard-local-work'], ['/r', "env -C clean sh -c 'git reset --hard'", null],
+    ['/r', 'env -C clean git reset --hard', null], ['/r', "sudo -D clean sh -c 'git reset --hard'", null],
+    ['/r', "env -C clean bash -c 'cd ..; git reset --hard'", 'discard-local-work'], ['/r', "env -C \"$X\" sh -c 'git reset --hard'", 'discard-local-work'],
+    ['/r', 'find . -execdir git reset --hard \;', 'discard-local-work'], ['/r/clean', 'find . -exec git reset --hard \;', null],
+  ];
+  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, parentDirty())]), cases.map(([, c, r]) => [c, r]));
+});
+
+test('folder moves the guard does not follow make the repo unknown: cd -, pushd and popd, eval, source, functions, aliases', () => {
+  const cases = [
+    ['cd /tmp; cd -; git reset --hard', 'discard-local-work'], ['cd /tmp; cd - >/dev/null; git reset --hard', 'discard-local-work'],
+    ['pushd /tmp; popd; git reset --hard', 'discard-local-work'], ['pushd /tmp >/dev/null; popd >/dev/null; git reset --hard', 'discard-local-work'],
+    ['cd /tmp; eval "cd -" >/dev/null; git reset --hard', 'discard-local-work'], ['cd /tmp; cd "$OLDPWD"; git reset --hard', 'discard-local-work'],
+    ['cd; git reset --hard', 'discard-local-work'], ['cd ~/r; git reset --hard', 'discard-local-work'], ['cd clean/*; git reset --hard', 'discard-local-work'],
+    ['cd "$(git rev-parse --show-toplevel)"; git reset --hard', 'discard-local-work'], ['source env.sh; git reset --hard', 'discard-local-work'],
+    ['. ./env.sh && git reset --hard', 'discard-local-work'], ['f() { cd clean; }; git reset --hard', 'discard-local-work'],
+    ['function f { cd clean; }; git reset --hard', 'discard-local-work'], ["alias c='cd /tmp'; git reset --hard", 'discard-local-work'],
+    ['eval "$CMD"; git reset --hard', 'discard-local-work'], ['CDPATH=/elsewhere; cd clean; git reset --hard', 'discard-local-work'],
+    ["trap 'cd /tmp' DEBUG; git reset --hard", 'discard-local-work'], ['cd /tmp; cd -; git checkout -- .', 'discard-local-work'],
+    ['cd /tmp; cd -; git restore .', 'discard-local-work'], ['cd /tmp; cd -; git branch -D gone', 'discard-local-work'],
+    ['cd /tmp; cd -; rm .eng/guard/hook.mjs', 'guard-files'], ['cd "$D"; rm hook.mjs', 'guard-files'], ['popd; rm -rf guard', 'guard-files'],
+    ['cd /tmp; cd -; git status', null], ['cd /tmp; cd -; git diff', null], ['cd /tmp; cd -; git add .', null], ['cd clean && git add .', null],
+    ['pushd clean; git reset --hard', null], ['cd clean && git reset --hard', null], ['cd -P clean && git reset --hard', null],
+    ['cd /tmp; cd -; cd /r/clean; git reset --hard', null], ['eval "cd clean"; git reset --hard', null], ['source env.sh; git status', null],
+    ['f() { echo; }; git diff', null], ['cd "$D"; rm notes.txt', null], ['cd /tmp; cd -; git push origin feat', null],
+  ];
+  assert.deepEqual(rows(cases, parentDirty()), expect(cases));
+  for (const c of ['cd /tmp; cd -; git reset --hard', 'pushd /tmp; popd; git reset --hard']) assert.equal(ruleOf(c, fake({ dirty: false })), 'discard-local-work', `${c} is denied even when every repo is clean`);
+  assert.match(bash('cd /tmp; cd -; git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*commit or stash/);
+});
+
+test('gh global flags come before the subcommand: gh -R and --repo cannot hide pr merge --admin', () => {
+  const cases = [
+    ['gh -R owner/repo pr merge 5 --admin', 'admin-merge'], ['gh --repo owner/repo pr merge 73 --admin', 'admin-merge'],
+    ['gh -R owner/repo pr merge 73 --admin', 'admin-merge'], ['gh --repo=o/r pr merge 5 --admin', 'admin-merge'],
+    ['gh pr -R o/r merge 5 --admin', 'admin-merge'], ['gh pr merge -R o/r 5 --admin', 'admin-merge'],
+    ['gh -R o/r pr merge 5 --squash', null], ['gh -R o/r pr view 5', null], ['gh --repo o/r pr merge 5 -t --admin', null],
+  ];
+  assert.deepEqual(rows(cases), expect(cases));
+});
+
+test('a heredoc delimiter is the whole quoted or escaped word, spaces included', () => {
+  const cases = [
+    ['cat <<"END MARK"\nsafe\nEND MARK\ngit commit -n', 'no-verify'], ['cat <<END\\ MARK\nsafe\nEND MARK\ngit commit -n', 'no-verify'],
+    ["cat <<'A B'\nx\nA B\ngit push -f", 'rewrite-pushed'], ['cat <<"END MARK"\ngit push -f\nEND MARK', null],
+    ["cat <<'A B'\n$(git push -f)\nA B", null], ['cat <<E"O"F\n$(git commit -n)\nEOF', null],
+  ];
+  assert.deepEqual(rows(cases), expect(cases));
+});
+
 test('Edit and Write tool calls: never on .eng/guard, on eng-rendered .claude/settings.json or on a linked hook file, and never removing eng\'s entry', () => {
   const entry = `"command": "node .eng/guard/hook.mjs cursor"`;
   const probe = fake({
