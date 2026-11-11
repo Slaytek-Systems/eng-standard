@@ -145,7 +145,7 @@ for (const [what, makeHome] of Object.entries(noShortFolder))
     assert.equal(r.status, 0, out(r));
     const real = fs.readFileSync(lenFile, 'utf8');
     assert.match(r.stderr, /WARN no short TMPDIR for the gate's steps/, `no warning: ${out(r)}`);
-    assert.match(r.stderr, new RegExp(`TMPDIR is ${real} bytes`), `the warning reports the real fallback length ${real}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`long path \\(${real} bytes`), `the warning reports the real fallback length ${real}: ${r.stderr}`);
     assert.doesNotMatch(r.stderr, /null|undefined/, r.stderr);
     assert.doesNotMatch(r.stderr, /creating a folder in/, `it must not claim a failed mkdir: ${r.stderr}`);
   });
