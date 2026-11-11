@@ -20,7 +20,7 @@ const HR = cfg.ship.high_risk, C = selfMergeConfig(cfg);
 const mod = (...f) => f.map(filename => ({ filename, status: 'modified' }));
 
 test('risk: docs and rendered-text PRs (#14 to #16 shape) are low, a version-only bump included', () => {
-  const r = classifyRisk(mod('CHANGELOG.md', 'lib/render.mjs', 'package-lock.json', 'package.json', 'templates/SHIPPING.md', 'templates/eng.config.yml', 'test/hygiene.test.mjs'), HR, new Set(['package.json', 'package-lock.json']));
+  const r = classifyRisk(mod('CHANGELOG.md', 'lib/models.mjs', 'package-lock.json', 'package.json', 'templates/SHIPPING.md', 'templates/eng.config.yml', 'test/hygiene.test.mjs'), HR, new Set(['package.json', 'package-lock.json']));
   assert.deepEqual(r, { risk: 'low', hits: [] });
 });
 
@@ -29,6 +29,12 @@ test('risk: workflows, CI, merge setup, CLI, scripts, vendored code are high', (
     'bin/eng.mjs', 'scripts/pr-gate.mjs', 'lib/risk.mjs', 'lib/self-merge.mjs', 'lib/e2e-policy.mjs', '.npmrc', 'vendor/PINS.txt', '.githooks/pre-commit'])
     assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
   assert.equal(classifyRisk(mod('templates/eng.config.yml', 'docs/modern-stack.md', 'skills/eng-verify/SKILL.md'), HR).risk, 'low');
+});
+
+test('risk: lib modules that decide what a gate runs, passes or requires are high; docs-only is low', () => {
+  for (const f of ['lib/render.mjs', 'lib/gate-levels.mjs', 'lib/flake.mjs', 'lib/ephemeral.mjs', 'lib/disk-rules.mjs', 'lib/hygiene.mjs', 'lib/standard.mjs', 'lib/lock.mjs'])
+    assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
+  assert.equal(classifyRisk(mod('CHANGELOG.md', 'docs/modern-stack.md', 'README.md'), HR).risk, 'low');
 });
 
 test('risk: package.json is high unless the version is the only change; unknown or empty is high', () => {
