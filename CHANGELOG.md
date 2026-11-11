@@ -2,7 +2,7 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.20.1 (10 Nov 2026)
+## 0.20.2 (11 Nov 2026)
 
 **eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
 
@@ -10,6 +10,14 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **One plain instruction** when a tool misses skills: the `ln -s` commands that fix it (relative to the real folder when `.claude` is itself a link, quoted when a path needs it, with `mkdir -p` when the parent folder is missing), or install eng's skills into each tool's own folder. The source comes first: when eng's own files are missing it says `run eng sync`, and when any are unreadable it gives one `chmod u+r` line naming every such file (and nothing else), because a link only shows what its source holds. When `.claude` or `.agents` is a file or a broken link, it names that instead of printing a link command that would fail. Skills in the home folder are not checked, and the section says so.
 - **Informational.** It never changes doctor's exit code. A tool not in `agents.harnesses` that misses skills is marked `info`, not `WARN`. The section replaces doctor's one-line Claude Code report; `eng sync` keeps that line and its text; its fix now starts with `mkdir -p .claude &&` when `.claude` is missing, where the old `ln -s` failed.
 - The counting and the fix live in `lib/skill-visibility.mjs`, a pure function over a read-only filesystem probe. `eng sync`'s line is built from it. **Upgrade:** zero manual edits.
+
+## 0.20.1 (10 Nov 2026)
+
+**eng run runs the exact command it was given.** On a machine where eng's budget uses a systemd user scope, some systemd versions expand `${VAR}` in `systemd-run`'s command arguments. In CI on 10 Nov 2026, `eng run -- sh -c 'exit ${E-3}'` ran as `exit` and was recorded as exit 0, so recorded verification evidence could describe a different command from the one given. systemd printed a warning (`Invalid environment variable name evaluates to an empty string: E-3`), but eng still recorded exit 0.
+
+- `systemd-run` now gets `--expand-environment=no` when it accepts the flag (probed once per `PATH`). Expansion arrived in systemd 254 and is on by default for scopes from 258 ([NEWS](https://github.com/systemd/systemd/blob/v258/NEWS)); an older `systemd-run` without the flag has no such expansion. The flag keeps `${VAR}`, `$VAR` and `$$` as written.
+- `test/run-no-expand.test.mjs` reproduces the expansion with a stand-in `systemd-run` on `PATH`, so the bug shows on any machine, not only where systemd expands.
+- **Upgrade:** zero manual edits.
 
 ## 0.20.0 (10 Nov 2026)
 
