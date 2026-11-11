@@ -97,7 +97,7 @@ const scratchRepo = ({ installed }) => {
     const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     const bin = path.join(dir, 'node_modules', pkg.name, pkg.bin.eng);
     fs.mkdirSync(path.dirname(bin), { recursive: true });
-    fs.writeFileSync(bin, "require('node:fs').appendFileSync('eng-calls', process.argv.slice(2).join(' ') + '\\n');\n");
+    fs.writeFileSync(bin, "import fs from 'node:fs';\nfs.appendFileSync('eng-calls', process.argv.slice(2).join(' ') + '\\n');\n");
     fs.writeFileSync(path.join(dir, 'node_modules', pkg.name, 'package.json'), JSON.stringify({ name: pkg.name, bin: pkg.bin }));
   }
   const hook = path.join(dir, '.githooks', 'pre-commit');
