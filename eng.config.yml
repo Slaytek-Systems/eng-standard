@@ -48,6 +48,10 @@ ship:
       - "lib/hygiene.mjs"         # built-in lint rules (TMP_RULE, DISK_RULES) that eng lint and eng rules prove enforce
       - "lib/standard.mjs"        # lifecycleProblems: a pin or lock version mismatch fails eng sync --check (the drift gate)
       - "lib/lock.mjs"            # the managed-file list eng sync --check compares to decide drift
+      - "lib/renovate.mjs"        # compareBaseline: which lint findings are known (baselined) and which fail eng gate lint
+      - "lib/stack-audit.mjs"     # CONVEX_HANDLE_RULE and its version threshold: whether eng lint enforces that rule
+      - "lib/migrate.mjs"         # RETIRED_GATES: eng sync replaces or removes gates.required entries
+      - "lib/profile.mjs"         # persistDefaults: the persist markers that exempt leftovers when eng run checks for them
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"
       - "docs/merge-queue.md"
