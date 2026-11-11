@@ -149,6 +149,81 @@ test('the shell parser: chains, pipes, wrappers, nested shells, substitutions, k
   assert.deepEqual(parseShell("FOO=1 git -C x commit -m 'a b' > out.txt 2>&1").map(c => [c.words, c.redirects]), [[['FOO=1', 'git', '-C', 'x', 'commit', '-m', 'a b'], [{ op: '>', target: 'out.txt' }]]]);
 });
 
+// Fix round 1 (11 Nov 2026): the bypasses two verifiers (codex-sol, opencode-deepseek) found on 48ca0bf, their siblings,
+// and the safe neighbour of each.
+test('a cd changes the folder only for the shell it runs in: subshells, substitutions, nested shells, pipes and background jobs keep theirs', () => {
+  const cases = [
+    ['(cd /tmp); git reset --hard', 'discard-local-work'], ['(cd /tmp && true); git reset --hard', 'discard-local-work'],
+    ['echo $(cd /tmp); git reset --hard', 'discard-local-work'], ['echo `cd /tmp`; git reset --hard', 'discard-local-work'],
+    ["sh -c 'cd /tmp'; git reset --hard", 'discard-local-work'], ['cd /tmp | true; git reset --hard', 'discard-local-work'],
+    ['cd /tmp & git reset --hard', 'discard-local-work'], ['(cd /tmp; (cd /x)); git reset --hard', 'discard-local-work'],
+    ['echo $(git reset --hard); cd /tmp', 'discard-local-work'], ['(cd /tmp; true) && git -C sub reset --hard', 'discard-local-work'],
+    ['cd /tmp && git reset --hard', null], ['(cd /tmp && git reset --hard)', null], ['{ cd /tmp; }; git reset --hard', null],
+    ['cd /tmp; echo $(git reset --hard)', null], ['eval "cd /tmp"; git reset --hard', null], ['env -C /tmp git reset --hard', null],
+    ['env -C sub git reset --hard', 'discard-local-work'],
+  ];
+  assert.deepEqual(rows(cases, fake({ dirty: ['/r', '/r/sub'] })), expect(cases));
+  assert.equal(ruleOf('(cd sub && git reset --hard)', fake({ dirty: ['/r/sub'] })), 'discard-local-work', 'a cd inside the subshell still applies inside it');
+  assert.equal(ruleOf('(cd sub) && git reset --hard', fake({ dirty: ['/r/sub'] })), null, '/r is clean');
+});
+
+test('git global options come before the subcommand for every rule: -C, -c, --git-dir, --work-tree, --no-pager, -p, --config-env', () => {
+  const ours = '{"hooks":{"PreToolUse":[{"hooks":[{"command":"node .eng/guard/hook.mjs codex"}]}]}}';
+  const probe = fake({ dirty: true, files: { '/r/.codex/hooks.json': ours } });
+  const cases = [
+    ['git -C . rm .eng/guard/hook.mjs', 'guard-files'], ['git -C .eng rm -r guard', 'guard-files'], ['git --no-pager rm .eng/guard/config.json', 'guard-files'],
+    ['git -c x=y mv .eng/guard/guard.mjs /tmp/g', 'guard-files'], ['git --git-dir .git --work-tree . rm -r .eng/guard', 'guard-files'],
+    ['git -C sub rm ../.codex/hooks.json', 'guard-files'], ['git rm --cached -r -- .eng/guard', 'guard-files'],
+    ['git --no-pager push -f', 'rewrite-pushed'], ['git -p push --force origin feat', 'rewrite-pushed'], ['git --git-dir .git push -f', 'rewrite-pushed'],
+    ['git --git-dir=.git --work-tree=. reset --hard', 'discard-local-work'], ['git -C . -c a=b commit -n', 'no-verify'],
+    ['git --config-env core.hooksPath=HP commit -m x', 'hooks-path'], ['git --config-env=core.hooksPath=HP commit -m x', 'hooks-path'],
+    ['git -C . rm src/a.js', null], ['git --no-pager rm -r .eng/checks', null], ['git -C . status', null], ['git --config-env user.name=N commit -m x', null],
+  ];
+  assert.deepEqual(rows(cases, probe), expect(cases));
+});
+
+test('an unquoted heredoc runs its $(...) and backticks; a quoted heredoc stays data', () => {
+  const cases = [
+    ['cat <<EOF\n$(git commit -n)\nEOF', 'no-verify'], ['cat <<EOF\n`git push -f`\nEOF', 'rewrite-pushed'], ['cat <<-EOF\n\tx $(git push -f) y\n\tEOF', 'rewrite-pushed'],
+    ['cat <<EOF > out\nline\n$(git commit \\\n -n)\nEOF', 'no-verify'], ['cat <<A <<B\nok\nA\n$(git push -f)\nB', 'rewrite-pushed'],
+    ['cat <<EOF\n$(echo "$(git push -f)")\nEOF', 'rewrite-pushed'], ['git commit -F - <<EOF\nmsg $(git push -f)\nEOF', 'rewrite-pushed'],
+    ["cat <<'EOF'\n$(git commit -n)\nEOF", null], ['cat <<"EOF"\n`git push -f`\nEOF', null], ['cat <<\\EOF\n$(git push -f)\nEOF', null],
+    ['cat <<E\'O\'F\n$(git push -f)\nEOF', null], ['cat <<EOF\n\\$(git push -f) and \\`git push -f\\`\nEOF', null], ['cat <<EOF\ngit push -f\n--no-verify\nEOF', null],
+  ];
+  assert.deepEqual(rows(cases), expect(cases));
+});
+
+test('env -S and the env options that take a value: the split string is the command', () => {
+  const cases = [
+    ["env -S 'git commit -n'", 'no-verify'], ['env -S "git push -f"', 'rewrite-pushed'], ["env --split-string='git push -f'", 'rewrite-pushed'],
+    ["env --split-string 'git push -f'", 'rewrite-pushed'], ["env -S'git push -f'", 'rewrite-pushed'], ["env -iS 'git push -f'", 'rewrite-pushed'],
+    ["env -S 'git push' -f", 'rewrite-pushed'], ["env -u HOME -S 'FOO=1 git push -f'", 'rewrite-pushed'], ["env --unset=HOME -C . git push -f", 'rewrite-pushed'],
+    ["env --chdir . git push -f", 'rewrite-pushed'], ["/usr/bin/env -S 'sh -c \"git push -f\"'", 'rewrite-pushed'], ["env -S 'git \"commit\" -n'", 'no-verify'],
+    ["env -S 'git push origin feat'", null], ["env -S 'echo git push -f'", null], ['env -u FOO git status', null],
+  ];
+  assert.deepEqual(rows(cases), expect(cases));
+});
+
+test('git push --repo: the remote can come from --repo, so every positional word is a refspec', () => {
+  const cases = [
+    ['git push --repo=origin --delete main', 'delete-protected'], ['git push --repo origin --delete main', 'delete-protected'], ['git push --repo=origin -d release', 'delete-protected'],
+    ['git push --rep=origin --delete main', 'delete-protected'], ['git push --repo=origin --force feat', 'rewrite-pushed'],
+    ['git push --repo=origin --delete feat', null], ['git push --repo=origin main', null], ['git push origin --delete feat', null], ['git push --delete main', null],
+  ];
+  for (const cfg of [NEVER, PROTECTED]) assert.deepEqual(rows(cases, fake(), cfg), expect(cases));
+});
+
+test('the wrappers and nested shells around git: command, builtin, exec, xargs, sudo, doas, setsid, sh -c, bash -c, brace groups', () => {
+  const deny = [
+    'command -p git push -f', 'builtin git push -f', 'exec -a x git push -f', 'exec git push -f', 'echo feat | xargs git push -f', 'xargs -I{} git push -f {}',
+    'xargs -n 1 git push -f', 'sudo -E git push -f', 'doas -u dev git push -f', 'setsid git push -f', 'nohup git push -f &', 'time -p git push -f',
+    "bash -c 'cd /tmp; git push -f'", 'sh -ec "git push -f"', '{ cd sub && git push -f; }', '! git push -f', 'while true; do git push -f; done',
+    "find . -name x -exec git push -f \\;", "find . -execdir git push -f {} +",
+  ];
+  for (const c of deny) assert.equal(ruleOf(c), 'rewrite-pushed', c);
+  for (const c of ['command -v git', 'xargs echo git push -f', "find . -name '*.js' -exec grep -l push {} +", 'exec 3>&1']) assert.equal(ruleOf(c), null, c);
+});
+
 test('editing the guard: shell writes, moves and removals of guard files are blocked; reads, wiring and other files pass', () => {
   const ours = '{"hooks":{"PreToolUse":[{"hooks":[{"command":"node .eng/guard/hook.mjs codex"}]}]}}';
   const probe = fake({ files: { '/r/.codex/hooks.json': ours, '/r/.cursor/hooks.json': '{"version":1,"hooks":{}}' } });
@@ -337,7 +412,8 @@ test('eng sync: guard: off removes the guard files it rendered, on brings them b
   const off = eng('sync');
   assert.equal(off.status, 0, off.stderr);
   for (const f of GUARD_FILES) assert.match(off.stdout, new RegExp(`removed ${f.replaceAll('.', '\\.')}`));
-  assert.equal(fs.existsSync(path.join(dir, '.eng/guard/hook.mjs')), false);
+  assert.equal(fs.existsSync(path.join(dir, '.eng/guard')), false, 'no empty .eng/guard is left behind');
+  assert.ok(fs.existsSync(path.join(dir, '.eng/lock.json')), 'only the emptied folder goes');
   assert.doesNotMatch(fs.readFileSync(path.join(dir, '.claude/settings.json'), 'utf8'), /guard/);
   assert.equal(eng('sync', '--check').status, 0);
   fs.writeFileSync(cfg, text);
@@ -363,7 +439,7 @@ function shot(dir) {
   for (const d of ['.claude', '.codex', '.cursor', '.eng/guard', 'eng.config.yml']) walk(d);
   return s;
 }
-const guardSection = out => { const l = out.split('\n'), i = l.findIndex(x => x.startsWith('  Guard')); return l[i].startsWith('  Guard: off') ? [l[i]] : [l[i], ...l.slice(i + 1).filter((x, k, a) => a.slice(0, k + 1).every(y => y.startsWith('    ')))]; };
+const guardSection = out => { const l = out.split('\n'), i = l.findIndex(x => x.startsWith('  Guard')); return [l[i], ...l.slice(i + 1).filter((x, k, a) => a.slice(0, k + 1).every(y => y.startsWith('    ')))]; };
 
 test('eng doctor: a Guard section per tool, the ln -s fix works when run, the entry fix works when added, off is a lowered gate, and doctor writes nothing', () => {
   const dir = tmp('eng-guard-doctor-');
@@ -399,7 +475,15 @@ test('eng doctor: a Guard section per tool, the ln -s fix works when run, the en
   assert.equal(eng('sync').status, 0);
   const off = doctor();
   assert.equal(off.status, plain.status);
-  assert.deepEqual(guardSection(off.stdout), ['  Guard: off (guard: off in eng.config.yml). Nothing blocks history rewrites, skipped checks or lost local work before a command runs; the git hooks and CI still do their part. Restore: remove the line or set guard: on, then run eng sync.']);
+  assert.equal(fs.existsSync(path.join(dir, '.eng/guard')), false, 'guard: off removes the folder it rendered');
+  assert.deepEqual(guardSection(off.stdout), [
+    '  Guard: off (guard: off in eng.config.yml). Nothing blocks history rewrites, skipped checks or lost local work before a command runs; the git hooks and CI still do their part. Restore: remove the line or set guard: on, then run eng sync.',
+    '    WARN codex: .codex/hooks.json is a broken link to ../.eng/guard/codex-hooks.json, which guard: off removed. Remove it: rm .codex/hooks.json',
+    `    WARN cursor: .cursor/hooks.json still runs ${HOOK_SCRIPT}, which guard: off removed. Remove this entry from its hooks.beforeShellExecution list: ${JSON.stringify(HOOK_ENTRIES.cursor)}`,
+  ]);
+  execSync(guardSection(off.stdout)[1].split('Remove it: ')[1], { cwd: dir, shell: '/bin/sh' });
+  fs.writeFileSync(path.join(dir, '.cursor/hooks.json'), JSON.stringify({ version: 1, hooks: { afterFileEdit: [{ command: './mine.sh' }] } }, null, 2));
+  assert.equal(guardSection(doctor().stdout).length, 1, 'nothing left over once the fixes run');
   assert.ok(off.stdout.split('\n').includes('    guard: off (standard: on). Restore: guard: on'), 'listed as a gate below the standard default');
   assert.ok(!plain.stdout.includes('guard: off (standard: on)'));
 });
