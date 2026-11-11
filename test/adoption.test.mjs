@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { enforcer } from '../lib/budget.mjs';
+import { openSockDir, runTmpRoot } from '../lib/hygiene.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -94,6 +95,29 @@ test('a command binds unix sockets in its TMPDIR through eng run --, and the fol
   assert.equal(out(r).match(/^bound /gm)?.length, 2, out(r));
   const tmp = r.stdout.match(/TMPDIR=(\S+);/)?.[1];
   assert.ok(tmp && !fs.existsSync(tmp), `the run's TMPDIR ${tmp} is removed on exit`);
+});
+
+// The sandbox binds a private dir over /tmp, so its run folder must not be under /tmp: this test keeps its own under the home.
+const bwrapOk = (() => { const d = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-probe-')); try { return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', d, '/tmp', '--', 'true']).status === 0; } finally { fs.rmSync(d, { recursive: true, force: true }); } })();
+test('a gate check\'s TMPDIR is still there inside a sandboxed eng run <name> that the check starts', t => {
+  if (!bwrapOk || os.homedir().startsWith('/tmp/')) return t.skip('needs a usable bwrap (nested bwrap is refused, so this runs under plain npm test) and a home outside /tmp');
+  const xdg = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
+  const { eng, checks } = repo(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.project.commands.probe = 'test -d "$PARENT_TMP" && test -w "$PARENT_TMP"'; return c; });
+  checks({ nested: `#!/usr/bin/env bash\nexport PARENT_TMP="$TMPDIR"\nnode ${ENG} run probe\n` });
+  const r = eng(['gate', 'checks'], { XDG_CACHE_HOME: xdg });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /pass\s+check:nested/);
+});
+test('eng gate removes the TMPDIR folder of a killed eng run, as the next eng run does', t => {
+  if (os.homedir().startsWith('/tmp/')) return t.skip('needs a home outside /tmp');
+  const { eng, checks } = repo();
+  checks({ ok: '#!/usr/bin/env bash\ntrue\n' });
+  const dead = openSockDir(process.env, 'eng-run-zz-999999999-0', runTmpRoot(process.env));
+  t.after(() => fs.rmSync(dead, { recursive: true, force: true }));
+  assert.ok(fs.existsSync(dead));
+  const r = eng(['gate', 'checks']);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(!fs.existsSync(dead), 'the gate reaps a folder whose eng is gone');
 });
 
 // ---------- 3. a failing step's reason names a failing line, and the end of its output is printed; eng keeps no file ----------
