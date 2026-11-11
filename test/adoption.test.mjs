@@ -108,6 +108,16 @@ test('a gate check\'s TMPDIR is still there inside a sandboxed eng run <name> th
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /pass\s+check:nested/);
 });
+test('an enforced-isolation eng run <name> that runs eng gate: a check still binds a unix socket in its TMPDIR', t => {
+  if (!bwrapOk || os.homedir().startsWith('/tmp/')) return t.skip('needs a usable bwrap and a home outside /tmp');
+  const xdg = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
+  const bind = 'const net=require("net"),fs=require("fs"),p=require("path");const d=p.join(process.env.TMPDIR,"tsx-"+process.getuid());fs.mkdirSync(d,{recursive:true});const f=p.join(d,"12345.pipe");const s=net.createServer(),end=(m,c)=>{fs.rmSync(d,{recursive:true,force:true});console.log(m);process.exit(c)};s.on("error",e=>end("BIND "+f.length+" "+e.code,1));s.listen(f,()=>end("BIND ok "+f.length,0))';
+  const { eng, checks } = repo(c => { c.isolation = { mode: 'fail' }; c.project.commands.gateprobe = `node ${ENG} gate checks`; return c; });
+  checks({ sock: `#!/usr/bin/env bash\nnode -e '${bind}'\n` });
+  const r = eng(['run', 'gateprobe'], { XDG_CACHE_HOME: xdg });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /BIND ok/);
+});
 test('eng gate removes the TMPDIR folder of a killed eng run, as the next eng run does', t => {
   if (os.homedir().startsWith('/tmp/')) return t.skip('needs a home outside /tmp');
   const { eng, checks } = repo();
