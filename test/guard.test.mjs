@@ -29,8 +29,9 @@ const PROTECTED = { ...NEVER, rewrite: 'protected' };
 // A fake read-only probe rooted at /r: dirty folders, branch safety, file text and real paths.
 const fake = (o = {}) => ({
   root: () => '/r',
-  dirty: cwd => o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
-  branchSafe: (cwd, b) => o.safe?.[b] ?? null,
+  dirty: cwd => o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
+  branchSafe: (cwd, b) => Object.hasOwn(o.safe ?? {}, b) ? o.safe[b] : true,
+  isDir: abs => !(o.missing ?? []).includes(abs),
   read: abs => o.files?.[abs] ?? null,
   real: abs => o.real?.[abs] ?? abs,
   calls: o.calls,
@@ -295,6 +296,69 @@ test('folder moves the guard does not follow make the repo unknown: cd -, pushd 
   assert.match(bash('cd /tmp; cd -; git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*Commit or stash/);
 });
 
+// Fix round 3 (11 Nov 2026): the guard follows a cd only when it is certain to take effect, and a probe that cannot answer
+// denies. Rows are both verifiers' exact strings; /r is dirty, /r/clean is a clean repo, and the missing folders do not exist.
+const MISSING = ['/r/nonexistent', '/r/does-not-exist', '/r/sub/nope', '/r/a.txt', '/r/newdir'];
+const round3 = () => fake({ dirty: ['/r'], safe: { gone: false }, missing: MISSING });
+
+test('a cd moves the folder only when it is certain to take effect: a literal, existing folder, then && or set -e', () => {
+  const cases = [
+    ['false && cd clean; git reset --hard', 'discard-local-work'], ['true || cd clean; git reset --hard', 'discard-local-work'],
+    ['if false; then cd clean; fi; git reset --hard', 'discard-local-work'], ['while false; do cd clean; done; git reset --hard', 'discard-local-work'],
+    ['cd does-not-exist; git reset --hard', 'discard-local-work'], ['cd does-not-exist || git reset --hard', 'discard-local-work'],
+    ['cd nonexistent; git reset --hard', 'discard-local-work'], ['cd sub/nope; git reset --hard', 'discard-local-work'],
+    ['cd a.txt; git reset --hard', 'discard-local-work'], ['mkdir -p newdir; cd newdir; git reset --hard', 'discard-local-work'],
+    ['cd nonexistent; git checkout -- .', 'discard-local-work'], ['cd nonexistent; git restore .', 'discard-local-work'],
+    ['cd clean; git reset --hard', 'discard-local-work'], ['rm -rf clean; cd clean; git reset --hard', 'discard-local-work'],
+    ['true || cd clean && git reset --hard', 'discard-local-work'], ['false && cd clean\ngit reset --hard', 'discard-local-work'],
+    ['set -e\nfalse && cd clean\ngit reset --hard', 'discard-local-work'], ['cd clean && true; git reset --hard', 'discard-local-work'],
+    ['cd clean && (true); git reset --hard', 'discard-local-work'], ['cd clean && true || git reset --hard', 'discard-local-work'],
+    ['cd nonexistent && git reset --hard', 'discard-local-work'], ['! cd clean && git reset --hard', 'discard-local-work'],
+    ['for d in clean; do cd clean && break; done; git reset --hard', 'discard-local-work'], ['pushd clean; git reset --hard', 'discard-local-work'],
+    ['set -e; set +e; cd clean; git reset --hard', 'discard-local-work'], ["sh -c 'set -e'; cd clean; git reset --hard", 'discard-local-work'],
+    ['cd nonexistent; rm .eng/guard/hook.mjs', 'guard-files'],
+    ['cd clean && git reset --hard', null], ['cd clean && git add . && git reset --hard', null], ['cd clean && { git reset --hard; }', null],
+    ['set -e\ncd clean\ngit reset --hard', null], ['set -eu; cd clean; git reset --hard', null], ['set -o errexit\ncd clean\ngit reset --hard', null],
+    ["bash -ec 'cd clean; git reset --hard'", null], ['pushd clean && git reset --hard', null], ['cd sub && git add .', null],
+    ['cd nonexistent; git status', null], ['cd nonexistent; git diff', null], ['cd clean; git add .', null], ['git status', null],
+  ];
+  assert.deepEqual(rows(cases, round3()), expect(cases));
+  assert.equal(at('/r/clean', 'git reset --hard', round3()), null, 'reset alone in a clean repo');
+  assert.match(bash('cd nonexistent; git reset --hard', round3()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*Commit or stash/);
+});
+
+test('a probe that cannot answer denies destructive git: no repo, an unreadable status or an unreadable branch', () => {
+  const cases = [
+    ['git reset --hard', 'discard-local-work'], ['git checkout -- .', 'discard-local-work'], ['git restore .', 'discard-local-work'],
+    ['git -C missing reset --hard', 'discard-local-work'], ['git branch -D gone', 'discard-local-work'],
+    ['git status', null], ['git diff', null], ['git add .', null], ['git restore src/a.js', null], ['git branch -d gone', null],
+  ];
+  assert.deepEqual(rows(cases, fake({ dirty: null, safe: { gone: null } })), expect(cases));
+  assert.match(bash('git reset --hard', fake({ dirty: null })).reason, /could not read.*Commit or stash/);
+});
+
+test('a nested shell inherits the outer env assignments: GIT_DIR and GIT_WORK_TREE before sh -c pick the repo inside it', () => {
+  const cases = [
+    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", 'discard-local-work'],
+    ['/r/clean', "GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", 'discard-local-work'],
+    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. bash -c \"sh -c 'git restore .'\"", 'discard-local-work'],
+    ['/r/clean', "GIT_WORK_TREE=.. bash -c 'git checkout -- .'", 'discard-local-work'],
+    ['/r/clean', 'GIT_DIR=../.git find . -exec git reset --hard \;', 'discard-local-work'],
+    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git status'", null], ['/r/clean', "FOO=1 sh -c 'git reset --hard'", null],
+    ['/r/clean', "env -u GIT_DIR sh -c 'git reset --hard'", null],
+  ];
+  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, round3())]), cases.map(([, c, r]) => [c, r]));
+});
+
+test('a redirect on cd, pushd or any builtin is checked: it opens before the builtin runs', () => {
+  const cases = [
+    ['cd . > .eng/guard/hook.mjs', 'guard-files'], ['pushd clean > .eng/guard/hook.mjs', 'guard-files'], ['cd clean 2> .eng/guard/config.json', 'guard-files'],
+    ['cd clean >> .eng/guard/guard.mjs && true', 'guard-files'], ['popd > .eng/guard/hook.mjs', 'guard-files'], ['set -e > .eng/guard/hook.mjs', 'guard-files'],
+    ['cd clean > notes.txt', null], ['cd clean > notes.txt && git status', null],
+  ];
+  assert.deepEqual(rows(cases, round3()), expect(cases));
+});
+
 test('gh global flags come before the subcommand: gh -R and --repo cannot hide pr merge --admin', () => {
   const cases = [
     ['gh -R owner/repo pr merge 5 --admin', 'admin-merge'], ['gh --repo owner/repo pr merge 73 --admin', 'admin-merge'],
@@ -437,6 +501,34 @@ test('the hook script writes nothing: the repo, its index and the guard folder a
     hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command } });
   assert.equal(shot(), before);
   assert.equal(JSON.parse(hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command: 'git reset --hard' } }).stdout).hookSpecificOutput.permissionDecision, 'deny', 'AGENTS.md has an uncommitted change');
+});
+
+test('the rendered hook on a real dirty repo: a cd that may fail or be skipped, inherited selectors and redirects on cd are denied', () => {
+  const dir = tmp('eng-guard-r3-');
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  sh('git init -q -b main');
+  assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
+  sh('mkdir sub clean && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base');
+  sh('cd clean && git init -q -b main && echo c > c.txt && git add c.txt && git commit -qm c');
+  sh('echo dirty > a.txt');
+  const denied = (command, cwd = dir) => {
+    const r = hook('claude-code', { tool_name: 'Bash', cwd, tool_input: { command } }, dir);
+    assert.equal(r.stderr, '', command);
+    return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision === 'deny' : false;
+  };
+  const cases = [
+    ['cd nonexistent; git reset --hard', true], ['cd sub/nope; git reset --hard', true], ['cd a.txt; git reset --hard', true],
+    ['mkdir -p newdir; cd newdir; git reset --hard', true], ['cd nonexistent; git checkout -- .', true], ['cd nonexistent; git restore .', true],
+    ['false && cd clean; git reset --hard', true], ['true || cd clean; git reset --hard', true], ['if false; then cd clean; fi; git reset --hard', true],
+    ['cd does-not-exist || git reset --hard', true], ['cd . > .eng/guard/hook.mjs', true], ['pushd clean > .eng/guard/hook.mjs', true],
+    ['git -C nonexistent reset --hard', true], ['git reset --hard', true], ['cd sub && git reset --hard', true],
+    ['git status', false], ['git diff', false], ['cd sub && git add .', false], ['cd clean && git reset --hard', false],
+  ];
+  assert.deepEqual(cases.map(([c]) => [c, denied(c)]), cases);
+  const clean = path.join(dir, 'clean');
+  for (const c of ["env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", "GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'"]) assert.equal(denied(c, clean), true, c);
+  assert.equal(denied('git reset --hard', clean), false, 'reset alone in a clean repo');
+  assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dirty\n');
 });
 
 // ---------- rendering ----------
