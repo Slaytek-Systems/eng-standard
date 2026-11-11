@@ -159,8 +159,9 @@ test('a cd changes the folder only for the shell it runs in: subshells, substitu
     ["sh -c 'cd /tmp'; git reset --hard", 'discard-local-work'], ['cd /tmp | true; git reset --hard', 'discard-local-work'],
     ['cd /tmp & git reset --hard', 'discard-local-work'], ['(cd /tmp; (cd /x)); git reset --hard', 'discard-local-work'],
     ['echo $(git reset --hard); cd /tmp', 'discard-local-work'], ['(cd /tmp; true) && git -C sub reset --hard', 'discard-local-work'],
-    ['cd /tmp && git reset --hard', null], ['(cd /tmp && git reset --hard)', null], ['{ cd /tmp; }; git reset --hard', null],
-    ['cd /tmp; echo $(git reset --hard)', null], ['eval "cd /tmp"; git reset --hard', null], ['env -C /tmp git reset --hard', null],
+    ['cd /tmp && git reset --hard', null], ['(cd /tmp && git reset --hard)', null], ['{ cd /tmp; }; git reset --hard', 'discard-local-work'],
+    ['{ cd /tmp && git reset --hard; }', null], ['cd /tmp && echo $(git reset --hard)', null], ['eval "cd /tmp"; git reset --hard', 'discard-local-work'],
+    ['env -C /tmp git reset --hard', null],
     ['env -C sub git reset --hard', 'discard-local-work'],
   ];
   assert.deepEqual(rows(cases, fake({ dirty: ['/r', '/r/sub'] })), expect(cases));
@@ -287,8 +288,9 @@ test('folder moves the guard does not follow make the repo unknown: cd -, pushd 
     ['cd /tmp; cd -; git restore .', 'discard-local-work'], ['cd /tmp; cd -; git branch -D gone', 'discard-local-work'],
     ['cd /tmp; cd -; rm .eng/guard/hook.mjs', 'guard-files'], ['cd "$D"; rm hook.mjs', 'guard-files'], ['popd; rm -rf guard', 'guard-files'],
     ['cd /tmp; cd -; git status', null], ['cd /tmp; cd -; git diff', null], ['cd /tmp; cd -; git add .', null], ['cd clean && git add .', null],
-    ['pushd clean; git reset --hard', null], ['cd clean && git reset --hard', null], ['cd -P clean && git reset --hard', null],
-    ['cd /tmp; cd -; cd /r/clean; git reset --hard', null], ['eval "cd clean"; git reset --hard', null], ['source env.sh; git status', null],
+    ['pushd clean; git reset --hard', 'discard-local-work'], ['pushd clean && git reset --hard', null], ['cd clean && git reset --hard', null],
+    ['cd -P clean && git reset --hard', null], ['cd /tmp; cd -; cd /r/clean && git reset --hard', null], ['eval "cd clean"; git reset --hard', 'discard-local-work'],
+    ['source env.sh; git status', null],
     ['f() { echo; }; git diff', null], ['cd "$D"; rm notes.txt', null], ['cd /tmp; cd -; git push origin feat', null],
   ];
   assert.deepEqual(rows(cases, parentDirty()), expect(cases));
@@ -317,7 +319,10 @@ test('a cd moves the folder only when it is certain to take effect: a literal, e
     ['for d in clean; do cd clean && break; done; git reset --hard', 'discard-local-work'], ['pushd clean; git reset --hard', 'discard-local-work'],
     ['set -e; set +e; cd clean; git reset --hard', 'discard-local-work'], ["sh -c 'set -e'; cd clean; git reset --hard", 'discard-local-work'],
     ['cd nonexistent; rm .eng/guard/hook.mjs', 'guard-files'],
-    ['cd clean && git reset --hard', null], ['cd clean && git add . && git reset --hard', null], ['cd clean && { git reset --hard; }', null],
+    ['cd clean && git reset --hard', null], ['cd clean &&\n  git reset --hard', null], ['cd clean && git add . && git reset --hard', null],
+    ['cd clean &&\n\ngit status\ngit reset --hard', 'discard-local-work'], ['cd clean && git status; git reset --hard', 'discard-local-work'],
+    ['set -e; (cd clean; git reset --hard)', null], ['set -e; echo $(cd clean; git reset --hard)', 'discard-local-work'],
+    ['if true; then set -e; fi; cd clean; git reset --hard', 'discard-local-work'], ['true && set -e; cd clean; git reset --hard', 'discard-local-work'], ['cd clean && { git reset --hard; }', null],
     ['set -e\ncd clean\ngit reset --hard', null], ['set -eu; cd clean; git reset --hard', null], ['set -o errexit\ncd clean\ngit reset --hard', null],
     ["bash -ec 'cd clean; git reset --hard'", null], ['pushd clean && git reset --hard', null], ['cd sub && git add .', null],
     ['cd nonexistent; git status', null], ['cd nonexistent; git diff', null], ['cd clean; git add .', null], ['git status', null],
@@ -423,7 +428,12 @@ test('the git probe: tracked changes are dirty and untracked files are not; a br
   assert.equal(p.branchSafe(dir, 'local'), false, 'commits on no upstream and not on main');
   assert.equal(p.branchSafe(dir, 'pushed'), true, 'on its upstream');
   assert.equal(p.branchSafe(dir, 'merged'), true, 'on main');
-  assert.equal(p.branchSafe(dir, 'nope'), null, 'no such branch: git refuses it anyway');
+  assert.equal(p.branchSafe(dir, 'nope'), true, 'no such branch: git refuses it, nothing is lost');
+  assert.equal(p.branchSafe(path.join(dir, 'missing'), 'local'), null, 'no repo: the probe cannot answer');
+  assert.equal(p.dirty(path.join(dir, 'missing'), []), null, 'no folder: the probe cannot answer');
+  const plain = tmp('eng-guard-norepo-');
+  assert.equal(p.dirty(plain, []), false, 'a folder in no repo has no work to lose'); assert.equal(p.branchSafe(plain, 'x'), true);
+  assert.equal(p.isDir(dir), true); assert.equal(p.isDir(path.join(dir, 'a.txt')), false); assert.equal(p.isDir(path.join(dir, 'missing')), false);
   assert.equal(decide({ tool: 'bash', command: 'git branch -D local pushed', cwd: dir }, NEVER, p).rule, 'discard-local-work');
   assert.equal(decide({ tool: 'bash', command: 'git branch -D pushed merged', cwd: dir }, NEVER, p).allow, true);
 });

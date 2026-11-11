@@ -200,15 +200,27 @@ damages this repo's history or work, and each block names the allowed route. Not
   see: variables, globs, aliases, functions, scripts and programs that run git themselves (`watch`, `ssh`, `parallel`,
   `make`, `xargs` reading its command from stdin). Anything outside this repo. It does read subshells, `{ }` groups,
   substitutions (in unquoted heredocs too), `sh -c`, `eval`, `env -S`, `find -exec`, the usual wrappers and git's global
-  options, and a `cd` counts only in the shell it runs in. One accepted gap: a `while`, `for` or `if` block inside a
-  pipeline runs in its own shell, but the guard treats it as the same shell, so a `cd` inside it still counts after it.
+  options, and a `cd` counts only in the shell it runs in. A redirect is checked on every command, `cd` and the other
+  builtins included (`cd . > .eng/guard/hook.mjs` truncates the file before `cd` runs). A nested shell inherits the env
+  assignments before it, so `GIT_DIR=../.git sh -c 'git reset --hard'` acts on the repo `GIT_DIR` picks. One accepted
+  gap: a `while`, `for` or `if` block inside a pipeline runs in its own shell, but the guard treats it as the same
+  shell. A `cd` inside such a block makes the folder unknown, so this gap cannot point a destructive command at the
+  wrong repo. A `CDPATH` set outside the command is not read.
 - **When the guard cannot tell which repo, it denies destructive git and names the route.** It follows only a literal
-  `cd <path>` or `pushd <path>`, a literal `git -C`, and a literal `env -C` or `sudo -D` (into `sh -c` too). Anything
+  `cd <path>` or `pushd <path>`, a literal `git -C`, and a literal `env -C` or `sudo -D` (into `sh -c` too). It follows a
+  `cd` only when the move is certain to take effect. The folder must exist now (checked on disk when the guard runs). The
+  next command must be joined by `&&`, and the folder holds only until that `&&` chain ends. Alternatively the `cd` stands
+  alone under `set -e`, so a failed `cd` stops the shell. A `cd` joined by `;`, `||` or a newline without `set -e`, a `cd`
+  after `||` or `!`, a `cd` inside an `if`, `while`, `until`, `for` or `case` body, and a `cd` to a missing folder or a
+  file all make the folder unknown. So `cd sub && git reset --hard` is checked in `sub`, while `cd sub; git reset --hard`
+  and `mkdir -p d; cd d; git reset --hard` are denied with the route. Anything
   else that may move the folder makes it unknown for the rest of that shell: `cd -`, `cd` with no folder, a variable,
   `~` or a glob, `popd`, `source`, `eval` of a variable. A function, `alias`, `trap`, `shopt`, or setting `CDPATH`,
   `GIT_DIR` or `GIT_WORK_TREE` makes every later folder unknown. `--git-dir`, `--work-tree`, `GIT_DIR=` or
   `GIT_WORK_TREE=` on a git command make its repo unknown. Then `git reset --hard`, `git checkout -- .`, `git restore .`
   and `git branch -D` are denied even in a clean repo, and so is a shell write whose target names a guard file or folder.
+  When the guard cannot read the repo's state (git fails, or the folder is gone), it denies those commands too: a
+  probe that cannot answer never allows. A folder that is in no repo is an answer (there is no work to lose).
   The message says to run the command on its own from the repo root, and to commit or stash first. `git status`,
   `git diff`, `git add` and the rules that do not depend on the repo's state are unchanged.
   The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
