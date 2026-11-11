@@ -200,7 +200,17 @@ damages this repo's history or work, and each block names the allowed route. Not
   see: variables, globs, aliases, functions, scripts and programs that run git themselves (`watch`, `ssh`, `parallel`,
   `make`, `xargs` reading its command from stdin). Anything outside this repo. It does read subshells, `{ }` groups,
   substitutions (in unquoted heredocs too), `sh -c`, `eval`, `env -S`, `find -exec`, the usual wrappers and git's global
-  options, and a `cd` counts only in the shell it runs in.
+  options, and a `cd` counts only in the shell it runs in. One accepted gap: a `while`, `for` or `if` block inside a
+  pipeline runs in its own shell, but the guard treats it as the same shell, so a `cd` inside it still counts after it.
+- **When the guard cannot tell which repo, it denies destructive git and names the route.** It follows only a literal
+  `cd <path>` or `pushd <path>`, a literal `git -C`, and a literal `env -C` or `sudo -D` (into `sh -c` too). Anything
+  else that may move the folder makes it unknown for the rest of that shell: `cd -`, `cd` with no folder, a variable,
+  `~` or a glob, `popd`, `source`, `eval` of a variable. A function, `alias`, `trap`, `shopt`, or setting `CDPATH`,
+  `GIT_DIR` or `GIT_WORK_TREE` makes every later folder unknown. `--git-dir`, `--work-tree`, `GIT_DIR=` or
+  `GIT_WORK_TREE=` on a git command make its repo unknown. Then `git reset --hard`, `git checkout -- .`, `git restore .`
+  and `git branch -D` are denied even in a clean repo, and so is a shell write whose target names a guard file or folder.
+  The message says to run the command on its own from the repo root, and to commit or stash first. `git status`,
+  `git diff`, `git add` and the rules that do not depend on the repo's state are unchanged.
   The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
 - **Off.** `guard: off` in `eng.config.yml`, then `eng sync`, removes `.eng/guard` (the folder too) and the Claude Code
   hook. eng never writes into `.codex` or `.cursor`, so a link or entry you added there stays: `eng doctor` names each

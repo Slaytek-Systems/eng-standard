@@ -292,7 +292,7 @@ test('folder moves the guard does not follow make the repo unknown: cd -, pushd 
   ];
   assert.deepEqual(rows(cases, parentDirty()), expect(cases));
   for (const c of ['cd /tmp; cd -; git reset --hard', 'pushd /tmp; popd; git reset --hard']) assert.equal(ruleOf(c, fake({ dirty: false })), 'discard-local-work', `${c} is denied even when every repo is clean`);
-  assert.match(bash('cd /tmp; cd -; git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*commit or stash/);
+  assert.match(bash('cd /tmp; cd -; git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*Commit or stash/);
 });
 
 test('gh global flags come before the subcommand: gh -R and --repo cannot hide pr merge --admin', () => {
