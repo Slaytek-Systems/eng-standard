@@ -137,7 +137,8 @@ or exit code. It is off in CI (`CI` set), under `node --test`, in a repo that do
      list blocks a raw forced push wherever the flag or `+` refspec sits on the line. In `protected` mode that deny list is
      the only agent-side guard for feature branches: the pre-push hook cannot tell a raw forced push from `gt submit`.
      Only Claude Code gets a deny list (`.claude/settings.json`). Other harnesses in `agents.harnesses` (codex, cursor)
-     get the git hooks and the rendered text; the rendered rules and `eng doctor` name each one's gaps.
+     get the git hooks and the rendered text; the rendered rules and `eng doctor` name each one's gaps. The guard (below)
+     blocks a forced push before the command runs in every tool where its hook is wired.
 5. Never hand-edit a generated file. Edit `eng.config.yml` and run `eng sync`.
 
 ## Git hooks
@@ -169,13 +170,43 @@ hooks:
   pre_push: ['scripts/git-hooks/branch-classes.sh "$@"']
 ```
 
+## Guard
+
+From 0.21.0, `eng sync` renders a small repo-level guard into `.eng/guard`. Before a command runs, it blocks only what
+damages this repo's history or work, and each block names the allowed route. Nothing else is blocked.
+
+| Blocked | Route the message names |
+|---|---|
+| Rewriting pushed history: any forced raw `git push` (a force flag, the lease forms, `--mirror`, a `+` refspec) on any branch, in both `git.rewrite_pushed` modes, and deleting a protected branch | add a commit; bring in the base by merge (`gh pr update-branch <n>`); in `protected` mode, rewrite a feature branch only through the guarded tool (`gt submit`) |
+| Skipping checks: `--no-verify` on any git command, `git commit -n`, `gh pr merge --admin`, `-c core.hooksPath=` and `git config` changes to `core.hooksPath` | run it without the flag and fix what the hook or check reports; add a check through `hooks.pre_commit` or `hooks.pre_push` |
+| Throwing away local work: `git worktree remove --force`; `git reset --hard`, `git checkout -- .` or `git restore .` when tracked files have uncommitted changes; `git branch -D` of a branch whose tip is on neither its upstream nor the default branch; `git clean -f`; `git stash drop` and `git stash clear` | commit or stash first; remove the worktree without `--force` and report what git says; push the branch first; list with `git clean -n` and remove your own files by name; apply a stash entry by SHA |
+| Editing the guard: Edit or Write on `.eng/guard`, on an eng-rendered `.claude/settings.json`, or one that removes eng's entry from a tool's hook file; shell commands that remove, move or overwrite those files | change `eng.config.yml` and run `eng sync` |
+
+- **Wiring.** eng treats tool hook files like skill folders: it never writes into `.codex` or `.cursor`. It renders
+  `.eng/guard/codex-hooks.json` and `.eng/guard/cursor-hooks.json`, and `eng doctor` prints a Guard section with one
+  row per tool. When the tool has no hook file, the row gives the `ln -s` that wires it (relative, quoted, with
+  `mkdir -p` when needed). When the tool has its own file, it gives the exact entry to add. Claude Code is the
+  exception: `.claude/settings.json` is a file eng renders in full, so its PreToolUse hook goes there whenever
+  `claude-code` is in `agents.harnesses`. The section never changes doctor's exit code.
+- **Trust.** Codex runs a repo hook only in a trusted project and only after you trust that hook once in `/hooks`; an
+  untrusted one does not run, and `codex exec` says nothing about it (checked on codex-cli 0.167.1). Cursor runs project
+  hooks only in a trusted workspace. eng cannot see either setting.
+- **Fails open.** The guard uses only Node built-ins, writes nothing, asks git read-only questions with optional locks
+  off, and allows the command when it hits its own error (a note goes to stderr). A guard bug never blocks work.
+- **Not covered.** File edits in Codex and Cursor (their hooks see shell commands only). What the shell parser cannot
+  see: variables, globs, aliases, functions, scripts and programs that run git themselves. Anything outside this repo.
+  The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
+- **Off.** `guard: off` in `eng.config.yml`, then `eng sync`, removes `.eng/guard` and the Claude Code hook. `eng doctor`
+  lists it under "Gates below the standard default". Any other value is a config error.
+
 ## Uninstall
 
 There is no uninstall command. These steps remove what `eng sync` manages and keep anything edited by hand. Do it in one
 PR.
 
-1. `eng sync --check`. A file it reports as differing from the render was edited by hand. Keep it, or move the edits
-   somewhere else first.
+1. Set `guard: off` in `eng.config.yml` and run `eng sync`. The guard blocks removing its own files and unsetting
+   `core.hooksPath`, which the steps below do. Then `eng sync --check`. A file it reports as differing from the render
+   was edited by hand. Keep it, or move the edits somewhere else first.
 2. List what eng manages: `node -p "require('./.eng/lock.json').files.join('\n')"`. Links in `.claude/skills` or
    `.claude/agents` are yours: eng before 0.17.2 made per-skill links there, and none is listed.
 3. `git rm` each listed path except the hand-edited ones and `AGENTS.md`. In `AGENTS.md`, delete only the lines from

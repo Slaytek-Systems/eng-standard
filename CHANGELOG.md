@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.21.0 (11 Nov 2026)
+
+**A repo-level guard blocks what damages this repo's history or work before the command runs** (Safe YOLO lite, Matt, 11 Nov 2026). Since 0.19.0 the AGENTS.md block says hooks, `eng lint`, `eng gate` and CI enforce the repo's rules and name the route when they block. The git hooks only saw a forced push after the fact, and nothing saw `--no-verify`, `--admin` or a discard of local work. Now `eng sync` renders a small guard into `.eng/guard`, and Claude Code, Codex and Cursor run it before each shell command. Matt's machine-wide Safe YOLO keeps everything else (deletes outside the repo, deploys, credentials, network exposure); both can run, and any deny wins.
+
+- **What it blocks, each with its route in the message.** Rewriting pushed history: any forced raw `git push` (a force flag, the lease forms, `--mirror`, a `+` refspec) on any branch in both `git.rewrite_pushed` modes, and deleting a protected branch. Skipping checks: `--no-verify` on any git command, `git commit -n`, `gh pr merge --admin`, and `core.hooksPath` overrides. Throwing away local work: `git worktree remove --force`; `git reset --hard`, `git checkout -- .` and `git restore .` with uncommitted tracked changes; `git branch -D` of a branch on neither its upstream nor the default branch; `git clean -f`; `git stash drop` and `clear`. Editing the guard: its files and eng's hook entries. Nothing else is blocked.
+- **Treated like skill folders.** eng never writes into `.codex` or `.cursor`. It renders `.eng/guard/codex-hooks.json` and `.eng/guard/cursor-hooks.json`, and `eng doctor` prints a Guard section: per tool, wired or not, and the one `ln -s` or the exact entry that wires it. Claude Code's PreToolUse hook goes into `.claude/settings.json`, which eng already renders in full; the deny list stays. Codex runs a repo hook only in a trusted project and after you trust it once in `/hooks`.
+- **Fails open.** Node built-ins only, writes nothing, and allows the call on its own error with a note on stderr, so a guard bug never blocks work. The shell parser reads chains, pipes, quotes, wrappers, nested shells, substitutions and heredocs; it does not expand variables, aliases or functions, and it does not see what scripts run. File edits in Codex and Cursor are not covered (their hooks see shell commands only).
+- **On by default.** `guard: off` turns it off, and `eng doctor` lists that under "Gates below the standard default". Any other value is a config error. SHIPPING.md's Reference gets a Guard entry; the AGENTS.md block is unchanged.
+- **Upgrade:** zero manual edits. `eng sync` writes `.eng/guard` and the new `.claude/settings.json`. To wire Codex or Cursor, run the line `eng doctor` prints. To uninstall eng, set `guard: off` and sync first (`docs/lifecycle.md`, Uninstall).
+
 ## 0.20.2 (11 Nov 2026)
 
 **eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
