@@ -59,6 +59,13 @@ const LINE = /^ {2}(ok {2}|WARN) claude-code: (all \d+|\d+ of \d+) eng skills an
 const report = res => (out(res).match(LINE) ?? [''])[0];
 const allVisible = r => new RegExp(`ok {3}claude-code: all ${r.total} eng skills and subagents are visible in \\.claude/skills and \\.claude/agents`);
 const notVisible = (r, n) => new RegExp(`WARN claude-code: ${n} of ${r.total} eng skills and subagents are not visible in \\.claude/skills or \\.claude/agents`);
+// eng doctor prints a Skills section (lib/skill-visibility.mjs) instead of sync's line: its claude-code row counts what is
+// visible, and its fix names the same commands.
+const syncClaude = line => { const m = line.match(/claude-code: (?:all (\d+)|(\d+) of (\d+)) .*?(?:Fix: (.*))?$/); return m[1] ? { seen: +m[1], total: +m[1], fix: [] } : { seen: m[3] - m[2], total: +m[3], fix: m[4].split('; ') }; };
+const doctorClaude = res => {
+  const row = out(res).match(/^ {4}(?:ok {2}|WARN) claude-code: (\d+) of (\d+) skills and subagents/m), fix = out(res).match(/^ {4}To show them to every tool: (.*)\. Or install/m);
+  return { seen: +row[1], total: +row[2], fix: fix ? fix[1].split('; ').filter(f => f.includes('.claude/')) : [] };
+};
 const LINK_SKILLS = 'ln -s ../.agents/skills .claude/skills', LINK_AGENTS = 'ln -s ../.agents/agents .claude/agents';
 const ADD = d => `add the missing entries to .claude/${d}, or point .claude/${d} at .agents/${d}`;
 
@@ -66,11 +73,13 @@ const ADD = d => `add the missing entries to .claude/${d}, or point .claude/${d}
 // and leaves .claude/skills, .claude/agents and every extra folder byte for byte, inode and mtime as they were.
 function proveReadOnly(r, expect, extra = []) {
   const before = claudeFolders(r), elsewhere = extra.map(snapshot);
+  let synced;
   for (const args of [['sync'], ['sync', '--check'], ['doctor'], ['init']]) {
     const res = r.eng(args);
     assert.equal(res.signal, null, `eng ${args.join(' ')} did not hang: ${out(res).slice(-2000)}`);
     assert.equal(res.status, 0, `eng ${args.join(' ')} exits 0: ${out(res).slice(-3000)}`);
-    if (args[0] === 'sync' && args.length === 1 || args[0] === 'doctor') for (const re of [].concat(expect)) assert.match(report(res), re, `eng ${args.join(' ')}: ${report(res) || out(res).slice(-2000)}`);
+    if (args[0] === 'sync' && args.length === 1) { for (const re of [].concat(expect)) assert.match(report(res), re, `eng sync: ${report(res) || out(res).slice(-2000)}`); synced = report(res); }
+    if (args[0] === 'doctor') assert.deepEqual(doctorClaude(res), syncClaude(synced), `eng doctor's claude-code row and fix agree with eng sync: ${out(res).slice(-2000)}`);
     if (args[1] === '--check') assert.equal(report(res), '', '--check does not read the harness folders');
     assert.doesNotMatch(out(res), /linked \.claude|unlinked \.claude/);
     assert.deepEqual(claudeFolders(r), before, `eng ${args.join(' ')} left .claude/skills and .claude/agents untouched`);
@@ -192,7 +201,8 @@ test('a skill selected twice counts once in the report', () => {
   const one = fs.readdirSync(path.join(PKG, 'vendor', pack, 'skills')).find(n => fs.existsSync(path.join(PKG, 'vendor', pack, 'skills', n, 'SKILL.md')));
   c.agents.skills.push(`${pack}/${one}`, wild);
   fs.writeFileSync(r.file('eng.config.yml'), YAML.stringify(c));
-  for (const args of [['sync'], ['doctor']]) { const res = r.eng(args); assert.equal(res.status, 0, out(res)); assert.match(report(res), notVisible(r, r.total), args.join(' ')); }
+  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res)); assert.match(report(res), notVisible(r, r.total));
+  const doc = r.eng(['doctor']); assert.equal(doc.status, 0, out(doc)); assert.deepEqual(doctorClaude(doc), syncClaude(report(res)));
 });
 
 // The printed fix, run as printed from the repo root, makes every skill and subagent visible.

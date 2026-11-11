@@ -107,9 +107,18 @@ or exit code. It is off in CI (`CI` set), under `node --test`, in a repo that do
   deletes anything in `.claude/skills` or `.claude/agents`: developers and other tools own those folders. A
   setting that would make eng write into either one (`agents.skills_dir: .claude/skills` or `.claude/custom`,
   `verification.checks_dir: .claude/skills`) is a config error, and an old lock's files there are never pruned. For Claude Code's own skill discovery, link each folder once:
-  `ln -s ../.agents/skills .claude/skills` and `ln -s ../.agents/agents .claude/agents`. `eng sync` and `eng doctor`
-  print one line saying whether Claude Code can see every eng skill and subagent there, and the fix when it cannot,
-  quoted and relative to the real `.claude` folder when `.claude` is itself a link. It is a warning, never a failure.
+  `ln -s ../.agents/skills .claude/skills` and `ln -s ../.agents/agents .claude/agents`. `eng sync` prints one line
+  saying whether Claude Code can see every eng skill and subagent there, and the fix when it cannot, quoted and
+  relative to the real `.claude` folder when `.claude` is itself a link. It is a warning, never a failure.
+- No agent tool standard says where skills live, and many developers link every tool's folder to one central folder.
+  So eng never creates or changes a link. `eng doctor` prints a Skills section instead: whether `.agents`, `.claude`,
+  `.claude/skills` and `.claude/agents` are absent, a folder or a link (and where it points), and how many of eng's
+  skills Codex, Cursor and Claude Code each see at their repo folders. Codex reads `.agents/skills`. Cursor reads
+  `.agents/skills`, `.cursor/skills`, `.claude/skills` and `.codex/skills`. Claude Code reads `.claude/skills` and,
+  for subagents, `.claude/agents`. When a tool misses some, it prints the links that fix it, or says to install eng's
+  skills into each tool's own folder. A tool not in `agents.harnesses` is marked `info`, not `WARN`. Skills in the
+  home folder (`~/.agents/skills`, `~/.claude/skills` and the like) are not checked. The section never changes
+  doctor's exit code.
 
 ## Joining agent
 

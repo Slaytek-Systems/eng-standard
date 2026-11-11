@@ -31,6 +31,7 @@ import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
+import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
 import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,27 +158,13 @@ const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLA
 // The exact name is on disk: on a case-insensitive disk existsSync would also find another file whose name differs in case.
 const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch { return false; } };
 
-// Claude Code finds skills at .claude/skills/<name>/SKILL.md and subagents at .claude/agents/<file>. Developers and other
-// tools own those folders, so eng only reads them (Matt, 9 Nov 2026): it renders into agents.skills_dir and reports here
-// what Claude Code cannot see. stat, never open, so a FIFO or special file cannot block; any error counts as not visible.
-function claudeVisibility(cfg) {
-  if (!cfg.agents.harnesses.includes('claude-code')) return null;
+// What each agent tool can see of the skills and subagents eng renders (lib/skill-visibility.mjs). Developers and other
+// tools own .claude/skills, .claude/agents and every link between tool folders, so eng only reads them (Matt, 9 and 10 Nov 2026).
+function skillVisibilityOf(cfg) {
   const subagents = cfg.agents.skills.filter(s => s.endsWith('/*')).flatMap(s => { const d = path.join(PKG, 'vendor', s.split('/')[0], 'agents'); return fs.existsSync(d) ? fs.readdirSync(d) : []; });
-  // A skill or subagent selected twice (pstack/* plus pstack/how) renders once, so it counts once.
-  const dirs = [['.claude/skills', cfg.agents.skills_dir, [...new Set(expandSkills(cfg).map(s => `${s.split('/')[1]}/SKILL.md`))]],
-    ['.claude/agents', `${path.dirname(cfg.agents.skills_dir)}/agents`, [...new Set(subagents)]]];
-  const visible = rel => { try { const abs = path.join(ROOT, rel); if (!fs.statSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
-  const present = rel => { try { fs.lstatSync(path.join(ROOT, rel)); return true; } catch { return false; } };
-  const missing = dirs.map(([d, src, names]) => ({ d, src, n: names.filter(f => !visible(`${d}/${f}`)).length })).filter(m => m.n);
-  const total = dirs.reduce((n, [, , names]) => n + names.length, 0), lost = missing.reduce((n, m) => n + m.n, 0);
-  if (!lost) return { ok: true, what: `claude-code: all ${total} eng skills and subagents are visible in .claude/skills and .claude/agents` };
-  // A link's target is read from the folder it sits in, after symlinks: when .claude is itself a link, ../<src> would
-  // point beside the link's target, not into this repo. So the target is relative to the real .claude folder.
-  const target = (d, src) => { let root = ROOT; try { root = fs.realpathSync(ROOT); } catch {} let real = path.join(root, path.dirname(d)); try { real = fs.realpathSync(path.join(ROOT, path.dirname(d))); } catch {} return path.relative(real, path.join(root, src)) || '.'; };
-  const q = s => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
-  const fix = missing.map(({ d, src }) => present(d) ? `add the missing entries to ${d}, or point ${d} at ${src}` : `ln -s ${q(target(d, src))} ${q(d)}`).join('; ');
-  return { ok: false, what: `claude-code: ${lost} of ${total} eng skills and subagents are not visible in .claude/skills or .claude/agents (eng renders them into ${dirs.map(([, src]) => src).join(' and ')}, and never writes into .claude/skills or .claude/agents). Fix: ${fix}` };
+  return skillVisibility({ skills: expandSkills(cfg).map(s => s.split('/')[1]), subagents, skillsDir: cfg.agents.skills_dir, probe: fsProbe(ROOT) });
 }
+const claudeVisibility = cfg => cfg.agents.harnesses.includes('claude-code') ? claudeLine(skillVisibilityOf(cfg)) : null;
 const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
 // Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
@@ -964,8 +951,7 @@ async function doctor() {
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
-  const v = renderErrors(cfg).length ? null : claudeVisibility(cfg);
-  if (v) console.log(visibilityLine(v));
+  if (!renderErrors(cfg).length) console.log(visibilityReport(skillVisibilityOf(cfg), cfg.agents.harnesses));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
   let hits = lintHits({ ...cfg, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);

@@ -215,7 +215,8 @@ test('the recorder product: a failing run is superseded only by the same argv, n
   const LATER = { 'same argv': FAIL, 'same joined text': ['sh', '-c', 'exit', '${E-3}'], 'another command': ['true'] };
   for (const [i, [kind, later]] of Object.entries(LATER).entries()) {
     const by = `e2e-identity-${i}`;
-    assert.equal((await eng(['run', '--by', by, '--', ...FAIL])).status, 3, kind);
+    const first = await eng(['run', '--by', by, '--', ...FAIL]);
+    assert.equal(first.status, 3, `${kind}: the failing run exits 3\n${first.out}`);
     const second = await eng(['run', '--by', by, '--', ...later], { env: { E: '0' } });
     assert.equal(second.status, 0, `${kind}: the later run passes: ${second.out}`);
     const v = await eng(['verdict', 'PASS', '--by', by]);

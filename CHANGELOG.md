@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.2 (11 Nov 2026)
+
+**eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
+
+- **A Skills section in `eng doctor`.** It shows whether `.agents`, `.claude`, `.claude/skills` and `.claude/agents` are absent, a folder or a link (with its target, and `broken` when the target is gone). Then one row per main tool, listed in `agents.harnesses` or not: how many of eng's skills Codex, Cursor and Claude Code each see at their repo folders, and where each looks. Codex reads `.agents/skills`; Cursor reads `.agents/skills`, `.cursor/skills`, `.claude/skills` and `.codex/skills`; Claude Code reads `.claude/skills`, and `.claude/agents` for subagents. A custom `agents.skills_dir` outside `.agents/skills` means Codex sees none until it is linked.
+- **One plain instruction** when a tool misses skills: the `ln -s` commands that fix it (relative to the real folder when `.claude` is itself a link, quoted when a path needs it, with `mkdir -p` when the parent folder is missing), or install eng's skills into each tool's own folder. The source comes first: when eng's own files are missing it says `run eng sync`, and when any are unreadable it gives one `chmod u+r` line naming every such file (and nothing else), because a link only shows what its source holds. When `.claude` or `.agents` is a file or a broken link, it names that instead of printing a link command that would fail. Skills in the home folder are not checked, and the section says so.
+- **Informational.** It never changes doctor's exit code. A tool not in `agents.harnesses` that misses skills is marked `info`, not `WARN`. The section replaces doctor's one-line Claude Code report; `eng sync` keeps that line and its text; its fix now starts with `mkdir -p .claude &&` when `.claude` is missing, where the old `ln -s` failed.
+- The counting and the fix live in `lib/skill-visibility.mjs`, a pure function over a read-only filesystem probe. `eng sync`'s line is built from it. **Upgrade:** zero manual edits.
+
 ## 0.20.1 (10 Nov 2026)
 
 **eng run runs the exact command it was given.** On a machine where eng's budget uses a systemd user scope, some systemd versions expand `${VAR}` in `systemd-run`'s command arguments. In CI on 10 Nov 2026, `eng run -- sh -c 'exit ${E-3}'` ran as `exit` and was recorded as exit 0, so recorded verification evidence could describe a different command from the one given. systemd printed a warning (`Invalid environment variable name evaluates to an empty string: E-3`), but eng still recorded exit 0.
