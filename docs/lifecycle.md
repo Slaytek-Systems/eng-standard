@@ -193,11 +193,19 @@ damages this repo's history or work, and each block names the allowed route. Not
   hooks only in a trusted workspace. eng cannot see either setting.
 - **Fails open.** The guard uses only Node built-ins, writes nothing, asks git read-only questions with optional locks
   off, and allows the command when it hits its own error (a note goes to stderr). A guard bug never blocks work.
+- **Cursor allow.** The guard answers Cursor with `{"permission":"allow"}` when it does not deny. Cursor enforces only
+  `deny` today (Cursor staff, forum.cursor.com/t/155711/4, 26 Mar 2026), so this skips no approval prompt. If Cursor
+  starts to honour `allow`, the guard should answer `ask` instead (a comment in `lib/guard-hook.mjs` says so).
 - **Not covered.** File edits in Codex and Cursor (their hooks see shell commands only). What the shell parser cannot
-  see: variables, globs, aliases, functions, scripts and programs that run git themselves. Anything outside this repo.
+  see: variables, globs, aliases, functions, scripts and programs that run git themselves (`watch`, `ssh`, `parallel`,
+  `make`, `xargs` reading its command from stdin). Anything outside this repo. It does read subshells, `{ }` groups,
+  substitutions (in unquoted heredocs too), `sh -c`, `eval`, `env -S`, `find -exec`, the usual wrappers and git's global
+  options, and a `cd` counts only in the shell it runs in.
   The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
-- **Off.** `guard: off` in `eng.config.yml`, then `eng sync`, removes `.eng/guard` and the Claude Code hook. `eng doctor`
-  lists it under "Gates below the standard default". Any other value is a config error.
+- **Off.** `guard: off` in `eng.config.yml`, then `eng sync`, removes `.eng/guard` (the folder too) and the Claude Code
+  hook. eng never writes into `.codex` or `.cursor`, so a link or entry you added there stays: `eng doctor` names each
+  one that still points at the removed guard, with the `rm` or the entry to delete. It lists the guard under "Gates
+  below the standard default". Any other value is a config error.
 
 ## Uninstall
 

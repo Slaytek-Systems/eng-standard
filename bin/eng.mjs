@@ -207,7 +207,7 @@ function sync() {
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
@@ -938,6 +938,13 @@ async function upgradeInfo() {
   if (!isBehind(installed, latest)) return { line: `  ok   ${head}`, state: 'CURRENT' };
   const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
   return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
+}
+// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
+function rmEmptyParents(p) {
+  for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
+    try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
+    console.log(`  removed ${d}/`);
+  }
 }
 async function doctor() {
   if (a.includes('--launch')) launchCheck();

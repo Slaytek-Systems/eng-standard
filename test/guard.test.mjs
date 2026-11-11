@@ -149,7 +149,7 @@ test('the shell parser: chains, pipes, wrappers, nested shells, substitutions, k
   assert.deepEqual(parseShell("FOO=1 git -C x commit -m 'a b' > out.txt 2>&1").map(c => [c.words, c.redirects]), [[['FOO=1', 'git', '-C', 'x', 'commit', '-m', 'a b'], [{ op: '>', target: 'out.txt' }]]]);
 });
 
-// Fix round 1 (11 Nov 2026): the bypasses two verifiers (codex-sol, opencode-deepseek) found on 48ca0bf, their siblings,
+// Fix round 1 (11 Nov 2026): the bypasses two independent verifiers found on 48ca0bf, their siblings,
 // and the safe neighbour of each.
 test('a cd changes the folder only for the shell it runs in: subshells, substitutions, nested shells, pipes and background jobs keep theirs', () => {
   const cases = [
