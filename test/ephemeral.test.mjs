@@ -1080,12 +1080,12 @@ test('ENG_SOCK_DIR: a killed run\'s folder is removed by the next run; a SIGTERM
 
 test('staleSockDirs: a folder is stale once its run\'s eng is gone; a live one, or one with a forged owner, is kept until old', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
-  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0';
-  const dirs = [live, dead].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
+  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0', deadRun = 'eng-run-zz-999999999-0';
+  const dirs = [live, dead, deadRun].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
   const forged = path.join(path.dirname(dirs[0]), sockName(`${dead}-forged`)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), dead); dirs.push(forged);
   const of = (h, now = Date.now()) => Object.fromEntries(staleSockDirs(h, { env: e, now }).filter(x => dirs.includes(x.path)).map(x => [x.path, x.stale]));
-  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [forged]: false });
-  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [forged]: true });
+  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [dirs[2]]: true, [forged]: false });
+  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [dirs[2]]: true, [forged]: true });
 });
 
 test('isolation.network private: the run has loopback only and ENG_NETWORK_ISOLATED=1; the host network is out of reach, docker still works', async t => {

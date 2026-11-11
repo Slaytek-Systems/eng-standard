@@ -100,7 +100,7 @@ test('eng run -- <cmd>: one 0700 round under the scratch root, shared caches, re
   assert.equal(r.status, 3, out(r));
   const [tmpA, roundA, cargoA, modeA, cwdA] = fs.readFileSync(path.join(marks, 'a'), 'utf8').trim().split('|');
   assert.ok(roundA.startsWith(scratch() + path.sep), `round ${roundA} is under the scratch root`);
-  assert.equal(tmpA, path.join(roundA, 'tmp')); assert.equal(modeA, '700'); assert.equal(cwdA, path.join(roundA, 'wt'));
+  assert.ok(tmpA && !fs.existsSync(tmpA), `TMPDIR ${tmpA} removed after a failing command`); assert.equal(modeA, '700'); assert.equal(cwdA, path.join(roundA, 'wt'));
   assert.ok(!fs.existsSync(roundA), 'round removed after a failing command'); assert.deepEqual(rounds(), []);
   assert.ok(!git('worktree list').includes(roundA), 'its worktree is gone from git worktree list');
   r = eng('run', '--', 'sh', '-c', probe('b'));
