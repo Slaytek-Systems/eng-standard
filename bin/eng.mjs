@@ -32,6 +32,7 @@ import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nest
 import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
+import { guardErrors, guardWiring, guardProbe, guardReport } from '../lib/guard-setup.mjs';
 import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -106,6 +107,7 @@ function configErrors(c) {
   errs.push(...neverErrors(c));
   errs.push(...rewriteModeErrors(c));
   errs.push(...profileErrors(c));
+  errs.push(...guardErrors(c));
   return errs;
 }
 
@@ -952,6 +954,7 @@ async function doctor() {
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
   if (!renderErrors(cfg).length) console.log(visibilityReport(skillVisibilityOf(cfg), cfg.agents.harnesses));
+  console.log(guardReport(guardWiring({ cfg, probe: guardProbe(ROOT) })));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
   let hits = lintHits({ ...cfg, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
