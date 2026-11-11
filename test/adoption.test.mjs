@@ -21,8 +21,8 @@ const scratch = [];
 after(() => scratch.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 
 // A fresh repo on the template config: no required gates, ephemeral runs unwatched, one run per check.
-function repo(edit = c => c) {
-  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-adopt-')); scratch.push(dir);
+function repo(edit = c => c, base = process.env.ENG_TMP ?? os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(base, 'eng-adopt-')); scratch.push(dir);
   const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
   const c = YAML.parse(fs.readFileSync(TPL, 'utf8'));
@@ -112,11 +112,11 @@ test('an enforced-isolation eng run <name> that runs eng gate: a check still bin
   if (!bwrapOk || os.homedir().startsWith('/tmp/')) return t.skip('needs a usable bwrap and a home outside /tmp');
   const xdg = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
   const bind = 'const net=require("net"),fs=require("fs"),p=require("path");const d=p.join(process.env.TMPDIR,"tsx-"+process.getuid());fs.mkdirSync(d,{recursive:true});const f=p.join(d,"12345.pipe");const s=net.createServer(),end=(m,c)=>{fs.rmSync(d,{recursive:true,force:true});console.log(m);process.exit(c)};s.on("error",e=>end("BIND "+f.length+" "+e.code,1));s.listen(f,()=>end("BIND ok "+f.length,0))';
-  const { eng, checks } = repo(c => { c.isolation = { mode: 'fail' }; c.project.commands.gateprobe = `node ${ENG} gate checks`; return c; });
+  const { eng, checks } = repo(c => { c.isolation = { mode: 'fail' }; c.project.commands.gateprobe = `node ${ENG} gate checks`; return c; }, path.join(os.homedir(), '.cache'));  // the sandbox hides /tmp, so the repo must not be in it
   checks({ sock: `#!/usr/bin/env bash\nnode -e '${bind}'\n` });
   const r = eng(['run', 'gateprobe'], { XDG_CACHE_HOME: xdg });
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, /BIND ok/);
+  assert.match(r.stdout, /pass\s+check:sock/);
 });
 test('eng gate removes the TMPDIR folder of a killed eng run, as the next eng run does', t => {
   if (os.homedir().startsWith('/tmp/')) return t.skip('needs a home outside /tmp');
