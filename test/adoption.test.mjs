@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { enforcer } from '../lib/budget.mjs';
+import { openSockDir, runTmpRoot } from '../lib/hygiene.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -20,8 +21,8 @@ const scratch = [];
 after(() => scratch.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 
 // A fresh repo on the template config: no required gates, ephemeral runs unwatched, one run per check.
-function repo(edit = c => c) {
-  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-adopt-')); scratch.push(dir);
+function repo(edit = c => c, base = process.env.ENG_TMP ?? os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(base, 'eng-adopt-')); scratch.push(dir);
   const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
   const c = YAML.parse(fs.readFileSync(TPL, 'utf8'));
@@ -94,6 +95,71 @@ test('a command binds unix sockets in its TMPDIR through eng run --, and the fol
   assert.equal(out(r).match(/^bound /gm)?.length, 2, out(r));
   const tmp = r.stdout.match(/TMPDIR=(\S+);/)?.[1];
   assert.ok(tmp && !fs.existsSync(tmp), `the run's TMPDIR ${tmp} is removed on exit`);
+});
+
+// The sandbox binds a private dir over /tmp, so its run folder must not be under /tmp: this test keeps its own under the home.
+const bwrapOk = (() => { const d = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-probe-')); try { return spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', d, '/tmp', '--', 'true']).status === 0; } finally { fs.rmSync(d, { recursive: true, force: true }); } })();
+test('a gate check\'s TMPDIR is still there inside a sandboxed eng run <name> that the check starts', t => {
+  if (!bwrapOk || os.homedir().startsWith('/tmp/')) return t.skip('needs a usable bwrap (nested bwrap is refused, so this runs under plain npm test) and a home outside /tmp');
+  const xdg = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
+  const { eng, checks } = repo(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.project.commands.probe = 'test -d "$PARENT_TMP" && test -w "$PARENT_TMP"'; return c; });
+  checks({ nested: `#!/usr/bin/env bash\nexport PARENT_TMP="$TMPDIR"\nnode ${ENG} run probe\n` });
+  const r = eng(['gate', 'checks'], { XDG_CACHE_HOME: xdg });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /pass\s+check:nested/);
+});
+test('an enforced-isolation eng run <name> that runs eng gate: a check still binds a unix socket in its TMPDIR', t => {
+  if (!bwrapOk || os.homedir().startsWith('/tmp/')) return t.skip('needs a usable bwrap and a home outside /tmp');
+  const xdg = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'eng-adopt-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
+  const bind = 'const net=require("net"),fs=require("fs"),p=require("path");const d=p.join(process.env.TMPDIR,"tsx-"+process.getuid());fs.mkdirSync(d,{recursive:true});const f=p.join(d,"12345.pipe");const s=net.createServer(),end=(m,c)=>{fs.rmSync(d,{recursive:true,force:true});console.log(m);process.exit(c)};s.on("error",e=>end("BIND "+f.length+" "+e.code,1));s.listen(f,()=>end("BIND ok "+f.length,0))';
+  const { eng, checks } = repo(c => { c.isolation = { mode: 'fail' }; c.project.commands.gateprobe = `node ${ENG} gate checks`; return c; }, path.join(os.homedir(), '.cache'));  // the sandbox hides /tmp, so the repo must not be in it
+  checks({ sock: `#!/usr/bin/env bash\nnode -e '${bind}'\n` });
+  const r = eng(['run', 'gateprobe'], { XDG_CACHE_HOME: xdg });
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /pass\s+check:sock/);
+});
+// A gate that cannot open a short folder (openSockDir returns null, it does not throw) must still say so, and say how long the
+// TMPDIR it fell back to really is.
+const realHome = os.homedir();
+const noShortFolder = {
+  'a home under /tmp': t => { const h = fs.mkdtempSync('/tmp/eng-nohome-'); t.after(() => fs.rmSync(h, { recursive: true, force: true })); return h; },
+  'a home too long for a short folder': t => { const h = fs.mkdtempSync(path.join(realHome, `${'a'.repeat(34)}-`)); t.after(() => fs.rmSync(h, { recursive: true, force: true })); return h; },
+  'a symlinked ~/.cache': t => {
+    const h = fs.mkdtempSync(path.join(realHome, '.eng-adopt-h-')), target = fs.mkdtempSync(path.join(realHome, '.eng-adopt-c-'));
+    t.after(() => { fs.rmSync(h, { recursive: true, force: true }); fs.rmSync(target, { recursive: true, force: true }); });
+    fs.symlinkSync(target, path.join(h, '.cache')); return h;
+  },
+  'a symlinked ~/.cache/eng/t': t => {
+    const h = fs.mkdtempSync(path.join(realHome, '.eng-adopt-h-')), target = fs.mkdtempSync(path.join(realHome, '.eng-adopt-c-'));
+    t.after(() => { fs.rmSync(h, { recursive: true, force: true }); fs.rmSync(target, { recursive: true, force: true }); });
+    fs.mkdirSync(path.join(h, '.cache/eng'), { recursive: true }); fs.symlinkSync(target, path.join(h, '.cache/eng/t')); return h;
+  },
+};
+for (const [what, makeHome] of Object.entries(noShortFolder))
+  test(`eng gate warns on stderr, with the real TMPDIR length, when it has no short folder because of ${what}`, t => {
+    if (realHome.startsWith('/tmp/')) return t.skip('needs a real home outside /tmp');
+    const home = makeHome(t), lenFile = path.join(home, 'len');
+    const xdg = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-')); t.after(() => fs.rmSync(xdg, { recursive: true, force: true }));
+    const { eng, checks } = repo();
+    checks({ len: `#!/usr/bin/env bash\nprintf '%s' "\${#TMPDIR}" > "$LEN_FILE"\n` });
+    const r = eng(['gate', 'checks'], { HOME: home, LEN_FILE: lenFile, ENG_TMP: '', ENG_TMP_BASE: '', XDG_CACHE_HOME: xdg });
+    assert.equal(r.status, 0, out(r));
+    const real = fs.readFileSync(lenFile, 'utf8');
+    assert.match(r.stderr, /WARN no short TMPDIR for the gate's steps/, `no warning: ${out(r)}`);
+    assert.match(r.stderr, new RegExp(`long path \\(${real} bytes`), `the warning reports the real fallback length ${real}: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /null|undefined/, r.stderr);
+    assert.doesNotMatch(r.stderr, /creating a folder in/, `it must not claim a failed mkdir: ${r.stderr}`);
+  });
+test('eng gate removes the TMPDIR folder of a killed eng run, as the next eng run does', t => {
+  if (os.homedir().startsWith('/tmp/')) return t.skip('needs a home outside /tmp');
+  const { eng, checks } = repo();
+  checks({ ok: '#!/usr/bin/env bash\ntrue\n' });
+  const dead = openSockDir(process.env, 'eng-run-zz-999999999-0', runTmpRoot(process.env));
+  t.after(() => fs.rmSync(dead, { recursive: true, force: true }));
+  assert.ok(fs.existsSync(dead));
+  const r = eng(['gate', 'checks']);
+  assert.equal(r.status, 0, out(r));
+  assert.ok(!fs.existsSync(dead), 'the gate reaps a folder whose eng is gone');
 });
 
 // ---------- 3. a failing step's reason names a failing line, and the end of its output is printed; eng keeps no file ----------
