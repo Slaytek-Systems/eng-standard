@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.3 (11 Nov 2026)
+
+**The pre-commit hook runs eng in bun repos whose overrides npm rejects** (issue #55). The hook ran `npx --no-install eng` unless `ENG` was set. In a bun repo whose package.json has an `overrides` entry npm rejects, npx fails with `EOVERRIDE` before eng starts, so every commit failed unless people remembered to set `ENG`, and that invites `--no-verify`.
+
+- **The hook runs the installed eng with node.** When `node_modules/@slayteksystems/eng-standard/bin/eng.mjs` exists, the hook runs it with `node`, so npm never reads the project. It runs `npx --no-install eng` only when that file is missing. `ENG` still overrides both. The path comes from eng's own package.json (name and `bin.eng`), and the check happens each time the hook runs, so no config key is needed.
+- `test/hooks.test.mjs` renders the hook into a scratch repo with an npm-rejected override and a locally installed eng, and shows the hook reaches eng (it failed with `EOVERRIDE` before). A second test covers the npx fallback and the `ENG` override. The frozen `profile: slaytek` render is now `test/fixtures/profile/v0.20.3.json`, which differs from v0.19.2 only in `.githooks/pre-commit`.
+- **Upgrade:** zero manual edits. `eng sync --check` reports `.githooks/pre-commit` as drifted until `eng sync` rewrites it, like any generated file after a version bump.
+
 ## 0.20.2 (11 Nov 2026)
 
 **eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
