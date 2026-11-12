@@ -1007,7 +1007,7 @@ async function updateNotice() {
     if (line) console.error(line);
   } catch {}
 }
-function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig }; }
+function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig, configErrors }; }
 const found = COMMANDS.find(([n]) => n === cmd);
 // Help never runs the command: `eng <cmd> --help`, `-h` (before any `--`, whose tail belongs to the command eng runs) and `eng help <cmd>`.
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;

@@ -69,7 +69,8 @@ never silent:
 - `eng lint` uses the PR's own config, so a lowering applies in the PR that makes it. `eng merge gate` does not: every
   `merge.auto` setting and `verification.review_only_paths` come from the trusted checkout (main, or the queue's base
   commit), so a PR cannot relax the gate that decides its own merge. It prints a note when the PR changes them, and the
-  change applies to the next PR after it merges. An unreadable trusted config fails the gate.
+  change applies to the next PR after it merges. An unreadable or invalid trusted config fails the gate. In a merge_group
+  the base's config gets main's checks, must be a regular file, and an event without `base_sha` fails the gate.
 
 ## Upgrade
 
