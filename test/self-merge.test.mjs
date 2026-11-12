@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
 import { methodOf, runStatusContext } from '../lib/verification.mjs';
@@ -68,7 +68,7 @@ const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
 // minutes later; self-merge fired 33 s after a deciding PASS. A PASS waits ship.self_merge.settle_minutes after the newest
 // verdict on the head, and does not count while its verifier still has an eng run in progress on that head.
 const T0 = Date.parse('2026-11-12T22:00:00Z'), at = min => new Date(T0 + min * 60e3).toISOString();
-const busy = (by, state = 'pending', sha = SHA) => ({ context: runStatusContext(by, 'npm test'), state, sha, updated_at: at(0) });
+const busy = (by, state = 'pending', sha = SHA) => ({ context: runStatusContext(by, 'npm test', 'r1'), state, sha, updated_at: at(0), creator: { login: 'lane-a' } });
 test('settle: a PASS followed by the same verifier\'s FAIL inside the window never merges', () => {
   assert.equal(C.settle_minutes, 10, 'the default window is 10 minutes');
   const pass = V({ comment_at: at(0) }), fail = V({ result: 'FAIL', comment_at: at(5.5) });
@@ -107,8 +107,8 @@ test('settle: a PASS does not count while that same verifier still has an eng ru
   assert.equal(decide(pr(), s([busy('checker-b')]), C).merge, true, 'another verifier\'s run does not hold this PASS back');
   assert.equal(decide(pr(), s([{ context: 'verdict', state: 'pending' }, { context: 'ci/other', state: 'pending' }]), C).merge, true, 'other statuses are not runs');
   assert.match(decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [V({ comment_at: at(0) }), V({ by: 'checker-b', comment_at: at(0) })], statuses: [busy('checker-b')], now: T0 + 30 * 60e3 }), C).reason, /have 1 \(checker-a\); checker-b does not count: a run by checker-b is still in progress/);
-  assert.deepEqual(eventTarget('status', { context: runStatusContext('checker-a', 'npm test'), state: 'success', sha: SHA }, C), { sha: SHA }, 'a finished run runs self-merge for its head');
-  assert.ok(eventTarget('status', { context: runStatusContext('checker-a', 'npm test'), state: 'pending', sha: SHA }, C).skip, 'a run starting is no reason to run self-merge');
+  assert.deepEqual(eventTarget('status', { context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'success', sha: SHA }, C), { sha: SHA }, 'a finished run runs self-merge for its head');
+  assert.ok(eventTarget('status', { context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', sha: SHA }, C).skip, 'a run starting is no reason to run self-merge');
 });
 
 test('self-merge events: each trigger maps to its one PR; ci finished on main or a bare dispatch checks every open PR', () => {
@@ -334,7 +334,8 @@ test('rule 6 (pure): only the bot\'s single-commit exact inverse of the red tip 
 });
 
 // scripts/pr-gate.mjs merge against a fake gh: routes are "METHOD path" -> JSON, every call is logged.
-// A route value { seq: [a, b, ...] } answers its nth call with the nth item (the last one repeats).
+// A route value { seq: [a, b, ...] } answers its nth call with the nth item (the last one repeats). A route value
+// { pages: [a, b, ...] } is a paginated list: --paginate --slurp gets every page, a plain read only the first.
 function gate(routes, event = null, args = ['merge']) {
   const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-prgate-'));
   fs.writeFileSync(path.join(d, 'routes.json'), JSON.stringify(routes));
@@ -346,7 +347,7 @@ fs.appendFileSync(d + '/calls', JSON.stringify([m, p, body ? JSON.parse(body) : 
 const r = JSON.parse(fs.readFileSync(d + '/routes.json', 'utf8')), k = m + ' ' + p; let v = k in r ? r[k] : r[m + ' ' + p.split('?')[0]];
 if (v && v.seq) { const n = fs.readFileSync(d + '/calls', 'utf8').trim().split('\\n').filter(l => { const [cm, cp] = JSON.parse(l); return cm + ' ' + cp === k; }).length; v = v.seq[Math.min(n - 1, v.seq.length - 1)]; }
 if (v === undefined) { process.stderr.write('HTTP 404: ' + k); process.exit(1); }
-process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
+process.stdout.write(JSON.stringify(v && v.pages ? (a.includes('--slurp') ? v.pages : v.pages[0]) : a.includes('--slurp') ? [v] : v));
 `, { mode: 0o755 });
   if (event) fs.writeFileSync(path.join(d, 'event.json'), JSON.stringify(event.payload));
   const ev = event ? { GITHUB_EVENT_NAME: event.name, GITHUB_EVENT_PATH: path.join(d, 'event.json') } : { GITHUB_EVENT_NAME: '', GITHUB_EVENT_PATH: '' };
@@ -424,7 +425,7 @@ const p3 = { number: 3, state: 'open', title: 'fix: gate', draft: false, created
 const routes = {
   [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'success'), ...runs(SHA, 'success'),
   [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [p3], [`GET ${R}/pulls/3`]: { ...p3, changed_files: 1, commits: 1 },
-  [`GET ${R}/commits/${SHA}/status`]: { statuses: [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' }] },
+  [`GET ${R}/commits/${SHA}/statuses`]: [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' }],
   [`GET ${R}/issues/3/comments?per_page=100`]: comments,
   [`GET ${R}/compare/${TIP}...${SHA}`]: { behind_by: 0 },
   [`GET ${R}/pulls/3/files?per_page=100`]: [{ filename: 'scripts/pr-gate.mjs', status: 'modified' }],
@@ -496,14 +497,16 @@ test('settle: eng run --by marks its run in progress on GitHub, then its result;
     g('remote add origin git@github.com:o/r.git');
     let r = run('true'); assert.equal(r.status, 0, r.stdout + r.stderr);
     r = run('sh', '-c', 'exit 3'); assert.equal(r.status, 3, r.stdout + r.stderr);
-    const ctx = cmd => runStatusContext('checker-a', cmd);
-    assert.deepEqual(calls().map(l => l.replace(/ -f description=.*/, '')), [
-      `api -X POST repos/o/r/statuses/${H} -f state=pending -f context=${ctx('true')}`,
-      `api -X POST repos/o/r/statuses/${H} -f state=success -f context=${ctx('true')}`,
-      `api -X POST repos/o/r/statuses/${H} -f state=pending -f context=${ctx("sh -c 'exit 3'")}`,
-      `api -X POST repos/o/r/statuses/${H} -f state=failure -f context=${ctx("sh -c 'exit 3'")}`,
-    ]);
-    assert.match(calls()[3], /description=exit 3: sh -c 'exit 3'/);
+    const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ctx = cmd => esc(runStatusContext('checker-a', cmd, 'RUNID')).replace('RUNID', '[0-9a-f]{8}');
+    const posted = calls().map(l => l.match(/^api -X POST repos\/o\/r\/statuses\/(\w+) -f state=(\w+) -f context=(\S+) -f description=(.*)$/).slice(1));
+    const want = [['pending', 'true'], ['success', 'true'], ['pending', "sh -c 'exit 3'"], ['failure', "sh -c 'exit 3'"]];
+    assert.equal(posted.length, want.length, calls().join('\n'));
+    posted.forEach(([sha, state, context], i) => { assert.equal(sha, H); assert.equal(state, want[i][0]); assert.match(context, new RegExp(`^${ctx(want[i][1])}$`)); });
+    assert.equal(posted[0][2], posted[1][2], 'a run ends on the context it started'); assert.equal(posted[2][2], posted[3][2]);
+    assert.equal(posted[0][3], 'eng run checker-a: running, timeout 1800s; not a merge check: true', 'a run says it is a verifier run, not a required check');
+    assert.equal(posted[3][3], "eng run checker-a: finished, exit 3; not a merge check: sh -c 'exit 3'", 'its end keeps the honest state and says it is no merge check');
+    r = run('true'); assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.notEqual(calls().at(-1).match(/context=(\S+)/)[1], posted[0][2], 'each run of one command has its own context');
     fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\necho "HTTP 422: No commit found for SHA" >&2\nexit 1\n', { mode: 0o755 });
     r = run('true'); assert.equal(r.status, 0, 'a run GitHub cannot mark still runs and records');
     assert.match(r.stderr, /eng run: could not mark this run in progress on GitHub \(HTTP 422: No commit found for SHA\); self-merge still waits ship\.self_merge\.settle_minutes after the newest verdict/);
@@ -523,11 +526,11 @@ test('settle: a PR that waits only for the window gets self-merge run again once
   assert.ok(wait >= 8 * 60 && wait <= 9 * 60, `waits out the rest of the 10 minutes, plus a margin (${wait} s)`);
   assert.match(r.stdout, /dispatched self-merge-settle\.yml: self-merge runs again for #3 in \d+ s/);
   assert.equal(settle(gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: fresh }, null, ['merge', '--dry-run'])).length, 0, 'a dry run dispatches nothing');
-  const running = { statuses: [{ context: 'verdict', state: 'success' }, { context: runStatusContext('checker-b', 'npm test'), state: 'pending', updated_at: '2026-10-19T04:40:00Z' }] };
-  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/status`]: running });
+  const running = [{ context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-b' } }, { context: 'verdict', state: 'success' }];
+  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: running });
   assert.match(r.stdout, /skip: risk:high needs counted PASSes .* have 1 \(checker-a\); checker-b does not count: a run by checker-b is still in progress/);
   assert.equal(r.sent.length, 0, 'the run\'s own status event, when it ends, runs self-merge again');
-  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/pulls`]: [p3] }, { name: 'status', payload: { context: runStatusContext('checker-b', 'npm test'), state: 'success', sha: SHA } });
+  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/pulls`]: [p3] }, { name: 'status', payload: { context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'success', sha: SHA } });
   assert.ok(r.sent.some(c => c[0] === 'PUT'), `a finished run's status runs self-merge for its head: ${r.stdout}`);
   const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge-settle.yml', import.meta.url), 'utf8'));
   assert.deepEqual(Object.keys(wf.on), ['workflow_dispatch'], 'events only: no schedule');
@@ -588,7 +591,7 @@ test('round-1 note (b): an existing unlabelled auto-revert is labelled and decid
     [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
     [`GET ${R}/pulls?state=open&base=main&head=o:${branch}`]: [rv], [`GET ${R}/pulls/9`]: rv,
     [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }], [`POST ${R}/issues/9/labels`]: {},
-    [`GET ${R}/commits/${HEAD}/status`]: { statuses: [] }, [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
+    [`GET ${R}/commits/${HEAD}/statuses`]: [], [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
     [`GET ${R}/compare/${TIP}...${HEAD}`]: { behind_by: 0 },
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -613,4 +616,114 @@ test('round-2 P1: an edited verdict comment counts from its edit when ordering a
   assert.equal(edited[0].comment_at, '2026-10-19T14:59:00.000Z');
   const order = parseVerdicts([c(V({ result: 'FAIL' }), '2026-10-19T04:00:00Z', '2026-10-19T04:30:00Z'), c(V(), '2026-10-19T04:10:00Z', '2026-10-19T04:10:00Z')]);
   assert.match(decide(pr(), st({ verdicts: order }), C).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
+});
+
+// Fix round 1 (#80, codex-sol and opencode-deepseek findings on 2563782e).
+const runAt = (id, state, min, o = {}) => ({ context: runStatusContext('checker-a', 'npm test', id), state, created_at: at(min), updated_at: at(min), creator: { login: 'lane-a' }, ...o });
+const passAt0 = (statuses, min, c = C, p = pr()) => decide(p, st({ verdicts: [V({ comment_at: at(-60) })], statuses, now: T0 + min * 60e3 }), c);
+
+test('fix round 1, item 1: two concurrent runs of one command by one verifier each hold its PASS until that run ends', async () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runtwice-')), log = path.join(root, 'statuses.jsonl'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo'), lock = path.join(root, 'first');
+  let a = null;
+  try {
+    fs.mkdirSync(bin); fs.mkdirSync(repo);
+    // A fake GitHub that keeps every posted status the way GitHub's list endpoint returns them: newest first, with its creator.
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'), a = process.argv.slice(2), f = k => (a.find(x => x.startsWith(k + '=')) || '').slice(k.length + 1);
+const n = fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.stringify(log)}, 'utf8').trim().split('\\n').length : 0;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ id: n + 1, state: f('state'), context: f('context'), description: f('description'), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), creator: { login: 'lane-a' } }) + '\\n');
+console.log('{}');
+`, { mode: 0o755 });
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a'); g('remote add origin https://github.com/o/r.git');
+    const statuses = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []).map(JSON.parse).reverse();
+    // One command text for both runs: the first to start waits for a go file; the second finds the first's lock and ends at once.
+    const cmd = ['sh', '-c', 'if mkdir "$0" 2>/dev/null; then while [ ! -e "$0/go" ]; do sleep 0.1; done; fi', lock];
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }, args = [ENG, 'run', '--by', 'checker-a', '--', ...cmd];
+    a = spawn(process.execPath, args, { cwd: repo, env, stdio: 'ignore' });
+    const exited = new Promise(res => a.on('exit', res));
+    for (let i = 0; i < 600 && !(fs.existsSync(lock) && statuses().length); i++) await new Promise(res => setTimeout(res, 100));
+    assert.ok(fs.existsSync(lock), 'run A started and waits');
+    const b = spawnSync(process.execPath, args, { cwd: repo, env, encoding: 'utf8' });
+    assert.equal(b.status, 0, b.stdout + b.stderr);
+    const C0 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, settle_minutes: 0 } } });
+    const now = () => decide(pr(), st({ verdicts: [V({ comment_at: new Date(Date.now() - 60e3).toISOString() })], statuses: statuses(), now: Date.now() }), C0);
+    const pendings = statuses().filter(s => s.state === 'pending').map(s => s.context);
+    assert.equal(new Set(pendings).size, 2, `each run has its own context: ${pendings}`);
+    let d = now();
+    assert.equal(d.merge, false, 'run B ended, run A still runs: the PASS does not count');
+    assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa/);
+    fs.writeFileSync(path.join(lock, 'go'), '');
+    assert.equal(await exited, 0);
+    d = now();
+    assert.equal(d.merge, true, `both runs ended: the PASS counts (${d.reason})`);
+  } finally { if (a && a.exitCode === null) a.kill('SIGKILL'); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('fix round 1, item 1: a pending run stops holding its PASS at its deadline: its budget timeout plus 5 minutes', () => {
+  const short = [runAt('r1', 'pending', 0, { description: 'eng run checker-a: running, timeout 600s; not a merge check: npm test' })];
+  let d = passAt0(short, 14.9);
+  assert.equal(d.merge, false); assert.match(d.reason, /still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:15:00\.000Z unless it ends first\)/);
+  assert.equal(passAt0(short, 15).merge, true, 'a run past its deadline (600 s + 300 s) holds nothing back: its eng run died without posting an end');
+  const plain = [runAt('r1', 'pending', 0, { description: 'npm test' })];
+  assert.equal(passAt0(plain, 34.9).merge, false, 'no stated timeout: the default budget timeout (1800 s) plus 5 minutes');
+  assert.equal(passAt0(plain, 35).merge, true);
+  assert.equal(passAt0([runAt('r2', 'success', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'a later run of the same command that ended does not clear an earlier one still running');
+  assert.equal(passAt0([runAt('r1', 'error', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'ending one run leaves the other running');
+  assert.equal(passAt0([runAt('r1', 'error', 2, { description: 'cleared by hand' }), ...plain], 3).merge, true, 'the verifier clears a dead run by posting its end on that context');
+});
+
+test('fix round 1, item 3: only the run\'s own account, or a verifier_logins login, can end its hold', () => {
+  const pending = runAt('r1', 'pending', 0);
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), pending], 2).merge, false, 'another account cannot clear a verifier\'s run');
+  assert.equal(passAt0([runAt('r1', 'success', 1), pending], 2).merge, true, 'the account that started the run ends it');
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'Mattslayga' } }), pending], 2).merge, true, 'a listed verifier_logins login may end it');
+  const CN = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, verifier_logins: undefined } } });
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), pending], 2, CN).merge, false, 'with no verifier_logins only the run\'s own account');
+  const anon = runAt('r1', 'pending', 0, { creator: null });
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: null }), anon], 2, CN).merge, false, 'a status with no creator ends nothing (fail closed)');
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), anon], 2, CN).merge, false);
+  assert.equal(passAt0([anon], 36, CN).merge, true, 'its deadline still applies');
+});
+
+test('fix round 1, item 2: self-merge reads every page of the head\'s statuses; a run past the first 100 still holds its PASS', () => {
+  const other = Array.from({ length: 99 }, (_, i) => ({ context: `ci/other-${i}`, state: 'success', creator: { login: 'bot' } }));
+  const page1 = [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z', creator: { login: 'Mattslayga' } }, ...other];
+  const page2 = [{ context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-a' } }];
+  const r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [page1, page2] }, [`GET ${R}/commits/${SHA}/status`]: { total_count: 101, statuses: page1 } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.sent.some(c => c[0] === 'PUT'), false, r.stdout);
+  assert.match(r.stdout, /have 1 \(checker-b\); checker-a does not count: a run by checker-a is still in progress/);
+  assert.ok(r.calls.some(c => c[1].startsWith(`${R}/commits/${SHA}/statuses`)), 'the paginated list of statuses');
+  const ok = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [page1, [{ context: 'ci/late', state: 'success' }]] } });
+  assert.ok(ok.sent.some(c => c[0] === 'PUT'), `with no run past page 1 it merges: ${ok.stdout}`);
+});
+
+test('fix round 1, item 4: red main\'s auto-revert skips the settle window, but a run in progress still holds its PASS', () => {
+  const fresh = (o = {}) => V({ comment_at: at(0), ...o }), now = T0 + 60e3;
+  assert.equal(decide(pr({ autoRevert: true }), st({ verdicts: [fresh()], now }), C).merge, true, 'the auto-revert merges a minute after its verdict');
+  assert.equal(decide(pr(), st({ verdicts: [fresh()], now }), C).merge, false, 'any other PR waits out the window');
+  assert.match(decide(pr({ autoRevert: true }), st({ verdicts: [fresh()], statuses: [busy('checker-a')], now }), C).reason, /a run by checker-a is still in progress/);
+  assert.match(decide(pr({ autoRevert: true }), st({ verdicts: [fresh(), fresh({ result: 'FAIL', comment_at: at(0.5) })], now }), C).reason, /verdict FAIL by checker-a/);
+  const branch = `auto-revert/${TIP.slice(0, 12)}`, recent = new Date(Date.now() - 60e3).toISOString();
+  const rv = { number: 9, state: 'open', title: 'Revert #5', draft: false, created_at: '2026-10-19T03:00:00Z', labels: [{ name: 'risk:high' }], user: { login: BOT }, body: `<!-- eng-auto-revert of=${TIP} -->`, base: { ref: 'main', sha: TIP }, head: { sha: HEAD, ref: branch, repo: { full_name: 'o/r' } }, changed_files: 1, commits: 1 };
+  const red = statuses => gate({
+    [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'failure'), ...runs(HEAD, 'success'),
+    [`GET ${R}/git/commits/${TIP}`]: { message: 'feat: x (#5)', parents: [{ sha: PARENT }], tree: { sha: 'tip-tree' } },
+    [`GET ${R}/git/commits/${PARENT}`]: { tree: { sha: 'parent-tree' } },
+    [`GET ${R}/git/commits/${HEAD}`]: { parents: [{ sha: TIP }], tree: { sha: 'parent-tree' } },
+    [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
+    [`GET ${R}/pulls?state=open&base=main&head=o:${branch}`]: [rv], [`GET ${R}/pulls/9`]: rv,
+    [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }],
+    [`GET ${R}/commits/${HEAD}/statuses`]: [...statuses, { context: 'verdict', state: 'success' }],
+    [`GET ${R}/issues/9/comments?per_page=100`]: [V({ sha: HEAD, comment_at: recent }), V({ sha: HEAD, by: 'checker-b', comment_at: recent })].map(asComment),
+    [`GET ${R}/compare/${TIP}...${HEAD}`]: { behind_by: 0 },
+    [`PUT ${R}/pulls/9/merge`]: {}, [`DELETE ${R}/git/refs/heads/${branch}`]: {}, [`POST ${R}/actions/workflows/ci.yml/dispatches`]: {},
+  });
+  let r = red([]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.sent[0], ['PUT', `${R}/pulls/9/merge`, { merge_method: 'squash', sha: HEAD, commit_title: 'Revert #5 (#9)' }], `red main is reverted without waiting out the window: ${r.stdout}`);
+  assert.equal(r.sent.some(c => c[1].includes('self-merge-settle')), false);
+  r = red([{ context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-b' } }]);
+  assert.equal(r.sent.length, 0, r.stdout); assert.match(r.stdout, /checker-b does not count: a run by checker-b is still in progress/);
 });
