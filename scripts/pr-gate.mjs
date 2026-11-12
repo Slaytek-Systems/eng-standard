@@ -61,10 +61,13 @@ function label(n) {
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 
-// Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's.
+// Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's. The statuses are the
+// head's full list, every page (newest first, with creator): each eng run posts its own context, so a head can carry more
+// than the 100 contexts the combined-status endpoint returns, and the run rule needs who posted each one. A page GitHub
+// refuses fails the read, and an unreadable state merges nothing.
 function prState(pr, tip) {
   const sha = pr.head.sha;
-  const statuses = get(`repos/${R}/commits/${sha}/status?per_page=100`).statuses;
+  const statuses = pages(`repos/${R}/commits/${sha}/statuses?per_page=100`);
   const { risk, files } = riskFor(pr);
   return {
     risk, files, check: testRun(sha), status: statuses.find(s => s.context === C.status) || null, statuses, now: Date.now(),
@@ -126,8 +129,9 @@ function prsFor(t) {
   return prs;
 }
 
-function evaluate(p, tip) {
-  const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name) };
+// revert: p is red main's exact inverse from autoRevert(), which skips the settle window (lib/self-merge.mjs decide()).
+function evaluate(p, tip, revert = false) {
+  const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name), autoRevert: revert };
   try { return pr.base === C.base && pr.sameRepo ? decide(pr, prState(p, tip), C) : decide(pr, {}, C); }
   catch (e) { return { merge: false, reason: `could not read state: ${e.message.split('\n')[0]}` }; }
 }
@@ -156,10 +160,11 @@ function merge() {
   if (!t) { console.log(`main ${tip.slice(0, 8)}: no ${C.check} run yet; ${dry ? 'would dispatch' : 'dispatching'} ci.yml, merging nothing this run`); if (!dry) send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: C.base }); return; }
   if (t.status !== 'completed') return console.log(`main ${tip.slice(0, 8)}: ${C.check} still running; merging nothing this run (its completion runs this again)`);
   let prs;
-  if (t.conclusion !== 'success') { const rv = autoRevert(tip); if (!rv) return; prs = [rv]; }
+  const revert = t.conclusion !== 'success';
+  if (revert) { const rv = autoRevert(tip); if (!rv) return; prs = [rv]; }
   else prs = prsFor(want).filter(p => p.state === 'open').sort((x, y) => x.created_at.localeCompare(y.created_at));
   for (const p of prs) {
-    const d = evaluate(p, tip);
+    const d = evaluate(p, tip, revert);
     console.log(`#${p.number} ${p.head.sha.slice(0, 8)}: ${d.merge ? (dry ? 'WOULD MERGE' : 'MERGE') : 'skip'}: ${d.reason}`);
     if (d.settle_until && !dry) settle(p.number, d.settle_until);
     if (!d.merge || dry) continue;
@@ -167,7 +172,7 @@ function merge() {
     // merge then pins the head SHA, so a push after this read makes GitHub refuse it.
     const again = get(`repos/${R}/pulls/${p.number}`), now = mainTip();
     if (again.state !== 'open' || again.head.sha !== p.head.sha || now.tip !== tip || now.test?.conclusion !== t.conclusion) { console.log(`#${p.number}: the PR, its head or ${C.base} changed during this run; skip (that change's own event runs self-merge again)`); continue; }
-    const d2 = evaluate(again, tip);
+    const d2 = evaluate(again, tip, revert);
     if (!d2.merge) { console.log(`#${p.number}: refused on re-check: ${d2.reason}`); continue; }
     try {
       send('PUT', `repos/${R}/pulls/${p.number}/merge`, { merge_method: 'squash', sha: p.head.sha, commit_title: `${p.title} (#${p.number})` });

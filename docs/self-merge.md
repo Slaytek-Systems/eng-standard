@@ -13,7 +13,7 @@ Rule summary: [AGENTS.md](../AGENTS.md).
 | Risk label | `.github/workflows/risk-label.yml` → `scripts/pr-gate.mjs label` → `lib/risk.mjs` | On PR open, push, reopen, ready and edit (incl. retarget to main): `risk:high` if any changed path (or a rename's old path) matches `ship.high_risk.paths`, else `risk:low`. `package.json` / `package-lock.json` count only when more than the version changed. Runs main's code (`pull_request_target`, no PR checkout) so a PR cannot relabel itself |
 | Verdict comment | `eng verdict ... --pr <n>` (`bin/eng.mjs`) | Posts an `eng-verdict/v1` PR comment with the record as JSON: head SHA, patch-id, result, by. Self-merge reads verdicts from these comments |
 | Verdict status | `eng verdict ... --pr <n>` / `eng verdict status --pr <n>` (`bin/eng.mjs`) | Posts commit status `verdict` (success/failure) on the PR's exact head SHA from `eng verdict check --pr <n>`, which counts this clone's records and the PR's trusted `eng-verdict/v1` comments for that head (self-merge's parse and `verifier_logins` rules). The ruleset requires it |
-| Run in progress | `eng run --by <id> -- <cmd>` (`lib/run.mjs`) | Sets commit status `eng-run/<id>/<command hash>` pending on the run's commit, then success or failure when it ends. Self-merge does not count `<id>`'s PASS while one is pending |
+| Run in progress | `eng run --by <id> -- <cmd>` (`lib/run.mjs`) | Sets commit status `eng-run/<id>/<command hash>-<run id>` pending on the run's commit, then success or failure when it ends; each run has its own context. The description says `eng run <id>: running` or `finished, exit N; not a merge check`. Self-merge does not count `<id>`'s PASS while one is pending |
 | Settle wait | `.github/workflows/self-merge-settle.yml` | Dispatched by self-merge for a PR that waits only for its settle window: sleeps the rest of it, then dispatches self-merge for that PR |
 | Self-merge | `.github/workflows/self-merge.yml` → `scripts/pr-gate.mjs merge` → `lib/self-merge.mjs` | On events only (below) and on dispatch. Skips everything if main's `test` is running (no run yet: dispatches `ci.yml`). Then checks the event's PR, reads every rule again, squash-merges it with `sha=<head>`, deletes its branch and dispatches `ci.yml` on main (the post-merge check) |
 | Auto-revert | `scripts/pr-gate.mjs merge` on a red main | Opens `auto-revert/<sha12>` from `github-actions[bot]`: one commit on top of the red tip with the tip's parent tree, so it is the exact inverse. While main is red only that PR is considered, and only while it is still that exact inverse |
@@ -56,19 +56,40 @@ Self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs s
 `lib/self-merge.mjs` now hold a PASS back until its verifier has settled.
 
 - **A PASS does not count while its verifier still has a run in progress on the head.** `eng run --by <id> -- <cmd>`
-  sets commit status `eng-run/<id>/<8 hex of the command>` to `pending` on the run's commit when the command starts, and
-  to `success` or `failure` when it ends (`lib/run.mjs`). One context per command, so two parallel runs by one verifier
-  do not hide each other. Self-merge reads the head's commit statuses, and any pending `eng-run/<id>/...` stops `<id>`'s
-  PASS from counting (`runsInProgress()`, `verdictGate()`). A FAIL from that verifier still blocks. Only a clone whose
-  `origin` is on github.com posts these. If GitHub refuses the post (an unpushed commit, no `gh` login), `eng run` says
-  so on stderr and the run goes on; the settle window still applies. A status can only hold a PASS back, never make one
-  count, so it needs no trust rule. A run killed before it ends (SIGKILL, a lost machine) leaves its status pending; the
-  reason names the context, and running the same command again with the same `--by` clears it.
+  sets commit status `eng-run/<id>/<8 hex of the command>-<run id>` to `pending` on the run's commit when the command
+  starts, and to `success` or `failure` when it ends (`lib/run.mjs`). The run id is random per run, so two runs by one
+  verifier, even of the same command at once, never share a context, and one's end never clears the other. Self-merge
+  reads every status on the head, every page of GitHub's list (a head can carry more than 100 contexts), and any run of
+  `<id>` still in progress stops `<id>`'s PASS from counting (`runsInProgress()`, `verdictGate()`). A FAIL from that
+  verifier still blocks. Only a clone whose `origin` is on github.com posts these. If GitHub refuses the post (an
+  unpushed commit, no `gh` login), `eng run` says so on stderr and the run goes on; the settle window still applies.
+- **The status says what it is.** The description reads `eng run <id>: running, timeout 1800s; not a merge check: <cmd>`,
+  then `eng run <id>: finished, exit N; not a merge check: <cmd>`. A failing run's status stays `failure`, so it shows red
+  on the PR: that is the honest state of that run. It is a verifier's run, not a required check; the verdict, not the run
+  status, says what the runs proved.
+- **Who can end a run.** A run is in progress while its newest `pending` status has no later end (`success`, `failure` or
+  `error`) posted by the same GitHub account, or by a login in `ship.self_merge.verifier_logins`. A status from any other
+  account changes nothing, so a collaborator cannot release a verifier's PASS by posting `success` on its context. What
+  this does not protect: anyone with push access can post a `pending` `eng-run/<id>/...` status and hold `<id>`'s PASS
+  back until its deadline, as anyone with push access can add the `hold` label. A status can hold a PASS back; it never
+  makes one count.
+- **A run whose `eng` died stops counting at its deadline.** The deadline is the time GitHub recorded the pending status
+  plus the run's budget timeout (stated in its description; 1800 s by default, `--budget timeout=...` sets it) plus 5
+  minutes. `eng run`'s budget stops a command at its timeout and then posts its end, so a run still alive never reaches its
+  deadline; only a run whose `eng` process was killed (SIGKILL, a lost machine) is still pending then. The skip reason
+  names the context and its deadline. To release it sooner, the verifier ends it knowingly with the same `gh` login that
+  ran it: `gh api -X POST repos/<owner>/<repo>/statuses/<sha> -f state=error -f context=<context> -f description='cleared
+  by hand: the run died'`. A finished `eng-run/...` status, that one included, runs self-merge for its head. A dead run
+  that reaches its deadline posts nothing, so then run `gh workflow run self-merge.yml -f pr=<n>`, or wait for the PR's
+  next event. Re-running the command does not clear it: the new run has its own context.
 - **Nothing merges until `ship.self_merge.settle_minutes` (default 10) have passed since the newest verdict on the
   head.** The newest is the latest trusted verdict comment for the head SHA, from any verifier, by its last edit. 0 turns
   the window off; the limit is 60. **Why 10:** the longest observed PASS-to-own-FAIL gap is 5.5 minutes, so 10 minutes
   covers it with 4.5 minutes (about 80%) to spare, and it costs each PR 10 minutes after its last verdict. The run guard
   covers a verifier whose second look runs longer, as long as that run started before the window ended.
+- **Red main's auto-revert skips the window.** While `main` is red, its `auto-revert/<sha12>` PR (the bot's exact
+  inverse, the only PR that may merge then) merges as soon as its other rules hold, so a red `main` is not left red for
+  another 10 minutes. The run rule and every other rule still apply to it.
 
 **How a waiting PR still merges.** Self-merge runs on events only, and the end of a window is no event. When the window
 is the only rule a PR still waits for, `decide()` returns `settle_until`, and `scripts/pr-gate.mjs` dispatches

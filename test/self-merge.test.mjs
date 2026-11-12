@@ -100,7 +100,7 @@ test('settle: a clean PASS merges once the window has passed; the window is ship
 test('settle: a PASS does not count while that same verifier still has an eng run in progress on the head', () => {
   const s = (statuses, o = {}) => st({ verdicts: [V({ comment_at: at(0) })], statuses, now: T0 + 30 * 60e3, ...o });
   let d = decide(pr(), s([busy('checker-a')]), C);
-  assert.equal(d.merge, false); assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8} pending since 2026-11-12T22:00:00\.000Z\)/);
+  assert.equal(d.merge, false); assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:35:00\.000Z unless it ends first\)/);
   assert.equal(d.settle_until, undefined, 'a run in progress is not the window: its own status event runs self-merge again');
   assert.equal(decide(pr(), s([busy('checker-a', 'success')]), C).merge, true, 'a finished run does not hold the PASS back');
   assert.equal(decide(pr(), s([busy('checker-a', 'failure')]), C).merge, true, 'the verdict, not the run status, says what a run proved');
@@ -618,7 +618,7 @@ test('round-2 P1: an edited verdict comment counts from its edit when ordering a
   assert.match(decide(pr(), st({ verdicts: order }), C).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
 });
 
-// Fix round 1 (#80, codex-sol and opencode-deepseek findings on 2563782e).
+// Fix round 1 (#80, the two round-1 verifier findings on 2563782e).
 const runAt = (id, state, min, o = {}) => ({ context: runStatusContext('checker-a', 'npm test', id), state, created_at: at(min), updated_at: at(min), creator: { login: 'lane-a' }, ...o });
 const passAt0 = (statuses, min, c = C, p = pr()) => decide(p, st({ verdicts: [V({ comment_at: at(-60) })], statuses, now: T0 + min * 60e3 }), c);
 
