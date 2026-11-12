@@ -1,15 +1,16 @@
 # Trust levels (PROPOSAL)
 
 Status: proposal. eng validates a `trust:` block in `eng.config.yml`, but no gate, workflow or merge path reads it yet.
-Turning it on is a separate decision for Matt. Why it exists: [principles/slow-down-to-speed-up.md](../principles/slow-down-to-speed-up.md).
+Promotion is undecided: nobody has chosen how much evidence moves a repo up a level, so this page states no numbers.
+The setting stays off. Turning it on is a separate decision for Matt. Why it exists: [principles/slow-down-to-speed-up.md](../principles/slow-down-to-speed-up.md).
 
 ## Levels
 
-| Level | What agents may do alone | Evidence to reach it (example values) |
+| Level | What agents may do alone | Evidence to reach it |
 |---|---|---|
 | `draft-only` | open PRs; a human merges | none: every repo starts here |
-| `merge-on-verifier-pass` | merge after a counted verifier PASS on the exact head | 10 consecutive verifier PASSes and at least 14 days at `draft-only` |
-| `deploy-on-own` | merge and deploy without a human | 25 consecutive verifier PASSes and at least 30 days at `merge-on-verifier-pass` |
+| `merge-on-verifier-pass` | merge after a counted verifier PASS on the exact head | undecided |
+| `deploy-on-own` | merge and deploy without a human | undecided |
 
 A repo moves up one level at a time. Evidence counts from the last level change.
 
@@ -31,8 +32,8 @@ logic for it.
 trust:
   level: draft-only
   promote:
-    merge-on-verifier-pass: { consecutive_verifier_passes: 10, min_days: 14 }
-    deploy-on-own: { consecutive_verifier_passes: 25, min_days: 30 }
+    merge-on-verifier-pass: { consecutive_verifier_passes: <N>, min_days: <D> }   # N, D: not decided
+    deploy-on-own: { consecutive_verifier_passes: <N>, min_days: <D> }            # N, D: not decided
   demote: { failed_check: one-level, revert: draft-only, rollback: draft-only }
   checks:
     - { name: pstack, runs: local }

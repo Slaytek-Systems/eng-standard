@@ -10,7 +10,10 @@ import { trustErrors, nextLevel } from '../lib/trust.mjs';
 const TPL = fs.readFileSync('templates/eng.config.yml', 'utf8');
 // The template ships the proposal commented out: uncomment the `# trust:` block to get the documented example.
 const uncommented = () => TPL.replace(/^# (trust:\n(?:#   .*\n)+)/m, (_, b) => b.replace(/^# {2}/gm, '  ').replace(/^ {2}trust:/, 'trust:'));
-const example = () => YAML.parse(uncommented()).trust;
+// The template names no thresholds (promotion is undecided), so the tests fill the placeholders with values of their own.
+const FILLED = [['merge-on-verifier-pass', 10, 14], ['deploy-on-own', 25, 30]];
+const filled = () => FILLED.reduce((t, [lvl, n, d]) => t.replace(new RegExp(`(${lvl}: \\{ consecutive_verifier_passes: )<N>(, min_days: )<D>`), `$1${n}$2${d}`), uncommented());
+const example = () => YAML.parse(filled()).trust;
 const ev = (o = {}) => ({ consecutive_verifier_passes: 0, reverts: 0, rollbacks: 0, failed_checks: 0, days: 0, ...o });
 
 test('the template example is a valid trust block, and it is commented out (proposal, not live)', () => {
@@ -54,11 +57,19 @@ test('eng rejects an invalid trust block in eng.config.yml', () => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-trust-'));
   try {
     const run = () => spawnSync(process.execPath, [path.resolve('bin/eng.mjs'), 'e2e', '--required'], { cwd: dir, encoding: 'utf8' });
-    fs.writeFileSync(path.join(dir, 'eng.config.yml'), uncommented().replace('level: draft-only', 'level: yolo'));
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), filled().replace('level: draft-only', 'level: yolo'));
     const r = run();
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /config invalid[\s\S]*trust\.level must be one of/);
-    fs.writeFileSync(path.join(dir, 'eng.config.yml'), uncommented());
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), filled());
     assert.doesNotMatch(run().stderr, /config invalid/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('no user-facing text states promotion thresholds; promotion is undecided and the setting stays off', () => {
+  for (const f of ['templates/eng.config.yml', 'docs/trust-levels.md']) {
+    const t = fs.readFileSync(f, 'utf8');
+    assert.doesNotMatch(t, /consecutive_verifier_passes: \d|min_days: \d|\b(10|25) consecutive|\b(14|30) days/, f);
+  }
+  assert.match(fs.readFileSync('docs/trust-levels.md', 'utf8'), /Promotion is undecided[\s\S]*stays off/);
 });

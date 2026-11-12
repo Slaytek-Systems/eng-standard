@@ -173,7 +173,7 @@ const p = a.find(x => x.startsWith('repos/')) || '', body = a.find(x => x.starts
 if (a.includes('--slurp') && /\\/issues\\/9\\/comments/.test(p)) { console.log(JSON.stringify([JSON.parse(fs.readFileSync(store, 'utf8'))])); process.exit(0); }
 if (body && /\\/issues\\/9\\/comments$/.test(p)) {
   const c = JSON.parse(fs.readFileSync(store, 'utf8'));
-  c.push({ body: body.slice(5), user: { login: 'verifier' }, author_association: 'OWNER', created_at: new Date(Date.now() + c.length * 1000).toISOString() });
+  c.push({ body: body.slice(5), user: { login: 'Mattslayga' }, author_association: 'OWNER', created_at: new Date(Date.now() + c.length * 1000).toISOString() });
   fs.writeFileSync(store, JSON.stringify(c)); console.log('{}'); process.exit(0);
 }
 if (/\\/statuses\\//.test(p)) { fs.appendFileSync(${JSON.stringify(statuses)}, a.find(x => x.startsWith('state=')) + '\\n'); console.log('{}'); process.exit(0); }
@@ -480,7 +480,7 @@ test('round-1 P1: with ship.self_merge.verifier_logins only listed logins may po
   assert.match(decide(H, hi({ verdicts: [a, b, { ...b, by: 'someone-else', result: 'FAIL', comment_at: '2026-10-19T04:05:00Z' }] }), CL).reason, /FAIL/, 'a login\'s latest verdict supersedes only its own');
   assert.match(decide(H, hi({ verdicts: [a, { ...b, association: 'NONE' }] }), CL).reason, /have 1 \(checker-a\)$/, 'a listed login still needs write access');
   for (const bad of [{ a: 'x' }, [], {}, 'x', [''], [3]]) assert.throws(() => selfMergeConfig({ ship: { self_merge: { verifier_logins: bad } } }), /verifier_logins/, JSON.stringify(bad));
-  assert.equal(C.verifier_logins, null, 'eng-standard has no verifier logins yet: any write-access account can post a verdict');
+  assert.deepEqual(C.verifier_logins, ['Mattslayga'], 'eng-standard lists the one login that posts verdicts');
 });
 
 test('round-1 note (b): an existing unlabelled auto-revert is labelled and decided on that label in the same run', () => {

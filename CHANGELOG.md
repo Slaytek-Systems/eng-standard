@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.8 (12 Nov 2026)
+
+**Rendered text and `eng doctor` say what a PASS proves; trust levels state no promotion numbers** (Core task p57ayk8fmv9c7zabmpz3jgsp018j255b, Matt's decision nd7d20nkg8d89ygyh30we1ybqd8j3hqg on outside assessment points E2 and E6).
+
+- **A PASS is a recorded run, not a re-run.** While lock A is off, the AGENTS.md block (short form), SHIPPING.md rule 3 and `eng doctor` (a `NOTE` line, not a failure) say: "A PASS proves a recorded run on the exact commit, not a re-run at merge time." Lock A has no config key of its own; the signal is `merge.auto.gate_app_id`, the gate App that alone reports the required check. Set it and the line disappears.
+- **Trust levels.** `docs/trust-levels.md` and the `trust:` block in `templates/eng.config.yml` no longer show 10/14 and 25/30. They say promotion is undecided and the setting stays off. Behaviour is unchanged: `lib/trust.mjs` reads whatever thresholds a repo writes and enforces none of its own.
+- **eng-standard's own `eng.config.yml`** sets `ship.self_merge.verifier_logins: [Mattslayga]`, the one login that has posted verdict comments here.
+
 ## 0.20.7 (12 Nov 2026)
 
 **`eng merge gate` takes every merge.auto setting from the trusted checkout, never the PR head** (Core task p57223k06dja6m58a1jvyvqq8x8j0mb8). Since 0.18.2 the gate read `merge.auto` from the PR head's `eng.config.yml` (`lib/merge-cli.mjs`), and only `merge.auto.check` from main. A PR could set `high_risk_verifiers: 1`, drop paths from `high_risk_paths`, add `**` to `verification.review_only_paths`, rename `tests_check` or clear `verifier_logins`, and be judged by those values. No repo runs `merge.auto` yet, so nothing was exposed.

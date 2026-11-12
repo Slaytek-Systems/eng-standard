@@ -264,8 +264,8 @@ constraints:
 # trust:
 #   level: draft-only               # draft-only -> merge-on-verifier-pass -> deploy-on-own
 #   promote:                        # measured evidence since the last level change; any crash below resets it
-#     merge-on-verifier-pass: { consecutive_verifier_passes: 10, min_days: 14 }
-#     deploy-on-own: { consecutive_verifier_passes: 25, min_days: 30 }
+#     merge-on-verifier-pass: { consecutive_verifier_passes: <N>, min_days: <D> }   # not decided: the thresholds are open
+#     deploy-on-own: { consecutive_verifier_passes: <N>, min_days: <D> }
 #   demote:                         # automatic, on any one event: one-level | draft-only
 #     failed_check: one-level       # a declared check failed on the default branch
 #     revert: draft-only

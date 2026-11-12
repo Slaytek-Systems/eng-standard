@@ -65,3 +65,18 @@ test('an existing AGENTS.md keeps its human text; only the block between the mar
   assert.ok(!a.includes('old rule text'));
   assert.ok(words(blockOf(a)) < 120);
 });
+
+test('the PASS line shows in AGENTS.md, SHIPPING.md and eng doctor until lock A (merge.auto.gate_app_id) is set, then goes', () => {
+  const FULL = 'A PASS proves a recorded run on the exact commit, not a re-run at merge time.';
+  for (const profile of ['generic', 'slaytek']) {
+    const c = template(); c.profile = profile;
+    const off = renderAll(c, null);
+    assert.match(blockOf(off['AGENTS.md']), /A PASS proves a recorded run on the exact commit, not a re-run\./);
+    assert.ok(off['SHIPPING.md'].includes(FULL), `${profile}: SHIPPING.md carries the full line`);
+    assert.doesNotMatch(off['SHIPPING.md'], /<PASS_PROVES>/);
+    c.merge = { ...c.merge, auto: { gate_app_id: 12345 } };
+    const on = renderAll(c, null);
+    assert.doesNotMatch(blockOf(on['AGENTS.md']), /A PASS proves/);
+    assert.doesNotMatch(on['SHIPPING.md'], /A PASS proves/);
+  }
+});
