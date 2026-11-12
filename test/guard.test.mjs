@@ -430,7 +430,7 @@ test('the rendered hook on real repos: destructive git runs only alone from the 
   assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
   sh('mkdir sub clean && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base');
   sh('cd clean && git init -q -b main && echo c > c.txt && mkdir inner && echo i > inner/i.txt && git add -A && git commit -qm c');
-  sh(`ln -s ${dir}/sub clean/link && echo dirty > a.txt`);
+  sh(`ln -s ${dir}/sub clean/link && echo link >> clean/.git/info/exclude && echo dirty > a.txt`);
   const clean = path.join(dir, 'clean');
   const denied = (command, cwd = dir) => {
     const r = hook('claude-code', { tool_name: 'Bash', cwd, tool_input: { command } }, dir);

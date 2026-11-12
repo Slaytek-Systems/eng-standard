@@ -180,7 +180,10 @@ this copy in step with it. Any shape: denied wherever the form appears. Alone at
 repo's state, so it is checked only when it is the whole command run from the repo root (below), and denied there when
 it would lose work; in any other shape it is denied. git accepts any unique prefix of a long option, so the guard
 counts any prefix as the option (`--har` is `--hard`, `--del --forc` is `--delete --force`); a prefix two options share
-counts as either, and git refuses it anyway.
+counts as either, and git refuses it anyway. A flag that makes a form safe (`-n`, `--cached`, `--staged`, `--detach`,
+`--orphan`) is read as git reads it: the last word wins, and `--no-<name>` or a prefix of it turns the flag off again.
+Untracked files count only for the forms that can overwrite them, and ignored files never count: stash them with
+`git stash push --include-untracked`.
 
 | Destructive git form | Denied | Route the message names |
 |---|---|---|
@@ -191,15 +194,20 @@ counts as either, and git refuses it anyway.
 | `git -c core.hooksPath=<path>` or `--config-env core.hooksPath=<var>`, any path but `.githooks` | any shape | keep `.githooks`; add a check through `hooks.pre_commit` or `hooks.pre_push` |
 | `git config` setting or unsetting `core.hooksPath`, any path but `.githooks` | any shape | the same |
 | `git worktree remove --force` | any shape | commit or stash first, or remove the worktree without `--force` and report what git says |
-| `git clean` without `-n` or `--dry-run` | any shape | list with `git clean -n` and remove your own files by name |
+| `git clean` without `-n` or `--dry-run` (a later `--no-dry-run` turns it off) | any shape | list with `git clean -n` and remove your own files by name |
 | `git stash drop`, `git stash clear` | any shape | leave the entries; apply yours by SHA |
-| `git update-ref -d` or `--stdin` | any shape | delete a branch with `git branch -d` |
-| `git reset --hard`, `--merge` or `--keep` | alone at the root when tracked files have uncommitted changes; any other shape | commit or stash first |
-| `git checkout -f` or `--force`, and `git checkout` with paths (`-- <paths>`, `<commit> <paths>`, or one word that may be a path) | alone at the root when those paths (the whole tree for `-f`) have uncommitted changes; any other shape | commit or stash first; to change branch inside a chain, `git switch <branch>` |
-| `git switch -f`, `--force` or `--discard-changes` | alone at the root when tracked files have uncommitted changes; any other shape | commit or stash first |
-| `git restore <paths>`, except `--staged` alone | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
-| `git rm -f` or `--force`, except with `--cached` | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
+| `git update-ref`, any form | any shape | move a branch with `git branch -f` alone at the root; delete one with `git branch -d` |
+| a forced `git fetch` or `git pull` into a local ref (`+<src>:<dst>`, or `<src>:<dst>` with `-f`, `--force` or `--refmap`), `<dst>` not under `refs/remotes/` or `refs/tags/` | any shape | fetch into the remote-tracking branches, then `git branch -f <branch> origin/<branch>` alone at the root |
+| `git reset --hard` (untracked files count), `--merge` or `--keep` | alone at the root when tracked files have uncommitted changes, or for `--hard` when there is any untracked file; any other shape | commit or stash first (`git stash push --include-untracked`) |
+| `git checkout -f` or `--force` (untracked files count), and `git checkout` with paths (`-- <paths>`, `<commit> <paths>`, or one word that may be a path; untracked files under the paths count when a commit is given) | alone at the root when those paths (the whole tree for `-f`) have uncommitted changes or the untracked files that count; any other shape | commit or stash first; to change branch inside a chain, `git switch <branch>` |
+| `git switch -f`, `--force` or `--discard-changes` (untracked files count) | alone at the root when tracked files have uncommitted changes or there is any untracked file; any other shape | commit or stash first |
+| `git restore <paths>`, except `--staged` alone (untracked files under the paths count with `--source`) | alone at the root when those paths have uncommitted changes or the untracked files that count; any other shape | commit or stash first |
+| `git rm -f` or `--force`, except with `--cached` (a later `--no-cached` turns it off) | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
 | `git branch -D`, `-d -f` or `--delete --force` | alone at the root when the branch's tip is on neither its upstream nor the default branch; any other shape | push it first, or use `git branch -d` |
+| `git branch -f` or `--force` onto an existing branch, and `-M`, `-C`, or `-m` or `-c` with `-f`, onto one | alone at the root when the branch it replaces has a tip on neither its upstream nor the default branch; any other shape | push it first, or use a new branch name |
+| `git switch -C` or `--force-create` onto an existing branch | the same | the same |
+| `git checkout -B` onto an existing branch | the same | the same |
+| `git worktree add -B` onto an existing branch | the same | the same |
 
 | Other blocks | Route the message names |
 |---|---|
