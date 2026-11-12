@@ -66,9 +66,13 @@ never silent:
   repo sets in a gate block (`gates`, `renovation.gates`, `verification`, `ship`, `merge`, `hygiene`, `laws`, `flags`,
   `db`, `e2e`, `constraints`) to something other than the standard for its profile, with both values. It does not say
   whether the change lowers anything, and it never changes doctor's exit code either.
-- Gates use the PR's own config. `eng lint` reads the checkout's `eng.config.yml`, and `eng merge gate` reads the PR
-  head's, so a lowering applies in the PR that makes it. Only `merge.auto.check`, the required check's name, comes from
-  the trusted checkout.
+- `eng lint` uses the PR's own config, so a lowering applies in the PR that makes it. `eng merge gate` does not: every
+  `merge.auto` setting and `verification.review_only_paths` come from the trusted checkout (main, or the queue's base
+  commit), so a PR cannot relax the gate that decides its own merge. It prints a note when the PR changes them, and the
+  change applies to the next PR after it merges. An unreadable or invalid trusted config fails the gate. In a merge_group
+  the base's config gets main's checks and must be a regular file. `base_sha` must be a commit strictly behind the queued
+  commit; a missing one, the queued commit itself, an unrelated commit or a tree fails the gate. `high_risk_paths` entries
+  must be non-blank strings; a well-formed glob that matches nothing is allowed, because the trusted config sets policy.
 
 ## Upgrade
 

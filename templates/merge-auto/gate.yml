@@ -1,7 +1,7 @@
 # The ONE required check, eng-merge-gate (merge rule v0.10.0, AGENTS.md). Trusted: pull_request_target, workflow_run,
 # issue_comment and workflow_dispatch all run main's copy of this file and main's code; the PR's commits are only read as
-# data. The gate levels come from the PR head's eng.config.yml, so a PR may lower one in that PR (risk:high, listed by
-# eng doctor); only the required check's name comes from main's config. It waits for the PR's `test` check, applies eng
+# data. Every merge.auto setting comes from main's eng.config.yml, never the PR head's, so a PR that edits them is judged
+# by main's values (the gate notes the edit; it applies after merge). It waits for the PR's `test` check, applies eng
 # merge gate (strict: a counted PASS for the exact head), and posts eng-merge-gate as a commit status on the PR head.
 name: gate
 on:
