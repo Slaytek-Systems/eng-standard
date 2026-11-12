@@ -1,0 +1,35 @@
+# Runs self-merge again for one PR once its settle window has passed (ship.self_merge.settle_minutes, lib/self-merge.mjs).
+# Self-merge runs on events only, and the end of a window is no event, so when the window is the only rule a PR still
+# waits for, scripts/pr-gate.mjs dispatches this with the PR and the seconds left. It sleeps on its own runner, outside
+# self-merge's queue, then dispatches self-merge for that PR, which checks every rule again. A newer dispatch for the same
+# PR cancels a waiting one, so the latest window wins. Nothing here merges, and nothing runs on a schedule.
+name: self-merge-settle
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The PR to run self-merge for
+        required: true
+      seconds:
+        description: Seconds to wait first (at most 3900)
+        required: true
+permissions: {}
+concurrency:
+  group: self-merge-settle-${{ inputs.pr }}
+  cancel-in-progress: true
+jobs:
+  settle:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      actions: write                # dispatch self-merge.yml
+    steps:
+      - run: |
+          [[ "$PR" =~ ^[0-9]+$ && "$WAIT" =~ ^[0-9]+$ && "$WAIT" -le 3900 ]] || { echo "pr must be a number and seconds a whole number up to 3900 (got pr=$PR seconds=$WAIT)"; exit 1; }
+          sleep "$WAIT"
+          gh workflow run self-merge.yml --repo "$GITHUB_REPOSITORY" --ref main -f pr="$PR"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          WAIT: ${{ inputs.seconds }}

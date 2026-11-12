@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.22.0 (13 Nov 2026)
+
+**Self-merge waits until a verifier's own verdict has settled** (Core task p574yb0qyj3n9xyd3tad1h4mg98j3wpy, decision nd7f5ykvfszpme1pq2ezwv2nyd8j3bnx). The 12 Nov sweep found opencode-deepseek posting PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes apart, and self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs stood in the way. Now two rules in `lib/self-merge.mjs` do.
+
+- **A PASS does not count while its verifier still has a run in progress on the head.** `eng run --by <id> -- <cmd>` sets commit status `eng-run/<id>/<8 hex of the command>` to pending on the run's commit when the command starts, and to success or failure when it ends. Self-merge reads the head's commit statuses and does not count `<id>`'s PASS while any of its runs is pending; the reason names the context. Only a clone whose `origin` is on github.com posts these; a post GitHub refuses is reported on stderr and the run goes on.
+- **A settle window.** Nothing merges until `ship.self_merge.settle_minutes` (default 10, 0 to 60, 0 turns it off) have passed since the newest trusted verdict on the head. 10 minutes covers the longest observed flip (5.5 minutes) with 4.5 to spare.
+- **A waiting PR is not stranded.** When the window is the only rule left, self-merge dispatches the new `.github/workflows/self-merge-settle.yml`, which sleeps the rest of the window plus 30 s on its own runner, outside self-merge's queue, then dispatches self-merge for that PR. A newer wait for the same PR cancels the older one. A finished `eng-run/...` status also starts self-merge for its head, so a PASS held back by a run counts as soon as the run ends.
+- **Rule text.** `AGENTS.md` and `docs/self-merge.md` drop "there is no wait" and describe the guard, its default and why. `ship.self_merge.hold_minutes` is still refused, and its message now points at `settle_minutes`.
+- **Upgrade:** zero manual edits. Verifiers keep running `eng run --by <id> -- <cmd>`; with a GitHub `origin` and a `gh` login it now also posts the run status.
+
 ## 0.21.1 (12 Nov 2026)
 
 **Rendered text and `eng doctor` say what a PASS proves; trust levels state no promotion numbers** (Core task p57ayk8fmv9c7zabmpz3jgsp018j255b, Matt's decision nd7d20nkg8d89ygyh30we1ybqd8j3hqg on outside assessment points E2 and E6).

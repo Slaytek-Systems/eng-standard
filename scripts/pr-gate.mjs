@@ -5,7 +5,9 @@
 //   node scripts/pr-gate.mjs label <n> [--dry-run]     set risk:high or risk:low from the PR's changed paths
 //   node scripts/pr-gate.mjs merge [--pr <n>] [--dry-run]   squash-merge at most ONE eligible PR (the event's PR, --pr, or
 //                                                            every open PR), then run ci.yml on main; on a red main, open
-//                                                            the tip's auto-revert instead
+//                                                            the tip's auto-revert instead. A PR that waits only for the
+//                                                            settle window gets self-merge-settle.yml, which runs this again
+//                                                            for it once the window has passed
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -62,10 +64,10 @@ const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${en
 // Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's.
 function prState(pr, tip) {
   const sha = pr.head.sha;
-  const st = get(`repos/${R}/commits/${sha}/status`).statuses.find(s => s.context === C.status) || null;
+  const statuses = get(`repos/${R}/commits/${sha}/status?per_page=100`).statuses;
   const { risk, files } = riskFor(pr);
   return {
-    risk, files, check: testRun(sha), status: st,
+    risk, files, check: testRun(sha), status: statuses.find(s => s.context === C.status) || null, statuses, now: Date.now(),
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
   };
@@ -135,6 +137,16 @@ function mainTip() {
   return { tip, test: testRun(tip) };
 }
 
+// Self-merge runs on events only, and the end of a settle window is no event. self-merge-settle.yml waits out the rest of
+// the window (plus 30 s for clock skew) on its own runner, outside self-merge's queue, then dispatches self-merge for the
+// PR. A newer dispatch for the same PR replaces a waiting one (its concurrency group), so the latest window wins.
+function settle(n, until) {
+  const seconds = Math.max(30, Math.ceil((Date.parse(until) - Date.now()) / 1000) + 30);
+  try { send('POST', `repos/${R}/actions/workflows/self-merge-settle.yml/dispatches`, { ref: C.base, inputs: { pr: String(n), seconds: String(seconds) } }); }
+  catch (e) { console.log(`  could not dispatch self-merge-settle.yml (${e.message.split('\n')[0]}); after ${until} run gh workflow run self-merge.yml -f pr=${n}`); process.exitCode = 1; return; }
+  console.log(`  dispatched self-merge-settle.yml: self-merge runs again for #${n} in ${seconds} s`);
+}
+
 function merge() {
   const want = target();
   if (want.skip) return console.log(`${process.env.GITHUB_EVENT_NAME}: ${want.skip}; nothing to do`);
@@ -149,6 +161,7 @@ function merge() {
   for (const p of prs) {
     const d = evaluate(p, tip);
     console.log(`#${p.number} ${p.head.sha.slice(0, 8)}: ${d.merge ? (dry ? 'WOULD MERGE' : 'MERGE') : 'skip'}: ${d.reason}`);
+    if (d.settle_until && !dry) settle(p.number, d.settle_until);
     if (!d.merge || dry) continue;
     // Read everything again just before the merge call: the PR, main's tip and its test, and every rule in decide(). The
     // merge then pins the head SHA, so a push after this read makes GitHub refuse it.
