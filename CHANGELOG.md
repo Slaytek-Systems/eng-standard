@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.20.7 (12 Nov 2026)
+
+**`eng merge gate` takes every merge.auto setting from the trusted checkout, never the PR head** (Core task p57223k06dja6m58a1jvyvqq8x8j0mb8). Since 0.18.2 the gate read `merge.auto` from the PR head's `eng.config.yml` (`lib/merge-cli.mjs`), and only `merge.auto.check` from main. A PR could set `high_risk_verifiers: 1`, drop paths from `high_risk_paths`, add `**` to `verification.review_only_paths`, rename `tests_check` or clear `verifier_logins`, and be judged by those values. No repo runs `merge.auto` yet, so nothing was exposed.
+
+- **The gate reads its settings from the trusted config.** On the PR events in `gate.yml` that is the checkout of main, which the workflow already runs. In queue mode (`merge_group`) it is `eng.config.yml` at the queue's base commit, not the queued commit. A config it cannot read, or one with no `merge.auto`, fails the gate.
+- **Never silent.** When the PR head's settings differ, the gate prints `note: PR #<n> changes merge.auto or verification.review_only_paths; this gate uses main's values, and the change applies after it merges`. `eng.config.yml` stays in the template's `merge.auto.high_risk_paths`, so the PR that edits them is still risk:high.
+- **How this fits the 10 Nov decision that removed `--config-from`.** That decision (Matt, "repos may lower merge gates, never silently") is about gate levels such as `renovation.gates.mode` that `eng lint` enforces, and lint still reads the PR's own config. The merge gate's settings decide who may merge the PR that changes them; reading them from the head let a PR certify itself under rules it wrote. A repo can still lower any of them, visibly and as risk:high; the lower value applies from the next PR. `--config-from` stays gone: the gate needs no flag, because it already runs from the trusted checkout. eng-standard's own `self-merge.yml` and `ship.self_merge` are unchanged.
+- `test/merge-queue.test.mjs` replaces the 0.18.2 test that a PR's own `high_risk_verifiers: 1` applied. A PR head that lowers `high_risk_verifiers`, narrows `high_risk_paths`, widens `review_only_paths` and renames `check` is now judged by main's values on a pull_request event and in a merge_group, and an unreadable base config fails closed. Before the fix the same test passed the gate on one verifier.
+- **Upgrade:** zero manual edits. A repo on `templates/merge-auto/` may copy the new comment in `gate.yml`.
+
 ## 0.20.6 (12 Nov 2026)
 
 **The lib modules that decide what a gate runs, passes or requires are risk:high in eng-standard's own merge rule** (Core task p57ejat07k4vxe9q9y78d1m4vd8j1fvz). Before, a risk:low PR could point `GATE_COMMANDS.verdict` in `lib/render.mjs` at a command that always passes, merge on one PASS, and reach consumers as a version bump. Matt, 10 Nov 2026: a change to gate settings is high risk and never silent.
