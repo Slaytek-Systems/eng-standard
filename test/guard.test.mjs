@@ -119,7 +119,7 @@ test('throwing away local work: blocked only when there is work to lose; the saf
   assert.equal(ruleOf('git branch -D gone', clean), 'discard-local-work', 'branch -D does not depend on the tree');
   assert.match(bash('git worktree remove --force x').reason, /Commit or stash your changes first, or remove the worktree without --force and report what git says\./);
   assert.match(bash('git reset --hard', dirty).reason, /Commit or stash them first/);
-  assert.match(bash('git branch -D gone', dirty).reason, /neither its upstream nor main\. Push it first \(git push -u origin gone\)/);
+  assert.match(bash('git branch -D gone', dirty).reason, /that no other branch holds, local or remote .*\. Push it first \(git push -u origin gone\)/);
   assert.match(bash('git clean -f').reason, /List them with git clean -n/);
   assert.match(bash('git stash clear').reason, /git stash apply <sha>/);
 });
@@ -315,7 +315,7 @@ test('Edit and Write tool calls: never on .eng/guard, on eng-rendered .claude/se
 
 // ---------- the real git probe ----------
 
-test('the git probe: tracked changes are dirty, untracked files only when asked and ignored files never; a branch is safe on its upstream or the default branch, else not', () => {
+test('the git probe: tracked changes are dirty, untracked files only when asked and ignored files never; a branch is safe when a ref the command leaves holds its tip, else not', () => {
   const dir = tmp('eng-guard-probe-'), remote = tmp('eng-guard-remote-');
   const git = (...a) => execFileSync('git', a, { cwd: dir, env, stdio: 'pipe', encoding: 'utf8' });
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env });
@@ -333,11 +333,13 @@ test('the git probe: tracked changes are dirty, untracked files only when asked 
   p.dirty(dir, []); assert.equal(fs.statSync(path.join(dir, '.git/index')).mtimeMs, index, 'the probe never refreshes the index');
   git('checkout', '-q', 'a.txt');
   git('switch', '-qc', 'local'); fs.writeFileSync(path.join(dir, 'l.txt'), 'l'); git('add', 'l.txt'); git('commit', '-qm', 'l');
-  git('switch', '-qc', 'pushed'); git('push', '-q', '-u', 'origin', 'pushed');
-  git('switch', '-q', 'main'); git('switch', '-qc', 'merged'); git('switch', '-q', 'main');
-  assert.equal(p.branchSafe(dir, 'local'), false, 'commits on no upstream and not on main');
+  git('switch', '-qc', 'pushed', 'main'); git('commit', '-q', '--allow-empty', '-m', 'p'); git('push', '-q', '-u', 'origin', 'pushed');
+  git('switch', '-q', 'main'); git('commit', '-q', '--allow-empty', '-m', 'm'); git('switch', '-qc', 'merged'); git('switch', '-q', 'main');
+  assert.equal(p.branchSafe(dir, 'local'), false, 'commits on no other branch, local or remote');
   assert.equal(p.branchSafe(dir, 'pushed'), true, 'on its upstream');
   assert.equal(p.branchSafe(dir, 'merged'), true, 'on main');
+  assert.equal(p.branchSafe(dir, 'main'), true, 'on merged: the default branch needs a witness like any other');
+  assert.equal(p.branchSafe(dir, 'main', ['main', 'merged']), false, 'a branch the same command drops is no witness');
   assert.equal(p.branchSafe(dir, 'nope'), true, 'no such branch: git refuses it, nothing is lost');
   assert.equal(p.branchSafe(path.join(dir, 'missing'), 'local'), null, 'no repo: the probe cannot answer');
   assert.equal(p.dirty(path.join(dir, 'missing'), []), null, 'no folder: the probe cannot answer');
