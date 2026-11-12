@@ -246,9 +246,9 @@
     ".githooks/pre-push": "cb1a981136bf3e4c7265ebf2dd0439ae941be72df8db8449dd36a1557552b38b",
     ".githooks/pre-rebase": "f2823724399ace29f147eb9fa4f9cacc7651b2b145ebab070b430076b448a2d3",
     ".github/pull_request_template.md": "842befcfb432855ee6218377ea043106eaa12887af62a16ca47b2a9642345072",
-    "AGENTS.md": "279bf7c91a64c49e061d8cf1d862b3dfcaa6aa92f06905ef35340e4264a28af4",
+    "AGENTS.md": "7cdda4fbd28930813c48831b50a4064001eb4942105b256aaf8baf4c53210d64",
     "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
-    "SHIPPING.md": "3df489732163381434bcea0ba0b8d60d002de5781e44f23ce73141998524e1c2",
+    "SHIPPING.md": "bc1900ebeababac80b5328eb02fbbc6b35dca2f9cd6a9faa023c888a5d1e2704",
     "STACK.md": "4164b9caecfa3c2eca38e0767078bfa1d76b9117e2bd1a746ff2e1fd821745d1"
   },
   "template-v0.17.2.yml": {
@@ -529,9 +529,9 @@
     ".githooks/pre-push": "cb1a981136bf3e4c7265ebf2dd0439ae941be72df8db8449dd36a1557552b38b",
     ".githooks/pre-rebase": "f2823724399ace29f147eb9fa4f9cacc7651b2b145ebab070b430076b448a2d3",
     ".github/pull_request_template.md": "842befcfb432855ee6218377ea043106eaa12887af62a16ca47b2a9642345072",
-    "AGENTS.md": "a23aacd213d931ff3df3b00e447cae0732271c3237bbadc7f19e8de26e1fddea",
+    "AGENTS.md": "deba8185dc81806fe59cc694ef281bdac0942387bff5e8029f7c26cffed0631f",
     "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
-    "SHIPPING.md": "db385b8cffd6d4b8fe9c2e65eb06fbfc3b44497032fb858c4c59450e71cb5314",
+    "SHIPPING.md": "3a25988fad9dd524c123cb6efa987f0ac2e00d5f44633258fdb8376e8aee8c56",
     "STACK.md": "12e9e9e7b0de424ff92ba40b269ea50d4f0bb7549bbc465136d74d48e49a9a1b"
   }
 }

@@ -84,7 +84,7 @@ const ROUTED = ['.githooks/pre-push', '.githooks/pre-rebase'];
 const UNREBASED = ['.agents/skills/eng-verify/SKILL.md', ...['autopilot-full', 'autopilot-stack', 'babysit', 'feature', 'multi-phase-plan', 'opening-a-pr', 'refactoring', 'worktree-cleanup'].map(p => `.agents/skills/poteto-mode/playbooks/${p}.md`), '.agents/skills/principle-sequence-verifiable-units/SKILL.md'];
 // The file 0.20.3 changed on purpose (issue #55): the pre-commit hook runs the installed eng with node before npx.
 const LOCAL_ENG = ['.githooks/pre-commit'];
-// The files 0.20.8 changed on purpose (Matt's decision on E2): the one line saying what a PASS proves, while lock A is off.
+// The files 0.20.8 changed on purpose (Matt's decision on E2): the one line saying what a PASS proves.
 const PASS_LINE = ['AGENTS.md', 'SHIPPING.md'];
 const diff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(f => JSON.stringify(a[f]) !== JSON.stringify(b[f]));
 

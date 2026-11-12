@@ -98,9 +98,9 @@ forge (lock A, a later change).
 **Residual.** eng-standard sets `verifier_logins: [Mattslayga]`, the one login that has posted verdicts here. Every agent
 posts through that account, so it can still claim any `by`. A dedicated verifier login listed in `verifier_logins` closes this.
 
-**What a PASS proves.** A recorded run on the exact commit, not a re-run at merge time. Rendered `AGENTS.md`, `SHIPPING.md`
-and `eng doctor` say so until lock A is configured (`merge.auto.gate_app_id`, the gate App that alone reports the required
-check); once it is set the line is gone.
+**What a PASS proves.** A verification PASS proves a recorded run on the exact commit, not a re-run at merge time. A review
+PASS on docs-only changes (`verification.review_only_paths`) has no runs. Rendered `AGENTS.md`, `SHIPPING.md` and `eng doctor`
+say so always. An App ID only names who posts a status, so no setting removes the line.
 
 The controller is main's code and main's `eng.config.yml`. A PR's comments and commit messages are read only as data,
 so a PR cannot change the rule it is judged by.
