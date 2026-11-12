@@ -175,7 +175,7 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
   } finally { process.chdir(cwd); }
 });
 
-// Fix round 1 (verifiers codex-sol and opencode-deepseek on d96203f): a PR must never skip a check its change affects.
+// Fix round 1 (both round-1 verifiers on d96203f): a PR must never skip a check its change affects.
 // Each test builds its own repo with `main` and one branch, then reads which checks ran.
 async function inRepo(checks, files, fn) {
   const saved = dir; dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-select-fix-'));
