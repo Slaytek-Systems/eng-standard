@@ -672,6 +672,71 @@ test('round 8 table: real git loses a commit for every deny row and none for eve
   assert.deepEqual(wrong, []);
 });
 
+// round 9 P1: a symbolic ref counted as a witness, and a symbolic name moved the branch it points at. The round 8 repo,
+// plus: alias points at gone; link2 points at link1, which points at chained (a commit on no other ref); origin/HEAD
+// points at rgone (a commit on no other ref); held2 is a plain copy of held (a commit on no other ref) and heldalias
+// points at held. Round 9 P2: a worktree path made from a variable is allowed; every other unknown operand is still
+// denied. The shell has b=gone, WT=../wt-r9. Every deny row loses a commit when git runs it, every allow row none.
+const R9_ROWS = [
+  ['git branch -D gone', 'deny'], ['git branch -f gone main', 'deny'], ['git branch -f alias main', 'deny'],
+  ['git switch -C alias main', 'deny'], ['git checkout -B alias main', 'deny'], ['git branch -M side gone', 'deny'],
+  ['git worktree add -B gone ../wt-r9 main', 'deny'], ['git branch -D chained', 'deny'], ['git branch -f link2 main', 'deny'],
+  ['git branch -f chained main', 'deny'], ['git branch -D rgone', 'deny'], ['git branch -f rgone main', 'deny'],
+  ['git worktree add -B "$b" "$WT"', 'deny'],
+  ['git branch -D held', 'allow'], ['git branch -f held main', 'allow'], ['git branch -f heldalias main', 'allow'],
+  ['git worktree add "$WT" main', 'allow'], ['git worktree add "$WT" -b newwt', 'allow'], ['git worktree add -b newwt "$WT"', 'allow'],
+  ['git worktree add "$WT/sub" main', 'allow'],
+];
+// Denied whatever the variable holds, so real git cannot show a loss for them: the value decides. The policy and the
+// hooks must still deny each.
+const R9_UNKNOWN = ['git worktree add "$WT" "$b"', 'git worktree add -B new "$WT" "$b"', 'git worktree remove --force "$WT"',
+  'git worktree remove "$WT"', 'git worktree move "$WT" ../moved', 'git worktree add $WT main', 'git worktree "$op" "$WT" main',
+  'git branch -D "$b"', 'git reset --hard "$b"', 'git restore "$WT"', 'git rm -f "$WT"'];
+const R9_ENV = { b: 'gone', WT: '../wt-r9' };
+let r9Base;
+const r9Repo = () => {
+  if (!r9Base) {
+    const base = path.join(tmp('eng-guard-r9-'), 'repo');
+    fs.cpSync(r8Repo(), base, { recursive: true, verbatimSymlinks: true });
+    const sh = c => execSync(c, { cwd: base, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+    sh('git symbolic-ref refs/heads/alias refs/heads/gone');
+    sh('git switch -q -c chained topic && git commit -q --allow-empty -m chained && git symbolic-ref refs/heads/link1 refs/heads/chained && git symbolic-ref refs/heads/link2 refs/heads/link1');
+    sh('git switch -q -c rgone topic && git commit -q --allow-empty -m rgone && git symbolic-ref refs/remotes/origin/HEAD refs/heads/rgone');
+    sh('git switch -q -c held topic && git commit -q --allow-empty -m held && git branch held2 && git symbolic-ref refs/heads/heldalias refs/heads/held');
+    sh('git switch -q topic');
+    r9Base = base;
+  }
+  const dir = path.join(tmp('eng-guard-r9-row-'), 'repo');
+  fs.cpSync(r9Base, dir, { recursive: true, verbatimSymlinks: true });
+  return dir;
+};
+const R9_ALL = [...R9_ROWS, ...R9_UNKNOWN.map(c => [c, 'deny'])];
+
+test('round 9 table: the policy with the real git probe denies every row that loses a commit or names an unknown operand', () => {
+  const dir = r9Repo(), cfg = { rewrite: 'never', defaultBranch: 'main', protected: ['main'] };
+  const wrong = R9_ALL.filter(([command, want]) => (decide({ tool: 'bash', command, cwd: dir }, cfg, gitProbe(cfg)).allow ? 'allow' : 'deny') !== want);
+  assert.deepEqual(wrong, []);
+  assert.match(decide({ tool: 'bash', command: 'git branch -D gone', cwd: dir }, cfg, gitProbe(cfg)).reason, /would drop commits on gone .*nor does a symbolic ref/);
+});
+
+test('round 9 table: the rendered hook decides every row the same way for Claude Code, Codex and Cursor', () => {
+  const dir = r9Repo();
+  const wrong = R9_ALL.flatMap(([command, want]) => ['claude-code', 'codex', 'cursor'].filter(t => r8Hook(t, dir, command) !== want).map(t => [t, command]));
+  assert.deepEqual(wrong, []);
+});
+
+test('round 9 table: real git loses a commit for every deny row and none for every allow row', () => {
+  const tips = (dir, refs) => execFileSync('git', ['for-each-ref', '--format=%(objectname)', ...refs], { cwd: dir, env, encoding: 'utf8' }).split('\n').filter(Boolean);
+  const wrong = R9_ROWS.filter(([command, want]) => {
+    const dir = r9Repo(), before = [...new Set(tips(dir, ['refs/heads', 'refs/remotes']))];
+    const r = spawnSync('/bin/sh', ['-c', command], { cwd: dir, env: { ...env, ...R9_ENV }, stdio: 'pipe', encoding: 'utf8', timeout: 30_000 });
+    if (r.status !== 0) return true;
+    const lost = before.some(sha => tips(dir, ['--contains', sha, 'refs/heads', 'refs/remotes', 'refs/tags']).length === 0);
+    return (lost ? 'deny' : 'allow') !== want;
+  });
+  assert.deepEqual(wrong, []);
+});
+
 // ---------- rendering ----------
 
 const template = () => YAML.parse(fs.readFileSync(TPL, 'utf8'));
