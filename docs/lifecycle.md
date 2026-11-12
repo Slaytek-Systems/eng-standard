@@ -207,7 +207,7 @@ Untracked files count only for the forms that can overwrite them, and ignored fi
 | `git switch -f`, `--force` or `--discard-changes` (untracked files count) | alone at the root when tracked files have uncommitted changes or there is any untracked file; any other shape | commit or stash first |
 | `git restore <paths>`, except `--staged` alone (untracked files under the paths count with `--source`) | alone at the root when those paths have uncommitted changes or the untracked files that count; any other shape | commit or stash first |
 | `git rm -f` or `--force`, except with `--cached` (a later `--no-cached` turns it off) | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
-| `git branch -D`, `-d -f` or `--delete --force` | alone at the root when no other branch, local or remote, holds the branch's tip (its upstream counts; a branch the same command drops or moves does not, the default branch included); any other shape | push it first, or use `git branch -d` |
+| `git branch -D`, `-d -f` or `--delete --force` | alone at the root when no other branch, local or remote, holds the branch's tip (its upstream counts; a branch the same command drops or moves does not, the default branch included, and a symbolic ref such as `origin/HEAD` never does); any other shape | push it first, or use `git branch -d` |
 | `git branch -f` or `--force` onto an existing branch, and `-M`, `-C`, or `-m` or `-c` with `-f`, onto one | alone at the root when no other branch, local or remote, holds the tip of the branch it replaces (the same rule as `git branch -D`); any other shape | push it first, or use a new branch name |
 | `git switch -C` or `--force-create` onto an existing branch | the same | the same |
 | `git checkout -B` onto an existing branch | the same | the same |
@@ -251,7 +251,13 @@ Untracked files count only for the forms that can overwrite them, and ignored fi
   double quotes that is an option's value stays allowed (`git commit -m "$(cat <<'EOF' ...)"`), except where the value
   names a branch or ref a destructive form replaces (`git switch -C`, `--force-create`, `git checkout -B`,
   `git worktree add -B`, `--refmap` on `fetch` and `pull`): `git switch -C "$b" main` is denied with the route to write
-  the branch name out literally. Read-only subcommands
+  the branch name out literally. An operand (a word that is not an option or its value) the guard cannot know is
+  allowed in one place: the new path of `git worktree add`, so `git worktree add "$WT" main` and
+  `git worktree add "$WT" -b new` pass. git creates that path and refuses one that holds files, so the word decides
+  nothing a command deletes or overwrites. The guard reads that word as a path: a value that starts with `-` would be
+  an option to git, and the guard does not see the value. Every other such operand in these subcommands is denied, because it may be
+  a branch, a ref, or a path that a destructive form deletes or overwrites: `git worktree add -B "$b" "$WT"`,
+  `git worktree add "$WT" "$b"`, `git branch -D "$b"`, `git worktree remove "$WT"`. Read-only subcommands
   (`log`, `show`, `diff`, `status`, `grep` and the like) take any words. A command name made from a variable or
   substitution, given a git subcommand (`$g reset --hard`), is read as git. A value git runs as a command that runs git
   (`-c alias.*`, a `-c` value, or `GIT_PAGER`, `GIT_EDITOR` or `GIT_SSH_COMMAND`) is denied. A program given `git` as
