@@ -32,7 +32,7 @@ test('risk: workflows, CI, merge setup, CLI, scripts, vendored code are high', (
 });
 
 test('risk: lib modules that decide what a gate runs, passes or requires are high; docs-only is low', () => {
-  for (const f of ['lib/render.mjs', 'lib/gate-levels.mjs', 'lib/flake.mjs', 'lib/ephemeral.mjs', 'lib/disk-rules.mjs', 'lib/hygiene.mjs', 'lib/standard.mjs', 'lib/lock.mjs', 'lib/renovate.mjs', 'lib/stack-audit.mjs', 'lib/migrate.mjs', 'lib/profile.mjs'])
+  for (const f of ['lib/render.mjs', 'lib/gate-levels.mjs', 'lib/flake.mjs', 'lib/ephemeral.mjs', 'lib/disk-rules.mjs', 'lib/hygiene.mjs', 'lib/standard.mjs', 'lib/lock.mjs', 'lib/renovate.mjs', 'lib/stack-audit.mjs', 'lib/migrate.mjs', 'lib/profile.mjs', 'lib/guard.mjs', 'lib/guard-hook.mjs', 'lib/guard-setup.mjs'])
     assert.equal(classifyRisk(mod(f), HR).risk, 'high', f);
   assert.equal(classifyRisk(mod('CHANGELOG.md', 'docs/modern-stack.md', 'README.md'), HR).risk, 'low');
 });

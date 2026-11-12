@@ -28,10 +28,9 @@ const NEVER = { rewrite: 'never', defaultBranch: 'main', protected: ['main', 're
 const PROTECTED = { ...NEVER, rewrite: 'protected' };
 // A fake read-only probe rooted at /r: dirty folders, branch safety, file text and real paths.
 const fake = (o = {}) => ({
-  root: () => '/r',
+  root: () => o.root === undefined ? '/r' : o.root,
   dirty: cwd => o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
   branchSafe: (cwd, b) => Object.hasOwn(o.safe ?? {}, b) ? o.safe[b] : true,
-  isDir: abs => !(o.missing ?? []).includes(abs),
   read: abs => o.files?.[abs] ?? null,
   real: abs => o.real?.[abs] ?? abs,
   calls: o.calls,
@@ -124,14 +123,6 @@ test('throwing away local work: blocked only when there is work to lose; the saf
   assert.match(bash('git stash clear').reason, /git stash apply <sha>/);
 });
 
-test('the dirty check runs in the folder the command runs in: cd, git -C and a chain', () => {
-  const probe = fake({ dirty: ['/r/sub', '/other'] });
-  assert.equal(ruleOf('git reset --hard', probe), null, '/r is clean');
-  assert.equal(ruleOf('cd sub && git reset --hard', probe), 'discard-local-work');
-  assert.equal(ruleOf('git -C ../other reset --hard', probe), 'discard-local-work');
-  assert.equal(ruleOf('git -C sub status && git reset --hard', probe), null, 'git -C changes only its own command');
-});
-
 test('the shell parser: chains, pipes, wrappers, nested shells, substitutions, keywords, heredocs, quotes and comments', () => {
   const deny = [
     'npm test && git push -f', 'echo ok; git push --force', 'true || git push -f', 'ls | git push -f', 'sleep 1 & git push -f',
@@ -148,25 +139,6 @@ test('the shell parser: chains, pipes, wrappers, nested shells, substitutions, k
   ];
   for (const c of allow) assert.equal(ruleOf(c), null, c);
   assert.deepEqual(parseShell("FOO=1 git -C x commit -m 'a b' > out.txt 2>&1").map(c => [c.words, c.redirects]), [[['FOO=1', 'git', '-C', 'x', 'commit', '-m', 'a b'], [{ op: '>', target: 'out.txt' }]]]);
-});
-
-// Fix round 1 (11 Nov 2026): the bypasses two independent verifiers found on 48ca0bf, their siblings,
-// and the safe neighbour of each.
-test('a cd changes the folder only for the shell it runs in: subshells, substitutions, nested shells, pipes and background jobs keep theirs', () => {
-  const cases = [
-    ['(cd /tmp); git reset --hard', 'discard-local-work'], ['(cd /tmp && true); git reset --hard', 'discard-local-work'],
-    ['echo $(cd /tmp); git reset --hard', 'discard-local-work'], ['echo `cd /tmp`; git reset --hard', 'discard-local-work'],
-    ["sh -c 'cd /tmp'; git reset --hard", 'discard-local-work'], ['cd /tmp | true; git reset --hard', 'discard-local-work'],
-    ['cd /tmp & git reset --hard', 'discard-local-work'], ['(cd /tmp; (cd /x)); git reset --hard', 'discard-local-work'],
-    ['echo $(git reset --hard); cd /tmp', 'discard-local-work'], ['(cd /tmp; true) && git -C sub reset --hard', 'discard-local-work'],
-    ['cd /tmp && git reset --hard', null], ['(cd /tmp && git reset --hard)', null], ['{ cd /tmp; }; git reset --hard', 'discard-local-work'],
-    ['{ cd /tmp && git reset --hard; }', null], ['cd /tmp && echo $(git reset --hard)', null], ['eval "cd /tmp"; git reset --hard', 'discard-local-work'],
-    ['env -C /tmp git reset --hard', null],
-    ['env -C sub git reset --hard', 'discard-local-work'],
-  ];
-  assert.deepEqual(rows(cases, fake({ dirty: ['/r', '/r/sub'] })), expect(cases));
-  assert.equal(ruleOf('(cd sub && git reset --hard)', fake({ dirty: ['/r/sub'] })), 'discard-local-work', 'a cd inside the subshell still applies inside it');
-  assert.equal(ruleOf('(cd sub) && git reset --hard', fake({ dirty: ['/r/sub'] })), null, '/r is clean');
 });
 
 test('git global options come before the subcommand for every rule: -C, -c, --git-dir, --work-tree, --no-pager, -p, --config-env', () => {
@@ -241,95 +213,41 @@ test('editing the guard: shell writes, moves and removals of guard files are blo
   assert.match(bash('rm -rf .eng/guard', probe).reason, /eng sync renders it from eng\.config\.yml: change the config \(guard: off turns the guard off/);
 });
 
-// Fix round 2 (11 Nov 2026): when the guard cannot tell which repo a command acts on, it denies destructive git and
-// names the route. Rows include both verifiers' exact probe strings; /r is dirty and /r/clean is clean.
+
+
+// Option (b) (Matt, 12 Nov 2026): the guard does not follow folders. A destructive git command that depends on the repo's
+// state is checked only when it is the whole command, run from the repo root; in any other shape it is denied with the
+// route, even when every repo is clean. Rows include the round 4 P1 strings from both verifiers on 11166b5.
 const at = (cwd, command, probe) => { const d = decide({ tool: 'bash', command, cwd }, NEVER, probe); return d.allow ? null : d.rule; };
-const parentDirty = () => fake({ dirty: ['/r'], safe: { gone: false } });
 
-test('git repository selectors: --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE make the repo uncertain, so destructive git is denied', () => {
-  const cases = [
-    ['/r', 'git -C clean --git-dir=../.git --work-tree=.. reset --hard', 'discard-local-work'],
-    ['/r', 'git -C clean --git-dir ../.git --work-tree .. reset --hard', 'discard-local-work'],
-    ['/r/clean', 'git --git-dir=../.git --work-tree=.. reset --hard', 'discard-local-work'],
-    ['/r/clean', 'git --git-dir ../.git --work-tree .. reset --hard', 'discard-local-work'],
-    ['/r/clean', 'git --git-dir=../.git --work-tree=.. rm .eng/guard/hook.mjs', 'guard-files'],
-    ['/r', 'GIT_DIR=../.git GIT_WORK_TREE=.. git -C clean reset --hard', 'discard-local-work'],
-    ['/r', 'export GIT_DIR=/r/.git; cd clean && git reset --hard', 'discard-local-work'],
-    ['/r', 'GIT_WORK_TREE=/r; export GIT_WORK_TREE; git -C clean checkout -- .', 'discard-local-work'],
-    ['/r', 'git -C "$D" reset --hard', 'discard-local-work'], ['/r', 'git --git-dir=.git branch -D gone', 'discard-local-work'],
-    ['/r', 'git -C clean reset --hard', null], ['/r/clean', 'git --git-dir=../.git status', null], ['/r', 'GIT_DIR=x git diff', null],
-    ['/r', 'git --work-tree=.. log', null], ['/r', 'git -C "$D" status', null],
+test('destructive git runs only alone from the repo root: any other shape is denied, even on a clean repo; other commands pass in any shape', () => {
+  const clean = fake({ dirty: false, safe: { gone: false } });
+  const denied = [
+    'set -e; true || { true; cd clean; }; git reset --hard', 'git -C clean/link/.. reset --hard', 'cd -P clean/link/.. && git reset --hard',
+    'set -P; cd clean/link/.. && git reset --hard', 'env -C clean/link/.. git reset --hard', 'env --chdir=clean git reset --hard',
+    'cd sub && git reset --hard', 'cd clean && git reset --hard', 'cd clean; git reset --hard', 'set -e\ncd clean\ngit reset --hard',
+    'pushd clean && git reset --hard', '(cd clean && git reset --hard)', "bash -ec 'cd clean; git reset --hard'", "sh -c 'git reset --hard'",
+    'git -C . reset --hard', 'git -C sub reset --hard', 'git --git-dir=.git reset --hard', 'git --work-tree=. reset --hard', 'GIT_DIR=.git git reset --hard',
+    'sudo -D clean git reset --hard', 'command git reset --hard', 'time git reset --hard', '! git reset --hard', '(git reset --hard)', '{ git reset --hard; }',
+    'git reset --hard;', 'git reset --hard &', 'git reset --hard | cat', 'git status && git reset --hard', 'git reset --hard && git status',
+    'git status\ngit reset --hard', 'true || git reset --hard', 'echo $(git reset --hard)', 'eval git reset --hard', 'if true; then git reset --hard; fi',
+    'find . -exec git reset --hard \;', 'git reset --hard <<EOF\nx\nEOF', 'cd clean && git checkout -- .', 'cd clean && git restore .', 'cd clean && git branch -D gone',
   ];
-  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, parentDirty())]), cases.map(([, c, r]) => [c, r]));
-  assert.match(bash('git --git-dir=.git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root/);
-});
-
-test('a wrapper that changes the folder carries it into the shell it starts; env -C .. sh -c resets the parent', () => {
-  const cases = [
-    ['/r/clean', "env -C .. sh -c 'git reset --hard'", 'discard-local-work'], ['/r', "env -C clean sh -c 'git reset --hard'", null],
-    ['/r', 'env -C clean git reset --hard', null], ['/r', "sudo -D clean sh -c 'git reset --hard'", null],
-    ['/r', "env -C clean bash -c 'cd ..; git reset --hard'", 'discard-local-work'], ['/r', "env -C \"$X\" sh -c 'git reset --hard'", 'discard-local-work'],
-    ['/r', 'find . -execdir git reset --hard \;', 'discard-local-work'], ['/r/clean', 'find . -exec git reset --hard \;', null],
+  for (const c of denied) {
+    const d = bash(c, clean);
+    assert.equal(d.rule, 'discard-local-work', c);
+    assert.match(d.reason, /is checked only when it is the whole command, run from the repo root.*Run it alone from the repo root/, c);
+  }
+  const allowed = [
+    'git reset --hard', 'git reset --hard origin/main', 'git reset --hard\n', '/usr/bin/git reset --hard', 'git reset --hard 2>&1', 'git checkout -- .', 'git restore .',
+    'git branch -D merged', 'cd sub && git add .', 'cd clean && git status', "bash -c 'cd /tmp; git diff'", 'git -C sub status', 'cd /tmp; cd -; git push origin feat',
+    'git status && git log | head', 'cd clean && git reset --soft HEAD~1', 'git -C sub restore src/a.js',
   ];
-  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, parentDirty())]), cases.map(([, c, r]) => [c, r]));
-});
-
-test('folder moves the guard does not follow make the repo unknown: cd -, pushd and popd, eval, source, functions, aliases', () => {
-  const cases = [
-    ['cd /tmp; cd -; git reset --hard', 'discard-local-work'], ['cd /tmp; cd - >/dev/null; git reset --hard', 'discard-local-work'],
-    ['pushd /tmp; popd; git reset --hard', 'discard-local-work'], ['pushd /tmp >/dev/null; popd >/dev/null; git reset --hard', 'discard-local-work'],
-    ['cd /tmp; eval "cd -" >/dev/null; git reset --hard', 'discard-local-work'], ['cd /tmp; cd "$OLDPWD"; git reset --hard', 'discard-local-work'],
-    ['cd; git reset --hard', 'discard-local-work'], ['cd ~/r; git reset --hard', 'discard-local-work'], ['cd clean/*; git reset --hard', 'discard-local-work'],
-    ['cd "$(git rev-parse --show-toplevel)"; git reset --hard', 'discard-local-work'], ['source env.sh; git reset --hard', 'discard-local-work'],
-    ['. ./env.sh && git reset --hard', 'discard-local-work'], ['f() { cd clean; }; git reset --hard', 'discard-local-work'],
-    ['function f { cd clean; }; git reset --hard', 'discard-local-work'], ["alias c='cd /tmp'; git reset --hard", 'discard-local-work'],
-    ['eval "$CMD"; git reset --hard', 'discard-local-work'], ['CDPATH=/elsewhere; cd clean; git reset --hard', 'discard-local-work'],
-    ["trap 'cd /tmp' DEBUG; git reset --hard", 'discard-local-work'], ['cd /tmp; cd -; git checkout -- .', 'discard-local-work'],
-    ['cd /tmp; cd -; git restore .', 'discard-local-work'], ['cd /tmp; cd -; git branch -D gone', 'discard-local-work'],
-    ['cd /tmp; cd -; rm .eng/guard/hook.mjs', 'guard-files'], ['cd "$D"; rm hook.mjs', 'guard-files'], ['popd; rm -rf guard', 'guard-files'],
-    ['cd /tmp; cd -; git status', null], ['cd /tmp; cd -; git diff', null], ['cd /tmp; cd -; git add .', null], ['cd clean && git add .', null],
-    ['pushd clean; git reset --hard', 'discard-local-work'], ['pushd clean && git reset --hard', null], ['cd clean && git reset --hard', null],
-    ['cd -P clean && git reset --hard', null], ['cd /tmp; cd -; cd /r/clean && git reset --hard', null], ['eval "cd clean"; git reset --hard', 'discard-local-work'],
-    ['source env.sh; git status', null],
-    ['f() { echo; }; git diff', null], ['cd "$D"; rm notes.txt', null], ['cd /tmp; cd -; git push origin feat', null],
-  ];
-  assert.deepEqual(rows(cases, parentDirty()), expect(cases));
-  for (const c of ['cd /tmp; cd -; git reset --hard', 'pushd /tmp; popd; git reset --hard']) assert.equal(ruleOf(c, fake({ dirty: false })), 'discard-local-work', `${c} is denied even when every repo is clean`);
-  assert.match(bash('cd /tmp; cd -; git reset --hard', fake()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*Commit or stash/);
-});
-
-// Fix round 3 (11 Nov 2026): the guard follows a cd only when it is certain to take effect, and a probe that cannot answer
-// denies. Rows are both verifiers' exact strings; /r is dirty, /r/clean is a clean repo, and the missing folders do not exist.
-const MISSING = ['/r/nonexistent', '/r/does-not-exist', '/r/sub/nope', '/r/a.txt', '/r/newdir'];
-const round3 = () => fake({ dirty: ['/r'], safe: { gone: false }, missing: MISSING });
-
-test('a cd moves the folder only when it is certain to take effect: a literal, existing folder, then && or set -e', () => {
-  const cases = [
-    ['false && cd clean; git reset --hard', 'discard-local-work'], ['true || cd clean; git reset --hard', 'discard-local-work'],
-    ['if false; then cd clean; fi; git reset --hard', 'discard-local-work'], ['while false; do cd clean; done; git reset --hard', 'discard-local-work'],
-    ['cd does-not-exist; git reset --hard', 'discard-local-work'], ['cd does-not-exist || git reset --hard', 'discard-local-work'],
-    ['cd nonexistent; git reset --hard', 'discard-local-work'], ['cd sub/nope; git reset --hard', 'discard-local-work'],
-    ['cd a.txt; git reset --hard', 'discard-local-work'], ['mkdir -p newdir; cd newdir; git reset --hard', 'discard-local-work'],
-    ['cd nonexistent; git checkout -- .', 'discard-local-work'], ['cd nonexistent; git restore .', 'discard-local-work'],
-    ['cd clean; git reset --hard', 'discard-local-work'], ['rm -rf clean; cd clean; git reset --hard', 'discard-local-work'],
-    ['true || cd clean && git reset --hard', 'discard-local-work'], ['false && cd clean\ngit reset --hard', 'discard-local-work'],
-    ['set -e\nfalse && cd clean\ngit reset --hard', 'discard-local-work'], ['cd clean && true; git reset --hard', 'discard-local-work'],
-    ['cd clean && (true); git reset --hard', 'discard-local-work'], ['cd clean && true || git reset --hard', 'discard-local-work'],
-    ['cd nonexistent && git reset --hard', 'discard-local-work'], ['! cd clean && git reset --hard', 'discard-local-work'],
-    ['for d in clean; do cd clean && break; done; git reset --hard', 'discard-local-work'], ['pushd clean; git reset --hard', 'discard-local-work'],
-    ['set -e; set +e; cd clean; git reset --hard', 'discard-local-work'], ["sh -c 'set -e'; cd clean; git reset --hard", 'discard-local-work'],
-    ['cd nonexistent; rm .eng/guard/hook.mjs', 'guard-files'],
-    ['cd clean && git reset --hard', null], ['cd clean &&\n  git reset --hard', null], ['cd clean && git add . && git reset --hard', null],
-    ['cd clean &&\n\ngit status\ngit reset --hard', 'discard-local-work'], ['cd clean && git status; git reset --hard', 'discard-local-work'],
-    ['set -e; (cd clean; git reset --hard)', null], ['set -e; echo $(cd clean; git reset --hard)', 'discard-local-work'],
-    ['if true; then set -e; fi; cd clean; git reset --hard', 'discard-local-work'], ['true && set -e; cd clean; git reset --hard', 'discard-local-work'], ['cd clean && { git reset --hard; }', null],
-    ['set -e\ncd clean\ngit reset --hard', null], ['set -eu; cd clean; git reset --hard', null], ['set -o errexit\ncd clean\ngit reset --hard', null],
-    ["bash -ec 'cd clean; git reset --hard'", null], ['pushd clean && git reset --hard', null], ['cd sub && git add .', null],
-    ['cd nonexistent; git status', null], ['cd nonexistent; git diff', null], ['cd clean; git add .', null], ['git status', null],
-  ];
-  assert.deepEqual(rows(cases, round3()), expect(cases));
-  assert.equal(at('/r/clean', 'git reset --hard', round3()), null, 'reset alone in a clean repo');
-  assert.match(bash('cd nonexistent; git reset --hard', round3()).reason, /cannot tell which repo.*Run it as its own command from the repo root.*Commit or stash/);
+  for (const c of allowed) assert.equal(ruleOf(c, clean), null, c);
+  assert.equal(at('/r/sub', 'git reset --hard', clean), 'discard-local-work', 'alone, but from a subfolder of the repo');
+  assert.match(bash('git reset --hard', fake({ dirty: false, root: null })).reason, /Run it alone from the repo root/, 'no repo root found');
+  assert.equal(ruleOf('git branch -D gone', clean), 'discard-local-work', 'alone at the root, the existing rules still decide');
+  assert.match(bash('git reset --hard', fake({ dirty: true })).reason, /would throw away uncommitted changes in \/r\. Commit or stash them first/);
 });
 
 test('a probe that cannot answer denies destructive git: no repo, an unreadable status or an unreadable branch', () => {
@@ -342,26 +260,13 @@ test('a probe that cannot answer denies destructive git: no repo, an unreadable 
   assert.match(bash('git reset --hard', fake({ dirty: null })).reason, /could not read.*Commit or stash/);
 });
 
-test('a nested shell inherits the outer env assignments: GIT_DIR and GIT_WORK_TREE before sh -c pick the repo inside it', () => {
-  const cases = [
-    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", 'discard-local-work'],
-    ['/r/clean', "GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", 'discard-local-work'],
-    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. bash -c \"sh -c 'git restore .'\"", 'discard-local-work'],
-    ['/r/clean', "GIT_WORK_TREE=.. bash -c 'git checkout -- .'", 'discard-local-work'],
-    ['/r/clean', 'GIT_DIR=../.git find . -exec git reset --hard \;', 'discard-local-work'],
-    ['/r/clean', "env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git status'", null], ['/r/clean', "FOO=1 sh -c 'git reset --hard'", null],
-    ['/r/clean', "env -u GIT_DIR sh -c 'git reset --hard'", null],
-  ];
-  assert.deepEqual(cases.map(([cwd, c]) => [c, at(cwd, c, round3())]), cases.map(([, c, r]) => [c, r]));
-});
-
 test('a redirect on cd, pushd or any builtin is checked: it opens before the builtin runs', () => {
   const cases = [
     ['cd . > .eng/guard/hook.mjs', 'guard-files'], ['pushd clean > .eng/guard/hook.mjs', 'guard-files'], ['cd clean 2> .eng/guard/config.json', 'guard-files'],
     ['cd clean >> .eng/guard/guard.mjs && true', 'guard-files'], ['popd > .eng/guard/hook.mjs', 'guard-files'], ['set -e > .eng/guard/hook.mjs', 'guard-files'],
     ['cd clean > notes.txt', null], ['cd clean > notes.txt && git status', null],
   ];
-  assert.deepEqual(rows(cases, round3()), expect(cases));
+  assert.deepEqual(rows(cases, fake({ dirty: ['/r'] })), expect(cases));
 });
 
 test('gh global flags come before the subcommand: gh -R and --repo cannot hide pr merge --admin', () => {
@@ -432,8 +337,8 @@ test('the git probe: tracked changes are dirty and untracked files are not; a br
   assert.equal(p.branchSafe(path.join(dir, 'missing'), 'local'), null, 'no repo: the probe cannot answer');
   assert.equal(p.dirty(path.join(dir, 'missing'), []), null, 'no folder: the probe cannot answer');
   const plain = tmp('eng-guard-norepo-');
-  assert.equal(p.dirty(plain, []), false, 'a folder in no repo has no work to lose'); assert.equal(p.branchSafe(plain, 'x'), true);
-  assert.equal(p.isDir(dir), true); assert.equal(p.isDir(path.join(dir, 'a.txt')), false); assert.equal(p.isDir(path.join(dir, 'missing')), false);
+  assert.equal(p.root(plain), null, 'a folder in no repo has no root');
+  assert.equal(decide({ tool: 'bash', command: 'git reset --hard', cwd: plain }, NEVER, p).rule, 'discard-local-work', 'no repo root: destructive git is denied');
   assert.equal(decide({ tool: 'bash', command: 'git branch -D local pushed', cwd: dir }, NEVER, p).rule, 'discard-local-work');
   assert.equal(decide({ tool: 'bash', command: 'git branch -D pushed merged', cwd: dir }, NEVER, p).allow, true);
 });
@@ -513,31 +418,31 @@ test('the hook script writes nothing: the repo, its index and the guard folder a
   assert.equal(JSON.parse(hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command: 'git reset --hard' } }).stdout).hookSpecificOutput.permissionDecision, 'deny', 'AGENTS.md has an uncommitted change');
 });
 
-test('the rendered hook on a real dirty repo: a cd that may fail or be skipped, inherited selectors and redirects on cd are denied', () => {
-  const dir = tmp('eng-guard-r3-');
+test('the rendered hook on real repos: destructive git runs only alone from the repo root; the round 4 bypasses are denied', () => {
+  const dir = tmp('eng-guard-r5-');
   const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
   sh('git init -q -b main');
   assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
   sh('mkdir sub clean && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base');
-  sh('cd clean && git init -q -b main && echo c > c.txt && git add c.txt && git commit -qm c');
-  sh('echo dirty > a.txt');
+  sh('cd clean && git init -q -b main && echo c > c.txt && mkdir inner && echo i > inner/i.txt && git add -A && git commit -qm c');
+  sh(`ln -s ${dir}/sub clean/link && echo dirty > a.txt`);
+  const clean = path.join(dir, 'clean');
   const denied = (command, cwd = dir) => {
     const r = hook('claude-code', { tool_name: 'Bash', cwd, tool_input: { command } }, dir);
     assert.equal(r.stderr, '', command);
     return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision === 'deny' : false;
   };
   const cases = [
-    ['cd nonexistent; git reset --hard', true], ['cd sub/nope; git reset --hard', true], ['cd a.txt; git reset --hard', true],
-    ['mkdir -p newdir; cd newdir; git reset --hard', true], ['cd nonexistent; git checkout -- .', true], ['cd nonexistent; git restore .', true],
-    ['false && cd clean; git reset --hard', true], ['true || cd clean; git reset --hard', true], ['if false; then cd clean; fi; git reset --hard', true],
-    ['cd does-not-exist || git reset --hard', true], ['cd . > .eng/guard/hook.mjs', true], ['pushd clean > .eng/guard/hook.mjs', true],
-    ['git -C nonexistent reset --hard', true], ['git reset --hard', true], ['cd sub && git reset --hard', true],
-    ['git status', false], ['git diff', false], ['cd sub && git add .', false], ['cd clean && git reset --hard', false],
+    [clean, 'set -e; true || { true; cd inner; }; git reset --hard', true], [clean, 'git -C link/.. reset --hard', true],
+    [clean, 'cd -P link/.. && git reset --hard', true], [clean, 'set -P; cd link/.. && git reset --hard', true], [clean, 'env -C link/.. git reset --hard', true],
+    [dir, 'cd clean && git reset --hard', true], [dir, 'cd sub && git reset --hard', true], [dir, 'git -C clean reset --hard', true],
+    [path.join(clean, 'inner'), 'git reset --hard', true], [dir, 'git reset --hard', true], [dir, 'cd . > .eng/guard/hook.mjs', true],
+    [clean, 'git reset --hard', false], [clean, 'git checkout -- .', false], [dir, 'git status', false], [dir, 'cd sub && git add .', false],
+    [dir, 'git -C clean status', false],
   ];
-  assert.deepEqual(cases.map(([c]) => [c, denied(c)]), cases);
-  const clean = path.join(dir, 'clean');
-  for (const c of ["env GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'", "GIT_DIR=../.git GIT_WORK_TREE=.. sh -c 'git reset --hard'"]) assert.equal(denied(c, clean), true, c);
-  assert.equal(denied('git reset --hard', clean), false, 'reset alone in a clean repo');
+  assert.deepEqual(cases.map(([cwd, c]) => [cwd, c, denied(c, cwd)]), cases);
+  const route = JSON.parse(hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command: 'cd sub && git reset --hard' } }, dir).stdout).hookSpecificOutput.permissionDecisionReason;
+  assert.match(route, /^eng guard: git reset --hard is checked only when it is the whole command, run from the repo root.*Run it alone from the repo root/);
   assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dirty\n');
 });
 
