@@ -249,6 +249,39 @@ test('eng merge gate ignores a PR head that loosens merge.auto: every gate setti
   git('checkout -q --detach origin/main');
 });
 
+test('eng merge gate, merge_group: the queue base config is checked like main\'s, must be a regular file, and base_sha is required', () => {
+  setMode('strict');
+  const pr = prWith('bin/tool.mjs'), p = path.join(dir, 'eng.config.yml');
+  comments([V({ patch_id: pr.patch, sha: pr.head })]);
+  const evq = path.join(dir, '.gh/event-base.json'), queued = base => fs.writeFileSync(evq, JSON.stringify({ merge_group: { head_sha: pr.group, ...(base ? { base_sha: base } : {}), head_ref: `refs/heads/gh-readonly-queue/main/pr-7-${pr.head}` } }));
+  const baseWith = edit => { git('checkout -q --detach origin/main'); const c = YAML.parse(fs.readFileSync(p, 'utf8')); edit(c); fs.writeFileSync(p, YAML.stringify(c)); git('commit -qam "loose base"'); const s = git('rev-parse HEAD'); git('checkout -q --detach origin/main'); return s; };
+  const cases = { 'high_risk_verifiers: "garbage"': c => { c.merge.auto.high_risk_verifiers = 'garbage'; }, 'high_risk_verifiers: null': c => { c.merge.auto.high_risk_verifiers = null; },
+    'high_risk_verifiers: 0': c => { c.merge.auto.high_risk_verifiers = 0; }, 'high_risk_paths: []': c => { c.merge.auto.high_risk_paths = []; },
+    'merge.auto: {}': c => { c.merge.auto = {}; }, 'merge.auto: scalar': c => { c.merge.auto = 'on'; } };
+  for (const [what, edit] of Object.entries(cases)) {
+    queued(baseWith(edit));
+    const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evq });
+    assert.equal(r.status, 1, `${what} in the queue's base config fails closed, as it does on main: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, /merge gate: the trusted eng\.config\.yml at [0-9a-f]{8} \(the queue's base\) is invalid/, what);
+  }
+
+  const loose = YAML.parse(fs.readFileSync(p, 'utf8')); loose.merge.auto.high_risk_verifiers = 1;
+  const blob = execSync('git hash-object -w --stdin', { cwd: dir, input: JSON.stringify(loose), encoding: 'utf8' }).trim();
+  git(`update-index --cacheinfo 120000,${blob},eng.config.yml`); git('commit -qm "config as a link"');
+  queued(git('rev-parse HEAD')); git('checkout -qf --detach origin/main');
+  let r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evq });
+  assert.equal(r.status, 1, `a symlink blob is not read as config: ${r.stdout}${r.stderr}`);
+  assert.match(r.stderr, /the trusted eng\.config\.yml at [0-9a-f]{8} \(the queue's base\) is not a regular file \(mode 120000\)/);
+
+  git('checkout -q -B loosen origin/main'); fs.writeFileSync(p, YAML.stringify(loose)); git('commit -qam "loosen" -m "Agent: builder-1"');
+  git('checkout -q --detach origin/main'); git('merge -q --squash loosen'); git('commit -qm group');
+  fs.writeFileSync(evq, JSON.stringify({ merge_group: { head_sha: pr.group, head_ref: `refs/heads/gh-readonly-queue/main/pr-7-${pr.head}` } }));
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evq });
+  assert.equal(r.status, 1, `merge_group without base_sha never falls back to the queued checkout's config: ${r.stdout}${r.stderr}`);
+  assert.match(r.stderr, /merge gate: the merge_group event has no base_sha/);
+  git('checkout -q --detach origin/main');
+});
+
 test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files need two distinct verifiers', () => {
   setMode('queue');
   let pr = prWith('docs/q.md');
