@@ -175,12 +175,37 @@ hooks:
 From 0.21.0, `eng sync` renders a small repo-level guard into `.eng/guard`. Before a command runs, it blocks only what
 damages this repo's history or work, and each block names the allowed route. Nothing else is blocked.
 
-| Blocked | Route the message names |
+Every block names its route. The destructive git forms are one table, `DESTRUCTIVE` in `lib/guard.mjs`; a test keeps
+this copy in step with it. Any shape: denied wherever the form appears. Alone at the root: the form depends on the
+repo's state, so it is checked only when it is the whole command run from the repo root (below), and denied there when
+it would lose work; in any other shape it is denied. git accepts any unique prefix of a long option, so the guard
+counts any prefix as the option (`--har` is `--hard`, `--del --forc` is `--delete --force`); a prefix two options share
+counts as either, and git refuses it anyway.
+
+| Destructive git form | Denied | Route the message names |
+|---|---|---|
+| a forced `git push`: a force flag (`-f` and any `--force` form, the lease forms included), `--mirror` or a `+` refspec | any shape, in both `git.rewrite_pushed` modes | add a commit; bring in the base by merge (`gh pr update-branch <n>`); in `protected` mode, rewrite a feature branch only through the guarded tool (`gt submit`) |
+| `git push` deleting a protected branch (`--delete`, `-d` or `:branch`) | any shape | delete only your own feature branches; to change a protected branch, open a pull request |
+| `git push --prune` | any shape | delete only your own feature branches, by name |
+| `--no-verify` on any git command but the read-only ones, and `git commit -n` | any shape | run it without the flag and fix what the hook reports |
+| `git -c core.hooksPath=<path>` or `--config-env core.hooksPath=<var>`, any path but `.githooks` | any shape | keep `.githooks`; add a check through `hooks.pre_commit` or `hooks.pre_push` |
+| `git config` setting or unsetting `core.hooksPath`, any path but `.githooks` | any shape | the same |
+| `git worktree remove --force` | any shape | commit or stash first, or remove the worktree without `--force` and report what git says |
+| `git clean` without `-n` or `--dry-run` | any shape | list with `git clean -n` and remove your own files by name |
+| `git stash drop`, `git stash clear` | any shape | leave the entries; apply yours by SHA |
+| `git update-ref -d` or `--stdin` | any shape | delete a branch with `git branch -d` |
+| `git reset --hard`, `--merge` or `--keep` | alone at the root when tracked files have uncommitted changes; any other shape | commit or stash first |
+| `git checkout -f` or `--force`, and `git checkout` with paths (`-- <paths>`, `<commit> <paths>`, or one word that may be a path) | alone at the root when those paths (the whole tree for `-f`) have uncommitted changes; any other shape | commit or stash first; to change branch inside a chain, `git switch <branch>` |
+| `git switch -f`, `--force` or `--discard-changes` | alone at the root when tracked files have uncommitted changes; any other shape | commit or stash first |
+| `git restore <paths>`, except `--staged` alone | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
+| `git rm -f` or `--force`, except with `--cached` | alone at the root when those paths have uncommitted changes; any other shape | commit or stash first |
+| `git branch -D`, `-d -f` or `--delete --force` | alone at the root when the branch's tip is on neither its upstream nor the default branch; any other shape | push it first, or use `git branch -d` |
+
+| Other blocks | Route the message names |
 |---|---|
-| Rewriting pushed history: any forced raw `git push` (a force flag, the lease forms, `--mirror`, a `+` refspec) on any branch, in both `git.rewrite_pushed` modes, and deleting a protected branch | add a commit; bring in the base by merge (`gh pr update-branch <n>`); in `protected` mode, rewrite a feature branch only through the guarded tool (`gt submit`) |
-| Skipping checks: `--no-verify` on any git command, `git commit -n`, `gh pr merge --admin`, `-c core.hooksPath=` and `git config` changes to `core.hooksPath` | run it without the flag and fix what the hook or check reports; add a check through `hooks.pre_commit` or `hooks.pre_push` |
-| Throwing away local work: `git worktree remove --force`; `git reset --hard`, `git checkout -- .` or `git restore .` when tracked files have uncommitted changes; `git branch -D` of a branch whose tip is on neither its upstream nor the default branch; `git clean -f`; `git stash drop` and `git stash clear` | commit or stash first; remove the worktree without `--force` and report what git says; push the branch first; list with `git clean -n` and remove your own files by name; apply a stash entry by SHA |
+| `gh pr merge --admin` | let the repo's merge rule merge it |
 | Editing the guard: Edit or Write on `.eng/guard`, on an eng-rendered `.claude/settings.json`, or one that removes eng's entry from a tool's hook file; shell commands that remove, move or overwrite those files | change `eng.config.yml` and run `eng sync` |
+| A construct the parser does not model, in a command that mentions git (below) | run the git command as its own command, with literal words |
 
 - **Wiring.** eng treats tool hook files like skill folders: it never writes into `.codex` or `.cursor`. It renders
   `.eng/guard/codex-hooks.json` and `.eng/guard/cursor-hooks.json`, and `eng doctor` prints a Guard section with one
@@ -196,28 +221,56 @@ damages this repo's history or work, and each block names the allowed route. Not
 - **Cursor allow.** The guard answers Cursor with `{"permission":"allow"}` when it does not deny. Cursor enforces only
   `deny` today (Cursor staff, forum.cursor.com/t/155711/4, 26 Mar 2026), so this skips no approval prompt. If Cursor
   starts to honour `allow`, the guard should answer `ask` instead (a comment in `lib/guard-hook.mjs` says so).
-- **Not covered.** File edits in Codex and Cursor (their hooks see shell commands only). What the shell parser cannot
-  see: variables, globs, aliases, functions, scripts and programs that run git themselves (`watch`, `ssh`, `parallel`,
-  `make`, `xargs` reading its command from stdin). Anything outside this repo. It does read subshells, `{ }` groups,
-  substitutions (in unquoted heredocs too), `sh -c`, `eval`, `env -S`, `find -exec`, the usual wrappers and git's global
-  options. A redirect is checked on every command, `cd` and the other builtins included (`cd . > .eng/guard/hook.mjs`
-  truncates the file before `cd` runs). A nested shell inherits the env assignments before it.
+- **Fail closed by structure** (0.21.0, sixth verify round). Five rounds closed one parser gap at a time, and each
+  round found the next. Now the parser models only quotes, backslashes and line continuations, `&&`, `||`, `;`, `|`,
+  `&`, newlines, `( )`, `{ }`, `$( )`, backticks, heredocs, env prefixes, the usual wrappers (`sudo`, `env` and
+  `env -S`, `command`, `nice`, `timeout`, `xargs` and the like), `sh -c` or `bash -c` with one option word (`-c`,
+  `-lc`, `-ec`), `find -exec` and git's global options. Anything else is a construct it does not model: `$'...'` and
+  `$"..."` quoting, `<( )` and `>( )`, `${...}` beyond `${NAME}`, a backslash inside backticks, an unterminated quote,
+  `eval`, `exec`, `trap`, `alias`, `case`, `select`, `coproc`, a nested shell with any other option (`bash -o pipefail
+  -c`, `bash +e -c`) or reading stdin (`... | bash`, `bash <<EOF`), other shells (`fish`, `csh`, `pwsh`), and `env -S`
+  with escapes or variables. When the command text mentions git (or gh, or a guard file) and uses any of them, it is
+  denied with the route: run the git command as its own command, with literal words. The verb-aware rules then apply
+  only to commands the parser fully models, so read-only git keeps working in any shape, chains included. Inside those,
+  a word the guard cannot know (a variable, substitution, glob, brace expansion, `xargs` input or `find`'s `{}`) in a
+  git subcommand that has a destructive form or runs hooks (`push`, `commit`, `merge`, `rebase`, `pull`, `am`, `reset`,
+  `checkout`, `switch`, `restore`, `rm`, `clean`, `branch`, `stash`, `worktree`, `update-ref`, `config`) is denied the
+  same way. So `git push origin "$(git branch --show-current)"` is denied: use `git push origin HEAD`. A word inside
+  double quotes that is an option's value stays allowed (`git commit -m "$(cat <<'EOF' ...)"`). Read-only subcommands
+  (`log`, `show`, `diff`, `status`, `grep` and the like) take any words. A command name made from a variable or
+  substitution, given a git subcommand (`$g reset --hard`), is read as git. A value git runs as a command that runs git
+  (`-c alias.*`, a `-c` value, or `GIT_PAGER`, `GIT_EDITOR` or `GIT_SSH_COMMAND`) is denied. A program given `git` as
+  a separate word (`strace git ...`, `watch git ...`, `eng run -- git ...`) is read as running that git command, so it
+  is never alone. `echo`, `printf`, `grep` and the like only print or search, so a git word there is data.
+- **Not covered.** File edits in Codex and Cursor (their hooks see shell commands only). Aliases and functions defined
+  in an earlier command (`git config alias.x ...`, then `git x`), scripts and files a command runs (`bash x.sh`,
+  `source x`, `make`), programs that run a command from a quoted string (`ssh host '...'`, `watch '...'`, `su -c '...'`),
+  and anything outside this repo. A redirect is checked on every command, `cd` and the other builtins included
+  (`cd . > .eng/guard/hook.mjs` truncates the file before `cd` runs). A nested shell inherits the env assignments
+  before it.
 - **Destructive git runs only alone from the repo root** (Matt, 12 Nov 2026, option b). The guard does not follow
-  folders. `git reset --hard`, `git checkout -- .`, `git restore .` and `git branch -D` are checked against the repo's
-  state only when the command is the whole command: one simple command that starts with `git`, with no `-C`,
-  `--git-dir` or `--work-tree`, no env assignment or wrapper before it (`env -C`, `sudo -D`, `command`, `time`), not in
-  a subshell, `{ }` group, substitution, `sh -c`, `eval` or `find -exec`, no `;`, `&&`, `||`, `|`, `&` or newline
-  before or after it, and no heredoc. It must also run from the repo root: the folder the tool reports is the root git
-  reports (`git rev-parse --show-toplevel`, symlinks resolved). In any other shape, and when the guard cannot find the
-  root, it denies them even in a clean repo, with the route: run it alone from the repo root, and commit or stash first.
-  So `cd sub && git reset --hard`, `git -C sub reset --hard` and `git reset --hard` run from a subfolder are all
-  denied; move to the root in a command of its own, then run it. A plain redirect such as `2>&1` is allowed. When the
-  guard cannot read the repo's state (git fails), it denies those commands too. A shell write is checked against the
-  folder the tool reports unless the script may change folders (`cd`, `pushd`, `popd`, `source`, `eval`, a function,
-  `alias`, `trap`, `shopt`, a `CDPATH`, `GIT_DIR` or `GIT_WORK_TREE` setting, `env -C`, `sudo -D`, `find -execdir`,
-  `git -C`). Then any target made of a guard file's names (`.eng`, `guard`, `.claude`, `settings.json`, `hooks.json`
-  and the like) is denied. `git status`, `git diff`, `git add` and the rules that do not depend on the repo's state work
-  in any shape. The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
+  folders. The forms marked "alone at the root" in the table are checked against the repo's state only when the command
+  is the whole command: one simple command that starts with `git`, with no `-C`, `--git-dir` or `--work-tree`, no env
+  assignment or wrapper before it (`env -C`, `sudo -D`, `command`, `time`), not in a subshell, `{ }` group,
+  substitution, `sh -c` or `find -exec`, no `;`, `&&`, `||`, `|`, `&` or newline before or after it, and no heredoc.
+  It must also run from the repo root: the folder the tool reports is the root git reports (`git rev-parse
+  --show-toplevel`, symlinks resolved). In any other shape, and when the guard cannot find the root, it denies them
+  even in a clean repo, with the route: run it alone from the repo root, and commit or stash first. So
+  `cd sub && git reset --hard`, `git -C sub reset --hard` and `git reset --hard` run from a subfolder are all denied;
+  move to the root in a command of its own, then run it. A plain redirect such as `2>&1` is allowed. When the guard
+  cannot read the repo's state (git fails), it denies those commands too. `git checkout <branch>` is a form with one
+  word that may be a path, so in a chain it is denied; `git switch <branch>` never discards changes and works in any
+  shape. `git status`, `git diff`, `git add` and the forms that do not depend on the repo's state work in any shape.
+  The guard is a seat belt for agents; the git hooks, the server ruleset and CI stay the wall.
+- **Shell writes after a folder change.** A shell write (`rm`, `mv`, `cp`, `tee`, `sed -i`, a `>` redirect and the
+  like) is checked against the folder the tool reports, unless the script may change folders (`cd`, `pushd`, `popd`,
+  `source`, `eval`, a function, `alias`, `trap`, `shopt`, a `CDPATH`, `GIT_DIR` or `GIT_WORK_TREE` setting, `env -C`,
+  `sudo -D`, `find -execdir`, `git -C`). Then the guard cannot tell where a relative path points, so it denies a
+  target whose path uses any of these names: `.eng`, `guard`, `.claude`, `.codex`, `.cursor`, `hook.mjs`, `guard.mjs`,
+  `config.json`, `codex-hooks.json`, `cursor-hooks.json`, `settings.json`, `hooks.json`, or a path made only of `..`.
+  So `cd sub && rm config.json` and `cd docs && echo hi > hooks.json` are denied although neither is a guard file. Run
+  the write from the repo root with the path from there (`rm sub/config.json`), which is checked against the real
+  guard files and allowed.
 - **Off.** `guard: off` in `eng.config.yml`, then `eng sync`, removes `.eng/guard` (the folder too) and the Claude Code
   hook. eng never writes into `.codex` or `.cursor`, so a link or entry you added there stays: `eng doctor` names each
   one that still points at the removed guard, with the `rm` or the entry to delete. It lists the guard under "Gates

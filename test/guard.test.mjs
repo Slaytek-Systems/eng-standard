@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync, execFileSync } from 'node:child_process';
 import YAML from 'yaml';
-import { decide, parseShell, HOOK_SCRIPT } from '../lib/guard.mjs';
+import { decide, parseShell, HOOK_SCRIPT, DESTRUCTIVE } from '../lib/guard.mjs';
 import { gitProbe } from '../lib/guard-hook.mjs';
 import { renderAll } from '../lib/render.mjs';
 import { HOOK_ENTRIES } from '../lib/guard-setup.mjs';
@@ -98,18 +98,19 @@ test('skipping checks: --no-verify anywhere on the line, commit -n bundled or no
 });
 
 test('throwing away local work: blocked only when there is work to lose; the safe forms pass', () => {
-  const dirty = fake({ dirty: true, safe: { gone: false, merged: true } }), clean = fake({ dirty: false, safe: { gone: false } });
+  const dirty = fake({ dirty: (cwd, specs) => !specs.length || specs.some(s => ['.', ':/', 'src/a.js'].includes(s)), safe: { gone: false, merged: true } }), clean = fake({ dirty: false, safe: { gone: false } });
   const cases = [
     ['git worktree remove --force ../wt', 'discard-local-work'], ['git worktree remove -f ../wt', 'discard-local-work'],
     ['git worktree remove ../wt', null], ['git worktree add -f ../wt feat', null], ['git worktree prune', null],
-    ['git reset --hard', 'discard-local-work'], ['git reset --hard origin/main', 'discard-local-work'], ['git reset --soft HEAD~1', null], ['git reset --keep HEAD~1', null],
+    ['git reset --hard', 'discard-local-work'], ['git reset --hard origin/main', 'discard-local-work'], ['git reset --soft HEAD~1', null], ['git reset --keep HEAD~1', 'discard-local-work'], ['git reset HEAD~1', null],
     ['git branch -D gone', 'discard-local-work'], ['git branch --delete --force gone', 'discard-local-work'], ['git branch -df gone', 'discard-local-work'],
     ['git branch -D merged', null], ['git branch -D missing', null], ['git branch -d gone', null],
     ['git clean -fd', 'discard-local-work'], ['git clean --force', 'discard-local-work'], ['git clean -fdx', 'discard-local-work'],
     ['git clean -n', null], ['git clean -nd', null], ['git clean -fn', null],
     ['git checkout -- .', 'discard-local-work'], ['git checkout .', 'discard-local-work'], ['git checkout HEAD -- .', 'discard-local-work'],
     ['git restore .', 'discard-local-work'], ['git restore --worktree :/', 'discard-local-work'], ['git restore --staged --worktree .', 'discard-local-work'],
-    ['git restore src/a.js', null], ['git restore --staged .', null], ['git checkout main', null], ['git checkout -b feat', null], ['git checkout -- src/a.js', null],
+    ['git restore src/a.js', 'discard-local-work'], ['git checkout -- src/a.js', 'discard-local-work'], ['git restore src/b.js', null], ['git checkout -- src/b.js', null],
+    ['git restore --staged .', null], ['git checkout main', null], ['git checkout -b feat', null],
     ['git stash drop', 'discard-local-work'], ['git stash drop stash@{1}', 'discard-local-work'], ['git stash clear', 'discard-local-work'],
     ['git stash push -m mine', null], ['git stash list', null], ['git stash pop', null],
   ];
@@ -132,7 +133,7 @@ test('the shell parser: chains, pipes, wrappers, nested shells, substitutions, k
     "git commit -m \"$(cat <<'EOF'\nDon't (ever) --no-verify\nEOF\n)\" && git push -f",
     'git\\\n  push -f',
   ];
-  for (const c of deny) assert.equal(ruleOf(c), c.includes('commit --no-verify') ? 'no-verify' : 'rewrite-pushed', c);
+  for (const c of deny) assert.equal(ruleOf(c), c.includes('commit --no-verify') ? 'no-verify' : c.startsWith('eval') ? 'unmodelled' : 'rewrite-pushed', c);
   const allow = [
     "git commit -m \"$(cat <<'EOF'\nfix: never git push --force; don't --no-verify\nEOF\n)\"", 'git commit -F - <<EOF\ngit push -f\n--no-verify\nEOF',
     'cat <<-X > notes.md\n\tgit push -f\n\tX', 'echo hi # git push -f', "echo 'git push -f'", 'echo "git push -f"', 'grep -r -- "--no-verify" docs',
@@ -194,7 +195,7 @@ test('the wrappers and nested shells around git: command, builtin, exec, xargs, 
     "bash -c 'cd /tmp; git push -f'", 'sh -ec "git push -f"', '{ cd sub && git push -f; }', '! git push -f', 'while true; do git push -f; done',
     "find . -name x -exec git push -f \\;", "find . -execdir git push -f {} +",
   ];
-  for (const c of deny) assert.equal(ruleOf(c), 'rewrite-pushed', c);
+  for (const c of deny) assert.equal(ruleOf(c), /^exec|xargs|{}/.test(c) ? 'unmodelled' : 'rewrite-pushed', c);
   for (const c of ['command -v git', 'xargs echo git push -f', "find . -name '*.js' -exec grep -l push {} +", 'exec 3>&1']) assert.equal(ruleOf(c), null, c);
 });
 
@@ -235,13 +236,13 @@ test('destructive git runs only alone from the repo root: any other shape is den
   ];
   for (const c of denied) {
     const d = bash(c, clean);
-    assert.equal(d.rule, 'discard-local-work', c);
-    assert.match(d.reason, /is checked only when it is the whole command, run from the repo root.*Run it alone from the repo root/, c);
+    assert.equal(d.rule, c.startsWith('eval') ? 'unmodelled' : 'discard-local-work', c);
+    assert.match(d.reason, c.startsWith('eval') ? /uses eval, which the guard does not read.*as a command of its own/ : /is checked only when it is the whole command, run from the repo root.*Run it alone from the repo root/, c);
   }
   const allowed = [
     'git reset --hard', 'git reset --hard origin/main', 'git reset --hard\n', '/usr/bin/git reset --hard', 'git reset --hard 2>&1', 'git checkout -- .', 'git restore .',
     'git branch -D merged', 'cd sub && git add .', 'cd clean && git status', "bash -c 'cd /tmp; git diff'", 'git -C sub status', 'cd /tmp; cd -; git push origin feat',
-    'git status && git log | head', 'cd clean && git reset --soft HEAD~1', 'git -C sub restore src/a.js',
+    'git status && git log | head', 'cd clean && git reset --soft HEAD~1', 'git -C sub restore --staged src/a.js',
   ];
   for (const c of allowed) assert.equal(ruleOf(c, clean), null, c);
   assert.equal(at('/r/sub', 'git reset --hard', clean), 'discard-local-work', 'alone, but from a subfolder of the repo');
@@ -254,7 +255,7 @@ test('a probe that cannot answer denies destructive git: no repo, an unreadable 
   const cases = [
     ['git reset --hard', 'discard-local-work'], ['git checkout -- .', 'discard-local-work'], ['git restore .', 'discard-local-work'],
     ['git -C missing reset --hard', 'discard-local-work'], ['git branch -D gone', 'discard-local-work'],
-    ['git status', null], ['git diff', null], ['git add .', null], ['git restore src/a.js', null], ['git branch -d gone', null],
+    ['git restore src/a.js', 'discard-local-work'], ['git status', null], ['git diff', null], ['git add .', null], ['git restore --staged src/a.js', null], ['git branch -d gone', null],
   ];
   assert.deepEqual(rows(cases, fake({ dirty: null, safe: { gone: null } })), expect(cases));
   assert.match(bash('git reset --hard', fake({ dirty: null })).reason, /could not read.*Commit or stash/);
@@ -465,7 +466,7 @@ const ROWS = [
   ['diff <(git reset --hard) /dev/null', 'deny'], ['cat <(git reset --hard)', 'deny'], ['echo x > >(git reset --hard)', 'deny'],
   // round 5 P2: long-option abbreviations git accepts
   ['git reset --har', 'deny'], ['git reset --h', 'deny'], ['git reset --mer', 'deny'], ['git reset --k', 'deny'], ['git clean --f', 'deny'],
-  ['git clean --fo', 'deny'], ['git branch --del --force gone', 'deny'], ['git branch --d --f gone', 'deny'], ['git push --forc origin feat', 'deny'],
+  ['git clean --fo', 'deny'], ['git branch --del --force gone', 'deny'], ['git branch --d --forc gone', 'deny'], ['git push --forc origin feat', 'deny'],
   ['git push --force-w origin feat', 'deny'], ['git commit --no-v -m x', 'deny'], ['git switch --disc main', 'deny'],
   // round 4 P1: shapes around destructive git
   ['set -e; true || { true; cd sub; }; git reset --hard', 'deny'], ['git -C sub/.. reset --hard', 'deny'], ['cd -P sub/.. && git reset --hard', 'deny'],
@@ -513,7 +514,19 @@ const repoProbe = fake({ dirty: (cwd, specs) => !specs.length || specs.some(s =>
 
 test('round 6 table: every destructive row is denied and every read-only row passes, by the policy', () => {
   const wrong = ROWS.filter(([c, want]) => (bash(c, repoProbe).allow ? 'allow' : 'deny') !== want);
-  assert.deepEqual(wrong, []);
+  assert.deepEqual(wrong, []);  const unmodelled = bash('diff <(git reset --hard) /dev/null', repoProbe);
+  assert.equal(unmodelled.rule, 'unmodelled');
+  assert.match(unmodelled.reason, /uses <\( \) or >\( \), which the guard does not read.*Run the git command as a command of its own, with its words written out literally/);
+  assert.match(bash('git push origin "$(git branch --show-current)"', repoProbe).reason, /use git push origin HEAD/);
+  assert.match(bash('git status && git checkout main', repoProbe).reason, /use git switch <branch>, which never throws changes away/);
+  const writes = [['cd sub && rm config.json', 'guard-files'], ['cd docs && echo hi > hooks.json', 'guard-files'], ['rm sub/config.json', null], ['echo hi > docs/hooks.json', null]];
+  assert.deepEqual(rows(writes, repoProbe), expect(writes), 'after a folder change a write to a guard file name is denied; from the root it is checked exactly');
+});
+
+test('one table: every destructive git form in DESTRUCTIVE is a row of the table in docs/lifecycle.md, and no row is missing from the code', () => {
+  const doc = fs.readFileSync(path.join(PKG, 'docs/lifecycle.md'), 'utf8');
+  const table = doc.slice(doc.indexOf('| Destructive git form |')).split('\n\n')[0].split('\n').slice(2).map(l => l.split(' | ')[0].replace(/^\| /, ''));
+  assert.deepEqual(table, DESTRUCTIVE.map(f => f.form));
 });
 
 test('round 6 table: the rendered hook on a real repo decides every row the same way', () => {
