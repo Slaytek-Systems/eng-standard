@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, spawnSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { renderAll, renderErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
@@ -557,12 +557,23 @@ function prBase(cfg) {
   const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF;
   return arg('--base') || (pb ? `origin/${pb}` : baseRef(cfg));
 }
+// The PR's target without any --base or ENG_BASE override: the CI's PR base branch, else the default branch.
+function trustedBase(cfg) {
+  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF, b = pb || cfg.project.default_branch;
+  try { sh(`git rev-parse --verify origin/${b}`); return `origin/${b}`; } catch { return b; }
+}
+// git with NUL-delimited output (-z): without it git C-quotes non-ASCII, tab and newline names, and nothing would match them.
+const gitZ = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).split('\0');
 // Every path this change touches against the merge base with the PR's base, committed or not. A rename lists both of its
-// paths. Throws when the merge base is unknown (a shallow clone, a missing base): callers then act as if everything changed.
+// paths. Throws when the merge base is unknown (a shallow clone, a missing base) or the base is not the PR's target (a
+// --base that names another commit would hide changes): callers then act as if everything changed.
 function changedFiles(cfg) {
-  const mb = sh(`git merge-base ${prBase(cfg)} HEAD`);
-  const committed = sh(`git diff --no-renames --name-only ${mb} HEAD`).split('\n');
-  const local = sh('git status --porcelain --no-renames --untracked-files=all -- . ":(exclude).eng/mistakes.jsonl"').split('\n').map(x => x.slice(3));
+  const base = prBase(cfg), want = trustedBase(cfg);
+  if (base !== want && sh(`git rev-parse --verify ${base}^{commit}`) !== sh(`git rev-parse --verify ${want}^{commit}`)) throw new Error(`--base ${base} is not the pull request's target ${want}, so its diff could hide changes`);
+  const mb = sh(`git merge-base ${base} HEAD`);
+  const committed = gitZ(['diff', '--no-renames', '--name-only', '-z', mb, 'HEAD']);
+  // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
+  const local = gitZ(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ':(exclude).eng/mistakes.jsonl']).map(x => x.slice(3));
   return [...new Set([...committed, ...local].filter(Boolean))].sort();
 }
 function e2eDecision(cfg) {
@@ -780,8 +791,8 @@ function riskOf(cfg, mb) {
 const GATE_INCOMPLETE = 3;
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
-  const event = arg('--event');
-  if (a.includes('--event') && !EVENTS.includes(event)) die(`gate: --event must be ${EVENTS.join(' or ')} (got ${event ?? 'nothing'})`);
+  const eq = a.find(x => x.startsWith('--event=')), event = eq ? eq.slice(8) : arg('--event');
+  if ((eq || a.includes('--event')) && !EVENTS.includes(event)) die(`gate: --event must be ${EVENTS.join(' or ')} (got ${event || 'nothing'})`);
   const map = GATE_COMMANDS, only = a.filter((x, i) => !x.startsWith('--') && !['--event', '--base'].includes(a[i - 1]));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
@@ -798,7 +809,7 @@ async function gate() {
   const sel = gateSelection(cfg, event, dir, steps, only), parallel = parallelOf(cfg);
   const bounded = steps.filter(s => s.check && !sel.skip.has(s) && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !sel.skip.has(s) && !bounded.includes(s));
   console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel > 1 ? `up to ${parallel} side by side while the budgets fit (verification.parallel)` : 'one after another'}`);
-  console.log(`  checks: ${sel.text}; each runs ${runs} time${runs === 1 ? '' : 's'} (${event === 'pr' && cfg.verification?.flake_runs_pr !== undefined ? 'verification.flake_runs_pr, --event pr' : 'verification.flake_runs'})`);
+  if (cfg.verification?.flake_runs_pr !== undefined || prChecksOf(cfg) === 'affected') console.log(`  checks: ${sel.text}; each runs ${runs} time${runs === 1 ? '' : 's'} (${event === 'pr' && cfg.verification?.flake_runs_pr !== undefined ? 'verification.flake_runs_pr, --event pr' : 'verification.flake_runs'})`);
   const done = await runChecks(bounded, how, t, keep, parallel, inner, nestedRow);
   const res = [];
   for (const s of steps) {

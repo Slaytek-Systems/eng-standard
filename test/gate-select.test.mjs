@@ -169,8 +169,84 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
     assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
-    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
+    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
     assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
+});
+
+// Fix round 1 (verifiers codex-sol and opencode-deepseek on d96203f): a PR must never skip a check its change affects.
+// Each test builds its own repo with `main` and one branch, then reads which checks ran.
+async function inRepo(checks, files, fn) {
+  const saved = dir; dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-select-fix-'));
+  try {
+    git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
+    write('eng.config.yml', YAML.stringify(config({ flake_runs_pr: 1, pr_checks: 'affected' })));
+    for (const [f, t] of Object.entries(files)) write(f, t);
+    for (const [id, text] of Object.entries(checks)) write(`.eng/checks/${id}.sh`, text, 0o755);
+    git('add -A'); git('commit -qm base'); git('checkout -qb pr');
+    await fn();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); dir = saved; }
+}
+const gatePr = (...more) => eng(['gate', 'checks', '--event', 'pr', ...more]);
+
+test('false skip: a non-ASCII or special filename, or an untracked or unstaged one, still selects the check that covers it', async () => {
+  const names = ['src/é.js', 'src/tab\tname.js', 'src/space name.js', 'src/ünï/file.js'];
+  await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/x': '1\n', ...Object.fromEntries(names.map(n => [n, '1\n'])) }, () => {
+    for (const n of names) {
+      write(n, '2\n'); git('add -A'); git('commit -qm change');
+      const r = gatePr(); assert.equal(r.status, 0, out(r));
+      assert.deepEqual(ran(), { s: 1 }, `committed change to ${JSON.stringify(n)} runs the check covering src`);
+      git('checkout -q main'); git('checkout -q -B pr');
+    }
+    write('src/space name.js', 'unstaged\n'); // untracked-with-space is covered by the loop above; here an unstaged edit of a tracked file
+    git('checkout -q main'); write('src/a', 'dirty\n');
+    assert.equal(gatePr().status, 0); assert.deepEqual(ran(), { s: 1 }, 'an unstaged edit of tracked src/a (porcelain " M src/a") runs it');
+    git('checkout -q -- .'); write('src/new file.js', 'n\n');
+    assert.equal(gatePr().status, 0); assert.deepEqual(ran(), { s: 1 }, 'an untracked name with a space runs it');
+  });
+});
+
+test('false skip: every # covers: line counts, not just the first', async () => {
+  await inRepo({ a: counting('a', 'src/a').replace('# covers: src/a\n', '# covers: src/a\n# covers: src/b\n') }, { 'src/a/1': '1\n', 'src/b/2': '2\n', 'docs/x': 'x\n' }, () => {
+    write('src/b/2', 'changed\n'); git('commit -qam b');
+    const r = gatePr(); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { a: 1 }, 'a change under the second covers: line runs the check');
+  });
+});
+
+test('false skip: a covers path with .. is normalised, and one that leaves the repo is a config error', async () => {
+  await inRepo({ a: counting('a', 'other/../src'), z: counting('z', '../outside') }, { 'src/a': '1\n', 'other/x': '1\n' }, () => {
+    write('src/a', '2\n'); git('commit -qam a');
+    const r = gatePr();
+    assert.equal(r.status, 1, 'the out-of-repo check fails the gate');
+    assert.match(out(r), /check z: "# covers:" .* outside the repo \(\.\.\/outside\)/);
+    assert.deepEqual(ran(), { a: 1 }, 'other/../src is src, so a change to src/a runs a');
+  });
+});
+
+test('false skip: a --base that is not the PR target runs every check', async () => {
+  await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n' }, () => {
+    write('src/a', '2\n'); git('commit -qam src'); git('branch wrong');
+    write('other/b', '2\n'); git('commit -qam other');
+    let r = gatePr('--base', 'wrong');
+    assert.deepEqual(ran(), { s: 1, o: 1 }, out(r)); assert.match(r.stdout, /checks: all 2, because the diff against wrong cannot be computed \(--base wrong is not the pull request's target main/);
+    r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1, o: 1 }, 'the real target gives the real diff: both changed');
+    git('checkout -q HEAD~1'); r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1 }, 'a correct --base still selects');
+  });
+});
+
+test('--event=pr is accepted like --event pr, and a repo with none of the new keys prints no checks: line', async () => {
+  await inRepo({ s: counting('s', 'src') }, { 'src/a': '1\n' }, () => {
+    write('src/a', '2\n'); git('commit -qam a');
+    let r = eng(['gate', 'checks', '--event=pr']); assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /checks: 1 of 1/);
+    r = eng(['gate', 'checks', '--event=bogus']); assert.equal(r.status, 1); assert.match(r.stderr, /--event must be pr or main \(got bogus\)/);
+    write('eng.config.yml', YAML.stringify(config({}))); r = gatePr();
+    assert.equal(r.status, 0, out(r)); assert.doesNotMatch(r.stdout, /^\s+checks: /m);
+  });
+});
+
+test('false skip: the rendered guidance says # covers: must name the check\'s helpers and fixtures', () => {
+  const sh = shippingMd(config({ flake_runs_pr: 1, pr_checks: 'affected' }));
+  assert.match(sh, /`# covers:` must name every path the check reads, its own helper scripts and fixtures included/);
+  assert.match(fs.readFileSync(TPL, 'utf8'), /'# covers:' must name every path the check reads, its helper scripts and fixtures too/);
 });
