@@ -32,6 +32,7 @@ import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nest
 import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
 import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
+import { guardErrors, guardWiring, guardProbe, guardReport } from '../lib/guard-setup.mjs';
 import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -106,6 +107,7 @@ function configErrors(c) {
   errs.push(...neverErrors(c));
   errs.push(...rewriteModeErrors(c));
   errs.push(...profileErrors(c));
+  errs.push(...guardErrors(c));
   return errs;
 }
 
@@ -205,7 +207,7 @@ function sync() {
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
@@ -946,6 +948,13 @@ async function upgradeInfo() {
   const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
   return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
 }
+// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
+function rmEmptyParents(p) {
+  for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
+    try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
+    console.log(`  removed ${d}/`);
+  }
+}
 async function doctor() {
   if (a.includes('--launch')) launchCheck();
   const up = await upgradeInfo();
@@ -962,6 +971,7 @@ async function doctor() {
   console.log(`  NOTE ${PASS_PROVES}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
   if (!renderErrors(cfg).length) console.log(visibilityReport(skillVisibilityOf(cfg), cfg.agents.harnesses));
+  console.log(guardReport(guardWiring({ cfg, probe: guardProbe(ROOT) })));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
   let hits = lintHits({ ...cfg, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);

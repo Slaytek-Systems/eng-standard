@@ -72,7 +72,7 @@ test('the PASS line always shows in AGENTS.md and SHIPPING.md, whatever merge.au
     const c = template(); c.profile = profile;
     if (app) c.merge = { ...c.merge, auto: { gate_app_id: app } };
     const out = renderAll(c, null);
-    assert.match(blockOf(out['AGENTS.md']), /A verification PASS is a recorded run, not a re-run\. Review PASS: none\./);
+    assert.match(blockOf(out['AGENTS.md']), /A verification PASS is a recorded run, not a re-run\. Review PASS: no runs\./);
     assert.ok(out['SHIPPING.md'].includes(FULL), `${profile}/${app}: SHIPPING.md carries the full line`);
     assert.doesNotMatch(out['SHIPPING.md'], /<PASS_PROVES>/);
   }

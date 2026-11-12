@@ -55,16 +55,18 @@ test('a trailing comment in one command does not skip the next command', () => {
 test('unset hook keys render the same pre-commit and Claude settings as before', () => {
   assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '$ENG sync --check && $ENG lint');
   assert.equal(hooks(cfg({ hooks: { pre_commit: [] } }))['.githooks/pre-commit'], hooks(cfg())['.githooks/pre-commit']);
-  assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg()))), ['permissions']);
-  assert.deepEqual(Object.keys(JSON.parse(claudeSettings({ project: { default_branch: 'main' } }))), ['permissions']);
+  assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg({ guard: 'off' })))), ['permissions'], 'with the guard off, as before 0.21.0');
+  assert.deepEqual(Object.keys(JSON.parse(claudeSettings({ project: { default_branch: 'main' }, guard: 'off' }))), ['permissions']);
+  assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg())).hooks), ['PreToolUse'], 'the guard (on by default) is the only hook');
 });
 
 test('agents.post_edit_command renders a Claude Code PostToolUse hook next to the deny list', () => {
   const settings = JSON.parse(claudeSettings(cfg({ agents: { harnesses: ['claude-code'], post_edit_command: 'node scripts/lint-changed.mjs --hook' } })));
   assert.ok(settings.permissions.deny.includes('Bash(gh pr merge --admin:*)'));
-  assert.deepEqual(settings.hooks, {
-    PostToolUse: [{ matcher: 'Edit|MultiEdit|Write', hooks: [{ type: 'command', command: 'node scripts/lint-changed.mjs --hook', timeout: 60 }] }],
-  });
+  const post = [{ matcher: 'Edit|MultiEdit|Write', hooks: [{ type: 'command', command: 'node scripts/lint-changed.mjs --hook', timeout: 60 }] }];
+  assert.deepEqual(Object.keys(settings.hooks), ['PreToolUse', 'PostToolUse']);
+  assert.deepEqual(settings.hooks.PostToolUse, post);
+  assert.deepEqual(JSON.parse(claudeSettings(cfg({ guard: 'off', agents: { harnesses: ['claude-code'], post_edit_command: 'node scripts/lint-changed.mjs --hook' } }))).hooks, { PostToolUse: post });
 });
 
 test('config validation rejects malformed hook keys', () => {

@@ -20,6 +20,11 @@ git:
                                   # protected_branches and tags are locked, so a guarded tool (Graphite's gt restack and gt submit)
                                   # may rewrite feature branches. Agents never force-push with git in either mode (deny list).
 
+guard: on                         # on (default): before a command runs, .eng/guard blocks history rewrites, skipped checks, lost
+                                  # local work and edits to itself, and names the allowed route. Claude Code runs it from
+                                  # .claude/settings.json; eng doctor prints how to wire Codex and Cursor. off: nothing is rendered,
+                                  # and eng doctor lists it as a gate below the standard default.
+
 # ---------------- STACK: recommended choices, each with its reason. The repo owner adopts or replaces each one ----------------
 stack:
   status: DRAFT                   # DRAFT (not decided yet), APPROVED (adopted) or IN USE (already in place); the same values per decision.

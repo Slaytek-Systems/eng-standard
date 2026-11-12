@@ -50,8 +50,11 @@ ship:
       - "lib/lock.mjs"            # the managed-file list eng sync --check compares to decide drift
       - "lib/renovate.mjs"        # compareBaseline: which lint findings are known (baselined) and which fail eng gate lint
       - "lib/stack-audit.mjs"     # CONVEX_HANDLE_RULE and its version threshold: whether eng lint enforces that rule
-      - "lib/migrate.mjs"         # RETIRED_GATES: eng sync replaces or removes gates.required entries
+      - "lib/migrate.mjs"         # RETIRED_GATES: eng sync replaces or removes gates.required entries; retired() and missingRewriteMode are eng sync --check's own failure list
       - "lib/profile.mjs"         # persistDefaults: the persist markers that exempt leftovers when eng run checks for them
+      - "lib/guard.mjs"           # the repo guard's policy: which commands it denies before they run, rendered into every repo
+      - "lib/guard-hook.mjs"      # the guard's hook entry and git probe: what each tool's hook decides and when it fails open
+      - "lib/guard-setup.mjs"     # the hook entries that wire the guard into Claude Code, Codex and Cursor
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"
       - "docs/merge-queue.md"
