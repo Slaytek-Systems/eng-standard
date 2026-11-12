@@ -29,7 +29,7 @@ const PROTECTED = { ...NEVER, rewrite: 'protected' };
 // A fake read-only probe rooted at /r: dirty folders, branch safety, file text and real paths.
 const fake = (o = {}) => ({
   root: () => o.root === undefined ? '/r' : o.root,
-  dirty: cwd => o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
+  dirty: (cwd, specs) => typeof o.dirty === 'function' ? o.dirty(cwd, specs) : o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
   branchSafe: (cwd, b) => Object.hasOwn(o.safe ?? {}, b) ? o.safe[b] : true,
   read: abs => o.files?.[abs] ?? null,
   real: abs => o.real?.[abs] ?? abs,
@@ -443,6 +443,92 @@ test('the rendered hook on real repos: destructive git runs only alone from the 
   assert.deepEqual(cases.map(([cwd, c]) => [cwd, c, denied(c, cwd)]), cases);
   const route = JSON.parse(hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command: 'cd sub && git reset --hard' } }, dir).stdout).hookSpecificOutput.permissionDecisionReason;
   assert.match(route, /^eng guard: git reset --hard is checked only when it is the whole command, run from the repo root.*Run it alone from the repo root/);
+  assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dirty\n');
+});
+
+// ---------- round 6: one table, every row decided by the policy and by the rendered hook on a real repo ----------
+
+// The repo every row runs against: at its root, a.txt has an uncommitted change, sub/ is clean, branch gone has a commit
+// on neither its upstream nor main, branch merged sits on main. deny: the row must be blocked; allow: it must pass.
+// Rows: the round 4 and round 5 verifier findings on 11166b5 and d3036f8, then the construct class they belong to.
+const ROWS = [
+  // round 5 P1: checkout forms that discard work
+  ['cd sub && git checkout -f', 'deny'], ['git checkout HEAD .', 'deny'], ['git checkout -f', 'deny'], ['git checkout --force main', 'deny'],
+  ['git checkout -- a.txt', 'deny'], ['git checkout a.txt', 'deny'], ['git checkout HEAD~1 -- a.txt', 'deny'], ['git checkout --fo', 'deny'],
+  // round 5 P1: ANSI-C quoting
+  ["true && git reset $'--hard'", 'deny'], ["git reset $'--hard'", 'deny'], ["$'\\x67it' reset --hard", 'deny'],
+  // round 5 P1: nested shells with options before -c
+  ["bash -o pipefail -c 'git reset --hard'", 'deny'], ["sh -o errexit -c 'git reset --hard'", 'deny'], ["bash -O extglob -c 'git reset --hard'", 'deny'],
+  ["bash +e -c 'git reset --hard'", 'deny'], ["env -i bash -o pipefail -c 'git reset --hard'", 'deny'], ["bash -c -x 'git reset --hard'", 'deny'],
+  ["bash --norc -c 'git reset --hard'", 'deny'], ["fish -c 'git reset --hard'", 'deny'],
+  // round 5 P1: process substitution
+  ['diff <(git reset --hard) /dev/null', 'deny'], ['cat <(git reset --hard)', 'deny'], ['echo x > >(git reset --hard)', 'deny'],
+  // round 5 P2: long-option abbreviations git accepts
+  ['git reset --har', 'deny'], ['git reset --h', 'deny'], ['git reset --mer', 'deny'], ['git reset --k', 'deny'], ['git clean --f', 'deny'],
+  ['git clean --fo', 'deny'], ['git branch --del --force gone', 'deny'], ['git branch --d --f gone', 'deny'], ['git push --forc origin feat', 'deny'],
+  ['git push --force-w origin feat', 'deny'], ['git commit --no-v -m x', 'deny'], ['git switch --disc main', 'deny'],
+  // round 4 P1: shapes around destructive git
+  ['set -e; true || { true; cd sub; }; git reset --hard', 'deny'], ['git -C sub/.. reset --hard', 'deny'], ['cd -P sub/.. && git reset --hard', 'deny'],
+  ['env -C sub git reset --hard', 'deny'], ['cd sub && git reset --hard', 'deny'], ['git status && git reset --hard', 'deny'], ['(git reset --hard)', 'deny'],
+  ["bash -ec 'cd sub; git reset --hard'", 'deny'], ['echo $(git reset --hard)', 'deny'], ['eval git reset --hard', 'deny'], ['git reset --hard &', 'deny'],
+  ['find . -maxdepth 0 -exec git reset --hard \;', 'deny'], ['git reset --hard <<EOF\nx\nEOF', 'deny'], ['sudo -D sub git reset --hard', 'deny'],
+  // the class: constructs the parser does not fully model, in a command that mentions git
+  ["echo 'git reset --hard' | bash", 'deny'], ["bash <<'EOF'\ngit reset --hard\nEOF", 'deny'], ["bash <<< 'git reset --hard'", 'deny'],
+  ['bash /dev/stdin <<< "git reset --hard"', 'deny'], ["eval 'git reset --hard'", 'deny'], ['exec git reset --hard', 'deny'],
+  ['H=--hard; git reset $H', 'deny'], ['git reset "$H"', 'deny'], ['git reset ${H:-"--hard"}', 'deny'], ['$(echo git) reset --hard', 'deny'],
+  ['g=git; $g reset --hard', 'deny'], ['git reset {--hard,--soft}', 'deny'], ['git reset --har?', 'deny'], ['git reset --har[d]', 'deny'],
+  ['echo `echo \\`git reset --hard\\``', 'deny'], ['git reset "--ha\\\nrd"', 'deny'], ["git -c 'alias.nuke=!git reset --hard' nuke", 'deny'],
+  ["git -c core.pager='git reset --hard' log", 'deny'], ["GIT_PAGER='git reset --hard' git log", 'deny'], ["trap 'git reset --hard' EXIT", 'deny'],
+  ['case x in x) git reset --hard;; esac', 'deny'], ["env -S 'git reset\\_--hard'", 'deny'], ['strace -f git reset --hard', 'deny'],
+  ['eng run --by x -- git reset --hard', 'deny'], ['echo gone | xargs git branch -D', 'deny'], ['xargs -I{} git checkout {} < list', 'deny'],
+  ['find . -name a.txt -exec git checkout {} \;', 'deny'], ["git reset 'unterminated", 'deny'],
+  // every destructive form in the table, alone at the root of the dirty repo
+  ['git reset --hard', 'deny'], ['git reset --merge', 'deny'], ['git reset --keep HEAD', 'deny'], ['git restore a.txt', 'deny'], ['git restore .', 'deny'],
+  ['git restore --worktree --staged a.txt', 'deny'], ['git rm -f a.txt', 'deny'], ['git switch -f main', 'deny'], ['git switch --discard-changes main', 'deny'],
+  ['git branch -D gone', 'deny'], ['git clean', 'deny'], ['git clean -d', 'deny'], ['git clean -fdx', 'deny'], ['git stash drop', 'deny'], ['git stash clear', 'deny'],
+  ['git worktree remove --force ../wt', 'deny'], ['git update-ref -d refs/heads/gone', 'deny'], ['git update-ref --stdin < cmds', 'deny'],
+  ['git push --force origin feat', 'deny'], ['git push origin +feat', 'deny'], ['git push origin :main', 'deny'], ['git push --prune origin', 'deny'],
+  ['git commit -n -m x', 'deny'], ['git merge --no-verify feat', 'deny'], ['git -c core.hooksPath=/dev/null commit -m x', 'deny'],
+  ['git config core.hooksPath /tmp/h', 'deny'], ['git config --unset core.hooksPath', 'deny'], ['git push origin "$(git branch --show-current)"', 'deny'],
+  // round 5 wrongly denied, and read-only or safe git that must keep working in any shape
+  ['git grep -e --no-verify -- a.txt', 'allow'], ['git config --get-urlmatch core.hooksPath https://example.invalid', 'allow'],
+  ['git log --grep --no-verify', 'allow'], ['git log --grep=--no-verify --oneline', 'allow'], ['git config --get core.hooksPath', 'allow'],
+  ['git config get core.hooksPath', 'allow'], ['git config --list', 'allow'], ['git config core.hooksPath .githooks', 'allow'],
+  ['git status && git log --oneline | head', 'allow'], ['git diff HEAD~1 -- a.txt', 'allow'], ['git show HEAD:a.txt', 'allow'], ['cd sub && git status', 'allow'],
+  ['cd sub && git add .', 'allow'], ['git add . && git commit -m "fix: block git reset --hard"', 'allow'],
+  ["git commit -m \"$(cat <<'EOF'\nblock git reset $'--hard' and <(git reset --hard)\nEOF\n)\"", 'allow'], ['git commit -m "$(date)"', 'allow'],
+  ['git checkout -b feat && git push -u origin feat', 'allow'], ['git switch main && git pull', 'allow'], ['git switch -c feat', 'allow'], ['git checkout main', 'allow'],
+  ['git checkout HEAD~1 -- sub/s.txt', 'allow'], ['git restore sub/s.txt', 'allow'], ['git restore --staged a.txt && git status', 'allow'],
+  ['git rm --cached a.txt', 'allow'], ['git rm -f sub/s.txt', 'allow'], ['git stash push -m wip && git stash list', 'allow'], ['git stash apply stash@{0}', 'allow'],
+  ['git branch -d merged', 'allow'], ['git branch -D merged', 'allow'], ['git clean -n', 'allow'], ['git clean -fn', 'allow'], ['git clean -f --d', 'allow'],
+  ['git reset --soft HEAD~1 && git status', 'allow'], ['git reset HEAD a.txt', 'allow'], ['git push origin feat', 'allow'], ['git push -u origin HEAD', 'allow'],
+  ['git fetch --prune', 'allow'], ['git -C sub status', 'allow'], ["bash -c 'git status'", 'allow'], ["bash -lc 'git log -1'", 'allow'],
+  ['git ls-files | xargs git add', 'allow'], ['watch git status', 'allow'], ['GIT_DIR=.git git status', 'allow'], ['git -c core.hooksPath=.githooks status', 'allow'],
+  ['git log --format=%H | python3 -c "import sys; print(sys.stdin.read())"', 'allow'], ['echo git reset --hard', 'allow'],
+  ['git log --oneline \\\n  --graph', 'allow'], ['for f in *.txt; do git diff -- "$f"; done', 'allow'], ['git add "$f"', 'allow'],
+  // no git in the text: the unmodelled constructs are not the guard's business
+  ["IFS=$'\\n'; for f in *; do echo \"$f\"; done", 'allow'], ['eval "$(ssh-agent -s)"', 'allow'], ['diff <(sort a) <(sort b)', 'allow'], ['bash scripts/x.sh', 'allow'],
+];
+const repoProbe = fake({ dirty: (cwd, specs) => !specs.length || specs.some(s => ['.', './', ':/', '*', 'a.txt'].includes(s)), safe: { gone: false, merged: true } });
+
+test('round 6 table: every destructive row is denied and every read-only row passes, by the policy', () => {
+  const wrong = ROWS.filter(([c, want]) => (bash(c, repoProbe).allow ? 'allow' : 'deny') !== want);
+  assert.deepEqual(wrong, []);
+});
+
+test('round 6 table: the rendered hook on a real repo decides every row the same way', () => {
+  const dir = tmp('eng-guard-r6-');
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  sh('git init -q -b main');
+  assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
+  sh('mkdir sub && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base && git commit -q --allow-empty -m two');
+  sh('git branch merged && git checkout -q -b gone && git commit -q --allow-empty -m lost && git checkout -q main && echo dirty > a.txt');
+  const wrong = ROWS.filter(([command, want]) => {
+    const r = hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command } }, dir);
+    assert.equal(r.stderr, '', command);
+    return (r.stdout && JSON.parse(r.stdout).hookSpecificOutput.permissionDecision === 'deny' ? 'deny' : 'allow') !== want;
+  });
+  assert.deepEqual(wrong, []);
   assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dirty\n');
 });
 
