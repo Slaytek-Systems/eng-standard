@@ -10,7 +10,7 @@ import { renderAll, renderErrors, harnessRel, harnessLines, executables, expandS
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
-import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath, openSockDir, staleSockDirs } from '../lib/hygiene.mjs';
+import { engTmp, TMP_RULE, slug, quoteArg, DISK_RULES, DISK_RULE_IDS, doctorConfig, evidenceKey, expandPath, openSockDir, staleSockDirs, runTmpRoot } from '../lib/hygiene.mjs';
 import { SKIP_DIRS, CONVEX_HANDLE_RULE, usesHandleRule } from '../lib/stack-audit.mjs';
 import { validateRenovation, compareBaseline, lintFindings, secretFilenameFindings, makeBaseline, covers, baselinePath, BASELINE_KINDS } from '../lib/renovate.mjs';
 import { scratchRun, RUN_USAGE } from '../lib/run.mjs';
@@ -21,15 +21,19 @@ import { formalErrors } from '../lib/formal.mjs';
 import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE } from '../lib/profile.mjs';
-import { ephemeral, runRuleErrors, runRules, declaredRuns, ephemeralDoctor, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
+import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
 import { parseLock, lockText } from '../lib/lock.mjs';
-import { classifyRisk, versionOnly } from '../lib/risk.mjs';
+import { classifyRisk, versionOnly, highRiskBlock, touchesConfig, CONFIG } from '../lib/risk.mjs';
 import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
+import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
 import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC } from '../lib/standard.mjs';
+import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
+import { guardErrors, guardWiring, guardProbe, guardReport } from '../lib/guard-setup.mjs';
+import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -103,6 +107,7 @@ function configErrors(c) {
   errs.push(...neverErrors(c));
   errs.push(...rewriteModeErrors(c));
   errs.push(...profileErrors(c));
+  errs.push(...guardErrors(c));
   return errs;
 }
 
@@ -155,27 +160,13 @@ const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLA
 // The exact name is on disk: on a case-insensitive disk existsSync would also find another file whose name differs in case.
 const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch { return false; } };
 
-// Claude Code finds skills at .claude/skills/<name>/SKILL.md and subagents at .claude/agents/<file>. Developers and other
-// tools own those folders, so eng only reads them (Matt, 9 Nov 2026): it renders into agents.skills_dir and reports here
-// what Claude Code cannot see. stat, never open, so a FIFO or special file cannot block; any error counts as not visible.
-function claudeVisibility(cfg) {
-  if (!cfg.agents.harnesses.includes('claude-code')) return null;
+// What each agent tool can see of the skills and subagents eng renders (lib/skill-visibility.mjs). Developers and other
+// tools own .claude/skills, .claude/agents and every link between tool folders, so eng only reads them (Matt, 9 and 10 Nov 2026).
+function skillVisibilityOf(cfg) {
   const subagents = cfg.agents.skills.filter(s => s.endsWith('/*')).flatMap(s => { const d = path.join(PKG, 'vendor', s.split('/')[0], 'agents'); return fs.existsSync(d) ? fs.readdirSync(d) : []; });
-  // A skill or subagent selected twice (pstack/* plus pstack/how) renders once, so it counts once.
-  const dirs = [['.claude/skills', cfg.agents.skills_dir, [...new Set(expandSkills(cfg).map(s => `${s.split('/')[1]}/SKILL.md`))]],
-    ['.claude/agents', `${path.dirname(cfg.agents.skills_dir)}/agents`, [...new Set(subagents)]]];
-  const visible = rel => { try { const abs = path.join(ROOT, rel); if (!fs.statSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
-  const present = rel => { try { fs.lstatSync(path.join(ROOT, rel)); return true; } catch { return false; } };
-  const missing = dirs.map(([d, src, names]) => ({ d, src, n: names.filter(f => !visible(`${d}/${f}`)).length })).filter(m => m.n);
-  const total = dirs.reduce((n, [, , names]) => n + names.length, 0), lost = missing.reduce((n, m) => n + m.n, 0);
-  if (!lost) return { ok: true, what: `claude-code: all ${total} eng skills and subagents are visible in .claude/skills and .claude/agents` };
-  // A link's target is read from the folder it sits in, after symlinks: when .claude is itself a link, ../<src> would
-  // point beside the link's target, not into this repo. So the target is relative to the real .claude folder.
-  const target = (d, src) => { let root = ROOT; try { root = fs.realpathSync(ROOT); } catch {} let real = path.join(root, path.dirname(d)); try { real = fs.realpathSync(path.join(ROOT, path.dirname(d))); } catch {} return path.relative(real, path.join(root, src)) || '.'; };
-  const q = s => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
-  const fix = missing.map(({ d, src }) => present(d) ? `add the missing entries to ${d}, or point ${d} at ${src}` : `ln -s ${q(target(d, src))} ${q(d)}`).join('; ');
-  return { ok: false, what: `claude-code: ${lost} of ${total} eng skills and subagents are not visible in .claude/skills or .claude/agents (eng renders them into ${dirs.map(([, src]) => src).join(' and ')}, and never writes into .claude/skills or .claude/agents). Fix: ${fix}` };
+  return skillVisibility({ skills: expandSkills(cfg).map(s => s.split('/')[1]), subagents, skillsDir: cfg.agents.skills_dir, probe: fsProbe(ROOT) });
 }
+const claudeVisibility = cfg => cfg.agents.harnesses.includes('claude-code') ? claudeLine(skillVisibilityOf(cfg)) : null;
 const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
 // Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
@@ -216,7 +207,7 @@ function sync() {
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const old = parseLock(readOr('.eng/lock.json'));
-  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; }
+  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
@@ -245,7 +236,7 @@ function init() {
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
-  console.log(`\nSkill router (also in AGENTS.md). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
+  console.log(`\nSkill router (also in SHIPPING.md, Reference). ${ROUTE_RULE}\n${routerText(cfg)}\nSpawning or steering a thread: ${SPAWN_RULE}\n`);
   console.log(`Branch ruleset advice (apply by hand; eng never edits rulesets):\n${rulesetAdvice(cfg)}\n`);
   mergeQueueWarn(cfg);
   if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng doctor --launch.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
@@ -300,7 +291,7 @@ function syncCheck() {
   const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');
   const std = standardProblems();
-  if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: edit eng.config.yml, then run eng sync.' : ''}`);
+  if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: run eng sync and commit what it writes. It overwrites hand edits to generated files, so move any first: into eng.config.yml, or for AGENTS.md outside the <!-- eng:begin --> and <!-- eng:end --> markers.' : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
 
@@ -365,10 +356,9 @@ function lintHits(cfg) {
   return builtinRules(cfg).flatMap(r => lintFiles(r, own, ROOT));
 }
 function lint() {
-  // --config-from <ref>: take the rules from that ref's eng.config.yml (CI uses main's copy, so a PR cannot delete its own rule).
-  const i = process.argv.indexOf('--config-from'), ref = i > 0 ? process.argv[i + 1] : null;
-  const cfg = ref ? YAML.parse(sh(`git show ${ref}:eng.config.yml`)) : loadConfig();
-  if (ref) console.log(`  rules from ${ref}:eng.config.yml`);
+  // Lint gates on this checkout's own config, so a PR's own gate level applies in that PR (Matt, 10 Nov 2026).
+  if (process.argv.includes('--config-from')) console.log('  --config-from is ignored since 0.18.2: lint uses this checkout\'s eng.config.yml');
+  const cfg = loadConfig();
   let hits = lintHits(cfg);
   // A repo that adopted the standard while shipping (eng init): findings in renovation/baselines/ pass; only new ones fail. warn mode reports only.
   const bl = readOr(baselinePath('lint'));
@@ -382,7 +372,7 @@ function lint() {
   hits.push(...secrets.map(x => ({ file: x.path, line: 0, rule: 'secret-filename', message: `${x.detail}; keep credentials out of the repo (an .example file is fine)` })));
   const warned = hits.filter(h => h.warn); hits = hits.filter(h => !h.warn);
   for (const h of warned) console.log(`  WARN ${hitText(h)}`);
-  if (hits.length && cfg.renovation?.gates?.mode === 'warn')  // mode from the config the rules came from: a branch cannot switch the base to warn
+  if (hits.length && cfg.renovation?.gates?.mode === 'warn')
     return console.log(`  ${hits.map(hitText).join('\n  ')}\neng lint: WARN (renovation.gates.mode warn; ${hits.length} new finding(s) would fail in enforce mode)`);
   if (hits.length) die(`lint:\n  ${hits.map(hitText).join('\n  ')}`);
   console.log(`eng lint: PASS (${builtinRules(cfg).length} rules${bl ? ', new findings only' : ''}${warned.length ? `; ${warned.length} warning(s) above` : ''})`);
@@ -757,16 +747,16 @@ function verdictCheck() {
   if (risk.risk === 'high') {
     if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
     console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
+    if (risk.hits.some(h => h.file === 'ship.high_risk')) console.log('  ship.high_risk changed in this change (paths, verifiers or label): risk:high whatever the new block says, so the owner sees it');
     if (counted.length < need) die(`verdict: risk:high needs ${need} distinct verifiers on ${H.slice(0, 8)}; have ${counted.length} (${counted.map(x => x.by).join(', ')})`);
     return console.log(`eng verdict: PASS (risk:high, ${counted.length} of ${need} verifiers: ${counted.map(x => `${x.result} ${methodOf(x)} by ${x.by}`).join(', ')} on ${H.slice(0, 8)})`);
   }
   console.log(`eng verdict: PASS (${v.result} ${methodOf(v)} by ${v.by} on ${v.sha.slice(0, 8)})`);
 }
 // The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
-// No ship.high_risk block: low, as before 0.18.1.
+// No ship.high_risk block: low, as before 0.18.1, unless this change removed it.
 function riskOf(cfg, mb) {
   const hr = cfg.ship?.high_risk;
-  if (!hr) return { risk: 'low', hits: [] };
   const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
   for (let i = 0; i < z.length && z[i];) {
     const k = z[i][0];
@@ -774,8 +764,10 @@ function riskOf(cfg, mb) {
     else { files.push({ filename: z[i + 1], status: status[k] || 'modified' }); i += 2; }
   }
   const show = (ref, f) => { const r = spawnSync('git', ['show', `${ref}:${f}`], { cwd: ROOT, encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
-  const bump = new Set((hr.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
-  return classifyRisk(files, hr, bump);
+  const block = touchesConfig(files) ? { base: highRiskBlock(show(mb, CONFIG)), head: highRiskBlock(show('HEAD', CONFIG)) } : undefined;
+  if (!hr && !block) return { risk: 'low', hits: [] };
+  const bump = new Set((hr?.version_only || []).filter(f => files.some(x => x.filename === f && x.status === 'modified') && versionOnly(f, show(mb, f), show('HEAD', f))));
+  return classifyRisk(files, hr, bump, block);
 }
 
 // eng gate [--heavy] [<step>...]: the checks first (every script in verification.checks_dir), then gates.required, then
@@ -930,18 +922,27 @@ async function runChecks(list, how, t, keep, limit, inner, nestedRow) {
 // writes a new entry that is never hit (disk audit, 29 Oct 2026). Off for these children.
 // A step's TMPDIR holds unix sockets (tsx IPC: $TMPDIR/tsx-<uid>/<pid>.pipe), and a socket path is capped at 107 bytes (103 on
 // macOS). ENG_TMP sits under the scratch root and names the repo, so it is as deep as those make it (123 bytes for a Kalsigns
-// check). Each step's TMPDIR is instead a folder in this gate's own socket folder ($HOME/.cache/eng/s/<8 hex>, or inside the
-// enclosing eng run's): 0700, symlink-free, removed on exit, and reaped by the next gate or run if this one is killed. With
-// no usable home it stays inside ENG_TMP.
-let STEP_ROOT;
+// check). Each step's TMPDIR is instead a folder in this gate's own short folder ($HOME/.cache/eng/t/<8 hex>), the same root as
+// eng run --'s (inside an eng run <name> with isolation.mode: fail, that run's own writable ENG_RUN_TMP_DIR folder): 0700, symlink-free, removed on exit, and reaped by the next gate or run if this one is killed. It is beside the
+// socket root (.cache/eng/s), not in it, because a sandboxed eng run <name> that a step starts hides the socket root under a
+// tmpfs, and the step's temp files must stay visible to it. With no usable home it stays inside ENG_TMP.
+let STEP_ROOT, STEP_WHY;
 function stepTmp(t, name) {
   if (STEP_ROOT === undefined) {
-    const env = { ...process.env, ENG_SOCK_DIR: PARENT_SOCK_DIR ?? '' };
-    for (const d of staleSockDirs(Infinity, { env })) if (d.stale) fs.rmSync(d.path, { recursive: true, force: true });
-    try { STEP_ROOT = openSockDir(env, `eng-gate-${Date.now().toString(36)}-${process.pid}-0`); } catch { STEP_ROOT = null; }
+    const root = runTmpRoot(process.env), sockEnv = { ...process.env, ENG_SOCK_DIR: PARENT_SOCK_DIR ?? '' };
+    for (const d of [...staleSockDirs(Infinity, { root }), ...staleSockDirs(Infinity, { env: sockEnv })]) if (d.stale) fs.rmSync(d.path, { recursive: true, force: true });
+    try {
+      STEP_ROOT = openSockDir(process.env, `eng-gate-${Date.now().toString(36)}-${process.pid}-0`, root);
+      if (!STEP_ROOT) STEP_WHY = root ? `${root} is not a safe, short folder (a symlink on its path, not owned by you, or a home too long for a socket path)` : 'there is no usable home folder (HOME is unset, missing, not yours, or under /tmp)';
+    } catch (e) {
+      STEP_ROOT = null;
+      STEP_WHY = `${e.code ?? e.message} creating a folder in ${root}. Inside eng run <name> with isolation.mode: fail, ${root.split(path.sep).slice(-1)[0] === 't' ? 'the run should have provided ENG_RUN_TMP_DIR' : 'its ENG_RUN_TMP_DIR folder is not writable'}`;
+    }
     if (STEP_ROOT) process.on('exit', () => fs.rmSync(STEP_ROOT, { recursive: true, force: true }));
   }
-  return fs.mkdtempSync(STEP_ROOT ? `${STEP_ROOT}/` : path.join(t.dir, `${slug(name)}-`));
+  const dir = fs.mkdtempSync(STEP_ROOT ? `${STEP_ROOT}/` : path.join(t.dir, `${slug(name)}-`));
+  if (!STEP_ROOT && STEP_WHY) { console.error(`  WARN no short TMPDIR for the gate's steps: ${STEP_WHY}. Their TMPDIR is a long path (${Buffer.byteLength(dir)} bytes for ${name}), so a unix socket in it can fail with EINVAL (107-byte limit)`); STEP_WHY = ''; }
+  return dir;
 }
 const privateTmpEnv = (env, dir) => ({ ...env, ENG_TMP: dir, TMPDIR: dir, TMP: dir, TEMP: dir, NODE_DISABLE_COMPILE_CACHE: '1' });
 const leftText = left => `left ${left.length} entr${left.length === 1 ? 'y' : 'ies'} in its private TMPDIR: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ', ...' : ''} (tests_leave_nothing: remove what the test creates in an after hook or finally)`;
@@ -979,6 +980,13 @@ async function upgradeInfo() {
   const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
   return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
 }
+// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
+function rmEmptyParents(p) {
+  for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
+    try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
+    console.log(`  removed ${d}/`);
+  }
+}
 async function doctor() {
   if (a.includes('--launch')) launchCheck();
   const up = await upgradeInfo();
@@ -989,19 +997,21 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = repoFiles().filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...ephemeralDoctor(cfg), ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   for (const h of harnessLines(cfg)) console.log(`  ${h.ok ? 'ok  ' : 'WARN'} ${h.what}`);
-  const v = renderErrors(cfg).length ? null : claudeVisibility(cfg);
-  if (v) console.log(visibilityLine(v));
+  if (!renderErrors(cfg).length) console.log(visibilityReport(skillVisibilityOf(cfg), cfg.agents.harnesses));
+  console.log(guardReport(guardWiring({ cfg, probe: guardProbe(ROOT) })));
   for (const w of hookArgWarnings(cfg)) console.log(`  WARN ${w}`);
   if (needsProfileNotice(cfg)) console.log(PROFILE_NOTICE);
-  let hits = lintHits({ ...cfg, hygiene: { ...cfg.hygiene, disk_lint: true, tmp_lint: true }, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
+  let hits = lintHits({ ...cfg, constraints: undefined, flags: undefined, db: undefined }).filter(h => DISK_RULE_IDS.includes(h.rule) || h.rule === TMP_RULE.id || h.rule === CONTAINER_RULE.id);
   const bl = readOr(baselinePath('lint'));
   if (bl) { const fresh = new Set(compareBaseline(JSON.parse(bl), lintFindings(hits)).fresh.map(f => f.fingerprint)); hits = hits.filter(h => fresh.has(lintFindings([h])[0].fingerprint)); }
   for (const h of hits) console.log(`  ${h.warn ? 'WARN' : 'FAIL'} ${hitText(h)}`);
   hits = hits.filter(h => !h.warn);
+  const tpl = YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
+  for (const l of belowDefaultLines(belowDefault(cfg, tpl), changedFromDefault(cfg, tpl))) console.log(l);
   const bad = checks.filter(c => !c.ok).length + hits.length;
   if (merges.some(c => !c.ok)) mergeSettings(cfg);
   if (bad) die(`doctor: ${bad} problem(s) above`);
@@ -1013,13 +1023,13 @@ const [cmd, ...a] = process.argv.slice(2);
 const COMMANDS = [
   ['init', 'init [--owner <@handle>]', 'set up this repo: an empty repo gets the starter config; a repo that already ships also gets baselines, so only new findings fail', init],
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
-  ['lint', 'lint [--config-from <ref>]', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
+  ['lint', 'lint', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [--event pr|main [--base <ref>]] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts). --event pr: each check runs verification.flake_runs_pr times, and with verification.pr_checks: affected only the checks whose # covers: paths changed against the merge base with --base run', gate],
-  ['merge', 'merge gate [--pr <n>] [--config-from <ref>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
+  ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
 function runCmd() {
@@ -1029,13 +1039,23 @@ function runCmd() {
   if (opts.length === 1) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', opts[0]]);
   die(RUN_USAGE);
 }
-function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig }; }
+// One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
+async function updateNotice() {
+  try {
+    if (noticeOff(process.env)) return;
+    const pj = readOr('package.json'), pin = declaredPin(pj);
+    if (!pin) return;
+    const line = noticeFor({ installed: pkgVersion(), latest: await latestVersion(), pin, pm: packageManager(fs.readdirSync(ROOT), pj) });
+    if (line) console.error(line);
+  } catch {}
+}
+function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig, configErrors }; }
 const found = COMMANDS.find(([n]) => n === cmd);
 // Help never runs the command: `eng <cmd> --help`, `-h` (before any `--`, whose tail belongs to the command eng runs) and `eng help <cmd>`.
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
-else if (found) found[3]();
+else if (found) { if (cmd !== 'doctor') await updateNotice(); found[3](); }
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);

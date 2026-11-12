@@ -94,16 +94,16 @@ test('lint rule test-bare-tmpdir: flags bare tmpdir in tests, passes ENG_TMP; ru
   fs.rmSync(path.join(dir, 'test'), { recursive: true }); fs.rmSync(path.join(dir, 'src.ts'));
 });
 
-test('sync renders .eng/test-tmp.mjs and the hygiene SOP in SHIPPING.md and AGENTS.md', async () => {
+test('sync renders .eng/test-tmp.mjs and the hygiene SOP in SHIPPING.md', async () => {
   setCfg(c => { c.e2e && (c.e2e = c.e2e); });
   const r = eng('sync'); assert.equal(r.status, 0, r.stderr);
-  const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8'), agents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  const ship = fs.readFileSync(path.join(dir, 'SHIPPING.md'), 'utf8');
   assert.match(ship, /## 5\. Disk hygiene/); assert.match(ship, /git worktree remove <path>/); assert.match(ship, /Never delete unpushed or dirty worktrees/);
-  assert.match(agents, /git worktree remove <path>/); assert.match(agents, /test-bare-tmpdir/);
+  assert.match(ship, /git worktree remove <path>/); assert.match(ship, /test-bare-tmpdir/);
   // Fixed rule 18: clean up on merge or close (devbox forensics, 17 Oct 2026)
-  for (const doc of [ship, agents]) assert.match(doc, /18\. \*\*Clean up on merge or close\.\*\* When a PR merges or closes, its worktrees and evidence are deleted/);
+  for (const doc of [ship]) assert.match(doc, /18\. \*\*Clean up on merge or close\.\*\* When a PR merges or closes, its worktrees and evidence are deleted/);
   assert.match(ship, /reuse it for every review round/); assert.match(ship, /never one per lane or worktree/); assert.match(ship, /CARGO_INCREMENTAL=0/);
-  assert.match(agents, /one worktree per PR reused across review rounds/);
+  assert.match(ship, /one worktree per PR reused across review rounds/);
   const { default: setup } = await import(path.join(dir, '.eng/test-tmp.mjs'));
   const saved = { E: process.env.ENG_TMP, T: process.env.TMPDIR }; delete process.env.ENG_TMP; process.env.TMPDIR = base;
   const teardown = setup();

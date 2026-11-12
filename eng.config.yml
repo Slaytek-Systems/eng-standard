@@ -40,6 +40,21 @@ ship:
       - "lib/budget.mjs"          # check weights and budgets, imported by lib/verification.mjs
       - "lib/run.mjs"             # eng run --by: writes the verdict evidence runs
       - "lib/nested.mjs"          # a gate inside a gate: the signal that makes the enclosing gate or run incomplete
+      - "lib/render.mjs"          # GATE_COMMANDS: what eng gate verdict|lint|drift|rules|e2e run; writes every rendered hook and pipeline
+      - "lib/gate-levels.mjs"     # the never-silently listing of gates a repo lowered below the standard
+      - "lib/flake.mjs"           # whether a new or changed e2e test may block merges
+      - "lib/ephemeral.mjs"       # declared runs the gate adds as steps, and eng run's leftover checks that fail them
+      - "lib/disk-rules.mjs"      # tests_leave_nothing and evidence modes: a step that leaves files fails the gate
+      - "lib/hygiene.mjs"         # built-in lint rules (TMP_RULE, DISK_RULES) that eng lint and eng rules prove enforce
+      - "lib/standard.mjs"        # lifecycleProblems: a pin or lock version mismatch fails eng sync --check (the drift gate)
+      - "lib/lock.mjs"            # the managed-file list eng sync --check compares to decide drift
+      - "lib/renovate.mjs"        # compareBaseline: which lint findings are known (baselined) and which fail eng gate lint
+      - "lib/stack-audit.mjs"     # CONVEX_HANDLE_RULE and its version threshold: whether eng lint enforces that rule
+      - "lib/migrate.mjs"         # RETIRED_GATES: eng sync replaces or removes gates.required entries; retired() and missingRewriteMode are eng sync --check's own failure list
+      - "lib/profile.mjs"         # persistDefaults: the persist markers that exempt leftovers when eng run checks for them
+      - "lib/guard.mjs"           # the repo guard's policy: which commands it denies before they run, rendered into every repo
+      - "lib/guard-hook.mjs"      # the guard's hook entry and git probe: what each tool's hook decides and when it fails open
+      - "lib/guard-setup.mjs"     # the hook entries that wire the guard into Claude Code, Codex and Cursor
       - "lib/merge-queue.mjs"     # eng merge gate rules for consuming repos (v0.10.0)
       - "lib/merge-cli.mjs"
       - "docs/merge-queue.md"

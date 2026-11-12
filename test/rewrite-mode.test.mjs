@@ -56,6 +56,64 @@ test('never: a feature-branch rewrite, a protected-branch rewrite or delete, and
   const m = rewriteMain(r); assert.notEqual(m.status, 0); assert.match(m.stderr, /non-fast-forward push to main blocked/);
 });
 
+// Every refusal names the allowed route, and following it works (AGENTS.md: "take the route its message names").
+// PR #68 verdict 1: the push route must keep what others pushed, act on the refused branch whatever is checked out, and
+// work when the remote tip was never fetched. So: someone else pushes to the branch, nothing is fetched, the local branch
+// is rewritten with real work, and another branch is checked out when the push is refused.
+const followPushRoute = (r, stderr) => {
+  const m = stderr.match(/To keep your work and what is already on (\S+): git fetch (\S+) (\S+), then git switch (--detach [0-9a-f]{40}|\S+), then git merge ([0-9a-f]{40}) \(resolve any conflicts\), then (git push \S+ (?:refs\/heads\/\S+|\$\(git rev-parse HEAD\)):\S+)$/m);
+  assert.ok(m, stderr);
+  const [, , remote, rref, sw, sha, push] = m;
+  for (const a of [['fetch', '-q', remote, rref], ['switch', '-q', ...sw.split(' ')], ['-c', 'core.hooksPath=/dev/null', 'merge', '-q', '--no-edit', sha]]) {
+    const x = r.git(...a); assert.equal(x.status, 0, `${a.join(' ')}: ${x.stderr}`);
+  }
+  const p = spawnSync('sh', ['-c', push], { cwd: r.w, encoding: 'utf8' });
+  assert.equal(p.status, 0, `${push}: ${p.stderr}`);
+  return { sha };
+};
+
+test('each refusal names its route, and following the push route keeps both sides\' work and pushes', () => {
+  for (const [mode, target] of [['never', 'feat'], ['protected', 'main']]) {
+    const r = pushedRepo(withMode(mode)), { git } = r, remote = path.join(path.dirname(r.w), 'remote.git'), peer = path.join(path.dirname(r.w), 'peer');
+    execSync(`git clone -q -b ${target} ${remote} ${peer} && cd ${peer} && echo theirs > peer.txt && git add peer.txt && git -c user.email=p@p -c user.name=p -c core.hooksPath=/dev/null commit -qm peer && git push -q origin ${target}`);
+    git('checkout', '-q', target);
+    fs.writeFileSync(path.join(r.w, 'work.txt'), 'mine\n');
+    git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'rewritten with my work');
+    git('checkout', '-q', target === 'main' ? 'feat' : 'main');
+    const f = git('push', '-q', '--force', 'origin', target);
+    assert.notEqual(f.status, 0, `${mode}: the rewrite is refused`);
+    const { sha } = followPushRoute(r, f.stderr);
+    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode}: my work reached the remote`);
+    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode}: what was already pushed is kept`);
+    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode}: no pushed commit was rewritten`);
+  }
+  // PR #68 verdict 2: a push from something that is not a branch (a commit id, HEAD~1:feat) gets a route whose last step
+  // pushes the merge it made. Verdict 3: a branch that shares its name with a tag still pushes. Verdict 4: so does a repo
+  // with a tag named HEAD (the route pushes refs/heads/<branch>, or the merged commit's id).
+  for (const [mode, source] of [['never', 'HEAD~1'], ['protected', 'HEAD~1'], ['never', 'refs/heads/same'], ['protected', 'refs/heads/same']]) {
+    const r = pushedRepo(withMode(mode)), { git } = r, remote = path.join(path.dirname(r.w), 'remote.git'), peer = path.join(path.dirname(r.w), 'peer');
+    const target = mode === 'never' ? 'feat' : 'main';
+    execSync(`git clone -q -b ${target} ${remote} ${peer} && cd ${peer} && echo theirs > peer.txt && git add peer.txt && git -c user.email=p@p -c user.name=p -c core.hooksPath=/dev/null commit -qm peer && git push -q origin ${target}`);
+    git('checkout', '-q', target); fs.writeFileSync(path.join(r.w, 'work.txt'), 'mine\n');
+    git('add', 'work.txt'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--amend', '-m', 'rewritten with my work');
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'later, not to push', '--allow-empty');
+    git('tag', 'HEAD', 'HEAD~2');
+    if (source !== 'HEAD~1') { git('branch', '-q', 'same', 'HEAD~1'); git('tag', 'same', 'HEAD~1'); git('checkout', '-q', 'feat' === target ? 'main' : 'feat'); }
+    const f = git('push', '-q', '--force', 'origin', `${source}:refs/heads/${target}`);
+    assert.notEqual(f.status, 0, `${mode} ${source}: the rewrite is refused`);
+    const { sha } = followPushRoute(r, f.stderr);
+    assert.equal(git('show', `origin/${target}:work.txt`).stdout, 'mine\n', `${mode} ${source}: my work reached the remote`);
+    assert.equal(git('show', `origin/${target}:peer.txt`).stdout, 'theirs\n', `${mode} ${source}: what was already pushed is kept`);
+    assert.equal(git('merge-base', '--is-ancestor', sha, `origin/${target}`).status, 0, `${mode} ${source}: no pushed commit was rewritten`);
+  }
+  const r = pushedRepo(withMode('never')), { git } = r;
+  assert.match(git('push', '-q', '--force', 'origin', 'v1').stderr, /a pushed tag never moves or is deleted\. Cut a new tag instead/);
+  git('checkout', '-q', 'main');
+  assert.match(git('rebase', '-q', '-f', 'HEAD~1').stderr, /rebasing protected branch main is blocked: its history is never rewritten\. To update it, git pull --ff-only; to change it, open a pull request/);
+  git('checkout', '-q', 'feat');
+  assert.match(git('rebase', '-q', '-f', 'HEAD~2').stderr, /Add a commit instead; to bring in the base, merge it \(gh pr update-branch\)/);
+});
+
 test('protected: a feature-branch rewrite passes; a protected-branch rewrite or delete and a tag move are refused', () => {
   const r = pushedRepo(withMode('protected'));
   const f = r.git('push', '-q', '--force-with-lease', 'origin', 'feat');

@@ -93,8 +93,8 @@ test('eng init on a repo that already ships: one command, the same bar, only new
   r = eng('lint');
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /eng lint: WARN/);
   r = eng('lint', '--config-from', 'HEAD~1');
-  assert.match(out(r), /rules from HEAD~1/);
-  assert.equal(r.status, 1, 'warn mode on the branch does not soften lint against the base config'); assert.match(r.stderr, /test-bare-tmpdir/);
+  assert.equal(r.status, 0, `a stale pipeline's --config-from still lints on this checkout's own config: ${out(r)}`);
+  assert.match(r.stdout, /--config-from is ignored since 0\.18\.2/); assert.match(r.stdout, /eng lint: WARN/);
   fs.rmSync(path.join(dir, 'test'), { recursive: true });
 
   fs.appendFileSync(path.join(dir, 'SHIPPING.md'), 'edited by hand\n');

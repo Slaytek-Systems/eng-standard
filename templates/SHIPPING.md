@@ -26,7 +26,7 @@ If another doc in this repo disagrees with this file, this file wins; fix the ot
 
 ## 1. Pick up and do work
 
-To use any skill, read `.agents/skills/<name>/SKILL.md`; do not rely on description matching. The skill router in AGENTS.md (and the `eng-route` skill) is the fallback.
+To use any skill, read `.agents/skills/<name>/SKILL.md`; do not rely on description matching. The skill router in the Reference section below (and the `eng-route` skill) is the fallback.
 
 <SPAWN>
 
@@ -104,3 +104,5 @@ After merging `<BASE>` in, the head is a new SHA: it needs its own runs (`eng ru
 ## 7. GAPS
 
 1. Server-side enforcement (rulesets, required checks) is not applied by `eng` v0; `eng init` prints the advice in §2 to apply by hand. Local hooks are convenience; `--no-verify` skips them.
+
+<REFERENCE>

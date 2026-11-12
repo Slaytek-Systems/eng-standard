@@ -20,6 +20,11 @@ git:
                                   # protected_branches and tags are locked, so a guarded tool (Graphite's gt restack and gt submit)
                                   # may rewrite feature branches. Agents never force-push with git in either mode (deny list).
 
+guard: on                         # on (default): before a command runs, .eng/guard blocks history rewrites, skipped checks, lost
+                                  # local work and edits to itself, and names the allowed route. Claude Code runs it from
+                                  # .claude/settings.json; eng doctor prints how to wire Codex and Cursor. off: nothing is rendered,
+                                  # and eng doctor lists it as a gate below the standard default.
+
 # ---------------- STACK: recommended choices, each with its reason. The repo owner adopts or replaces each one ----------------
 stack:
   status: DRAFT                   # DRAFT (not decided yet), APPROVED (adopted) or IN USE (already in place); the same values per decision.
@@ -121,8 +126,10 @@ ship:                             # Shipping model: one actor merges, so merges,
   # verdict_wait_minutes } plus eng merge gate|post. mode: strict (default, any repo) or queue (where GitHub offers a merge queue). See docs/merge-queue.md.
   high_risk:                      # The repo owner approves these before the manager merges. Everything else merges once verified, new behaviour behind a default-off flag.
     label: risk:high
-    reasons: [auth, payments, schema/migrations, public APIs, CI, production data]
-    paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**"]
+    reasons: [auth, payments, schema/migrations, public APIs, CI, production data, gate settings]
+    # eng.config.yml and .eng/checks/** hold the gate settings: a repo may lower a gate, but the change is risk:high, so
+    # it is visible and needs the owner. eng doctor lists every gate below this file's default.
+    paths: ["**/auth/**", "**/payments/**", "migrations/**", "**/schema.*", "**/api/**", ".github/workflows/**", ".buildkite/**", ".eng/ci/**", "eng.config.yml", ".eng/checks/**"]
   split_bot_when: "concurrent PR load or release work outgrows the lead agent"
 
 verification:
@@ -220,7 +227,7 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
   containers: { label: eng.repo } # run --rm, or --label "$ENG_CONTAINER_LABEL" (eng.repo=<repo>). Never docker volume prune -a.
   evidence: per_pr                # <e2e.evidence_dir>/pr-<n>/<sha>/; cleared when the PR merges or closes.
   evidence_roots: [.eng/evidence]  # where run evidence lands (default: e2e.evidence_dir). Add a proof harness's root, e.g. "~/.local/state/<repo>-proof".
-  disk_rules:                     # Four disk rules: most disk writes were private copies nothing read again. Every mode: fail | warn | off (eng doctor fails on off). SHIPPING.md §5.
+  disk_rules:                     # Four disk rules: most disk writes were private copies nothing read again. Every mode: fail | warn | off (eng doctor lists warn and off as below the standard). SHIPPING.md §5.
     tests_leave_nothing:          # Tests and proofs leave nothing behind.
       mode: fail                  # eng gate gives each step its own TMPDIR/ENG_TMP; an entry left in it fails the step. eng run <name> does the same for one declared run.
     no_cache_in_evidence:         # No build caches inside evidence folders.
@@ -233,7 +240,7 @@ hygiene:                          # Disk hygiene (SHIPPING.md §5). eng gate / e
     evidence_budget:              # Evidence folders have a size budget.
       mode: fail                  # eng verdict check and eng e2e fail when a run dir is over max_mb. They report; they never delete.
       max_mb: 100                 # positive number. A run dir is <root>/<run> or <root>/pr-<n>/<sha>.
-  run_rules:                      # Runs are ephemeral by default: leftover containers and volumes filled a shared disk. SHIPPING.md §5. eng doctor fails mode: off.
+  run_rules:                      # Runs are ephemeral by default: leftover containers and volumes filled a shared disk. SHIPPING.md §5. eng doctor lists warn and off as below the standard.
     ephemeral_runs:               # Every local test, review and probe run is thrown away when it ends, like a throwaway sandbox.
       mode: fail                  # fail | warn | off. eng run <name> runs a run (eng gate runs each one), then fails on a container, network, volume, temp entry or process it left; removes what carries the run's label, reports volumes. eng gate wraps those steps.
       runs: null                  # null = test, plus launch (up then down) when launch.up and launch.down are declared. Or a list of project.commands names and launch.

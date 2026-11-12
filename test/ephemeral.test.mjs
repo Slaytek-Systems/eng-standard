@@ -316,19 +316,20 @@ test('docker by an absolute path is labelled; a volume made outside the run is r
   assert.equal(dk('inspect', '-f', '{{.State.Running}}', `${tag}-u`).stdout.trim(), 'true');
 });
 
-test('mode warn reports and removes but passes; mode off still runs the tests and keeps their exit code, unwatched, and eng doctor fails it', () => {
+test('mode warn reports and removes but passes; mode off still runs the tests and keeps their exit code, unwatched, and eng doctor lists it below the standard', () => {
   // tests_leave_nothing keeps its own mode for temp leftovers (see the mixed-modes test): warn here too.
   setCfg(c => { c.project.commands.test = 'mkdir "$TMPDIR/w"'; c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'warn'; });
   let r = eng('run', 'test');
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, /LEFT temp w /); assert.match(r.stdout, /eng run: WARN run test left 1 thing/);
-  assert.match(eng('doctor').stdout, /ok {3}hygiene\.run_rules\.ephemeral_runs is on/);
+  assert.match(eng('doctor').stdout, /hygiene\.run_rules\.ephemeral_runs\.mode: warn \(standard: fail\)/);
   setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.project.commands.test = `echo ran >> ${marks}/off; exit 7`; });
   r = eng('run', 'test');
   assert.equal(r.status, 7, out(r)); assert.match(r.stdout, /eng run: off/); assert.match(r.stderr, /a run exited 7/); assert.doesNotMatch(r.stdout, /LEFT/);
   assert.equal(mark('off'), 'ran', 'the test ran exactly once');
   r = eng('doctor');
-  assert.equal(r.status, 1); assert.match(r.stdout, /FAIL hygiene\.run_rules\.ephemeral_runs is on/);
+  assert.match(r.stdout, /hygiene\.run_rules\.ephemeral_runs\.mode: off \(standard: fail\)\. Restore: hygiene\.run_rules\.ephemeral_runs\.mode: fail/);
+  assert.doesNotMatch(r.stdout, /FAIL hygiene\.run_rules/, 'a supported lowering is not a doctor failure');
   setCfg(c => { c.project.commands.test = 'true'; c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.hygiene.disk_rules.tests_leave_nothing.mode = 'fail'; });
   assert.deepEqual(rounds(), []);
 });
@@ -1079,12 +1080,12 @@ test('ENG_SOCK_DIR: a killed run\'s folder is removed by the next run; a SIGTERM
 
 test('staleSockDirs: a folder is stale once its run\'s eng is gone; a live one, or one with a forged owner, is kept until old', t => {
   if (!hasRt()) return t.skip(NEEDS_RT);
-  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0';
-  const dirs = [live, dead].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
+  const e = { ...process.env, ENG_SOCK_DIR: '' }, live = `eng-eph-zz-${process.pid}-0`, dead = 'eng-eph-zz-999999999-0', deadRun = 'eng-run-zz-999999999-0';
+  const dirs = [live, dead, deadRun].map(id => openSockDir(e, id)); t.after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
   const forged = path.join(path.dirname(dirs[0]), sockName(`${dead}-forged`)); fs.mkdirSync(forged); fs.writeFileSync(path.join(forged, SOCK_OWNER), dead); dirs.push(forged);
   const of = (h, now = Date.now()) => Object.fromEntries(staleSockDirs(h, { env: e, now }).filter(x => dirs.includes(x.path)).map(x => [x.path, x.stale]));
-  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [forged]: false });
-  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [forged]: true });
+  assert.deepEqual(of(6), { [dirs[0]]: false, [dirs[1]]: true, [dirs[2]]: true, [forged]: false });
+  assert.deepEqual(of(6, Date.now() + 7 * 3600e3), { [dirs[0]]: false, [dirs[1]]: true, [dirs[2]]: true, [forged]: true });
 });
 
 test('isolation.network private: the run has loopback only and ENG_NETWORK_ISOLATED=1; the host network is out of reach, docker still works', async t => {

@@ -1,12 +1,14 @@
 // profile: generic by default (no person, company, private tool or note in what eng renders); `profile: slaytek`
-// renders exactly what v0.17.2 rendered. test/fixtures/profile/v0.17.2.json holds the v0.17.2 output hashes, made with
-// scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml.
+// renders what v0.17.2 rendered, apart from one reviewed line (LINT_LINE). test/fixtures/profile/v0.17.2.json holds the
+// v0.17.2 output hashes, made with scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml;
+// v0.18.2.json, v0.19.0.json, v0.19.1.json and v0.19.2.json hold those releases' and v0.21.0.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import YAML from 'yaml';
 import { findLeftovers, runRules } from '../lib/ephemeral.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -69,16 +71,67 @@ test('outcome 2: STACK.md frames picks as recommendations the owner adopts; DRAF
   assert.doesNotMatch(stack, /draft decision for Matt/);
 });
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.17.2 did', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+// The one line 0.18.2 changed on purpose (Matt, 10 Nov 2026): the pipeline's lint step reads the PR's own config.
+const LINT_LINE = { file: '.eng/ci/pipeline.yml', old: '    command: "npx eng lint --config-from origin/main"', new: '    command: "npx eng lint"' };
+const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+
+// The files 0.19.0 changed on purpose (slim AGENTS.md block, 10 Nov 2026): the block's text moved into SHIPPING.md's
+// Reference, and eng-route's pointer to the router moved with it. Nothing else may differ from v0.18.2.
+const MOVED = ['.agents/skills/eng-route/SKILL.md', 'AGENTS.md', 'SHIPPING.md'];
+// The files 0.19.1 changed on purpose (blocks name the allowed route): the two git hooks' messages.
+const ROUTED = ['.githooks/pre-push', '.githooks/pre-rebase'];
+// The files 0.19.2 changed on purpose (skills no longer say to rebase or amend pushed work): the rewritten skill text.
+const UNREBASED = ['.agents/skills/eng-verify/SKILL.md', ...['autopilot-full', 'autopilot-stack', 'babysit', 'feature', 'multi-phase-plan', 'opening-a-pr', 'refactoring', 'worktree-cleanup'].map(p => `.agents/skills/poteto-mode/playbooks/${p}.md`), '.agents/skills/principle-sequence-verifiable-units/SKILL.md'];
+// The file 0.20.3 changed on purpose (issue #55): the pre-commit hook runs the installed eng with node before npx.
+const LOCAL_ENG = ['.githooks/pre-commit'];
+// The files 0.21.0 changed on purpose (the repo-level guard): .eng/guard, the Claude Code hook that runs it, its
+// SHIPPING.md entry and the lock that lists the new files.
+const GUARDED = ['.claude/settings.json', '.eng/guard/codex-hooks.json', '.eng/guard/config.json', '.eng/guard/cursor-hooks.json', '.eng/guard/guard.mjs', '.eng/guard/hook.mjs', '.eng/lock.json', 'SHIPPING.md'];
+const diff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(f => JSON.stringify(a[f]) !== JSON.stringify(b[f]));
+
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.21.0.json, which differs from v0.20.3 only in the guard files, v0.20.3 from v0.19.2 only in the pre-commit hook, v0.19.2 from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.0.json'), 'utf8')), v203 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.20.3.json'), 'utf8')), v192 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+  assert.deepEqual(Object.keys(want), Object.keys(old));
+  assert.deepEqual(Object.keys(prev), Object.keys(old)); assert.deepEqual(Object.keys(v190), Object.keys(old));
+  assert.deepEqual(Object.keys(v192), Object.keys(old));
+  for (const [name, w] of Object.entries(want)) {
+    const guarded = diff(w, v203[name]);
+    assert.deepEqual(guarded, w.refused ? [] : GUARDED, `${name}: exactly the guard files differ from v0.20.3`);
+  }
+  for (const [name, w] of Object.entries(v203)) {
+    const hook = diff(w, v192[name]);
+    assert.ok(hook.every(f => LOCAL_ENG.includes(f)), `${name}: only the pre-commit hook differs from v0.19.2, got ${hook.join(', ')}`);
+    if (!w.refused) assert.ok(hook.includes('.githooks/pre-commit'), `${name}: the pre-commit hook changed`);
+  }
+  for (const [name, w] of Object.entries(v192)) {
+    const skills = diff(w, v191[name]);
+    assert.ok(skills.every(f => UNREBASED.includes(f)), `${name}: only the rewritten skills differ from v0.19.1, got ${skills.join(', ')}`);
+  }
+  for (const [name, w] of Object.entries(v191)) {
+    const routed = diff(w, v190[name]);
+    assert.ok(routed.every(f => ROUTED.includes(f)), `${name}: only the hook messages differ from v0.19.0, got ${routed.join(', ')}`);
+    if (!w.refused) assert.ok(routed.includes('.githooks/pre-push'), `${name}: the pre-push hook changed`);
+  }
+  for (const [name, w] of Object.entries(v190)) {
+    const p = prev[name], changed = diff(w, p);
+    assert.ok(changed.every(f => MOVED.includes(f)), `${name}: only the moved text differs from v0.18.2, got ${changed.join(', ')}`);
+    if (!w.refused) assert.ok(changed.includes('AGENTS.md') && changed.includes('SHIPPING.md'), `${name}: AGENTS.md and SHIPPING.md both changed`);
+  }
   const fixtures = Object.keys(want).map(f => path.join(FIX, f));
   assert.ok(fixtures.length >= 3 && fixtures.every(f => fs.existsSync(f)), 'every fixture in the hash file exists');
   const r = spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), '--append', 'profile: slaytek', ...fixtures], { encoding: 'utf8', env: env() });
   assert.equal(r.status, 0, r.stderr);
-  const got = JSON.parse(r.stdout);
-  for (const [name, w] of Object.entries(want)) {
-    const g = got[name], paths = [...new Set([...Object.keys(w), ...Object.keys(g)])];
-    assert.deepEqual(paths.filter(p => JSON.stringify(w[p]) !== JSON.stringify(g[p])), [], `${name}: files that differ from v0.17.2`);
+  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.21.0 output');
+  for (const [name, w] of Object.entries(prev)) {
+    const o = old[name], changed = [...new Set([...Object.keys(w), ...Object.keys(o)])].filter(p => JSON.stringify(w[p]) !== JSON.stringify(o[p]));
+    if (!changed.length) continue;
+    assert.deepEqual(changed, [LINT_LINE.file], `${name}: the only file that differs from v0.17.2`);
+    const dir = repo(`lint-line-${name}`);
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), `${fs.readFileSync(path.join(FIX, name), 'utf8')}\nprofile: slaytek\n`);
+    assert.equal(eng(dir, 'sync').status, 0);
+    const lines = fs.readFileSync(path.join(dir, LINT_LINE.file), 'utf8').split('\n');
+    assert.equal(lines.filter(l => l === LINT_LINE.new).length, 1, `${name}: the pipeline has the new lint line once`);
+    assert.equal(sha(lines.map(l => l === LINT_LINE.new ? LINT_LINE.old : l).join('\n')), o[LINT_LINE.file], `${name}: putting the old lint line back gives the v0.17.2 bytes exactly`);
   }
   assert.ok(Object.values(want).some(w => Object.keys(w).length > 100), 'at least one fixture renders the full set');
   const tpl = path.join(FIX, 'template-v0.17.2.yml'), plain = JSON.parse(spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), tpl], { encoding: 'utf8', env: env() }).stdout);

@@ -10,7 +10,7 @@ import { spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { checkSpec, cores } from '../lib/budget.mjs';
 import { affectedBy, checkErrors, flakeRunsOf, parallelOf } from '../lib/verification.mjs';
-import { agentsBlock as agentsMd, shippingMd } from '../lib/render.mjs';
+import { shippingMd } from '../lib/render.mjs';
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
 process.on('exit', () => fs.rmSync(process.env.XDG_CACHE_HOME, { recursive: true, force: true }));
 
@@ -162,15 +162,15 @@ test('# serial: needs a reason', () => {
   assert.equal('serial' in checkSpec('#!/bin/sh\n'), false);
 });
 
-test('SHIPPING.md and AGENTS.md describe the PR gate and the cap only when the repo sets them', () => {
+test('SHIPPING.md describes the PR gate and the cap only when the repo sets them', () => {
   const plain = config({}), set = config({ flake_runs_pr: 1, pr_checks: 'affected', parallel: 3 });
   const cwd = process.cwd(); process.chdir(dir);
   try {
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
-    assert.match(agentsMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
+    assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
     assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
-    assert.match(agentsMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
+    assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
 });
