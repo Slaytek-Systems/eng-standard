@@ -169,7 +169,7 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
     assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
-    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Only the pull request's target as the base selects checks: any other `--base` or `ENG_BASE`, such as a parent PR's branch named locally, runs every check\. A stacked PR selects in CI, where its target is the parent branch\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
+    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Symlinks are followed: a change to the target of a symlinked check, checks folder or covered path counts as a change to it, and a check whose file or covered path points outside the repo runs on every pull request\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Only the pull request's target as the base selects checks: any other `--base` or `ENG_BASE`, such as a parent PR's branch named locally, runs every check\. A stacked PR selects in CI, where its target is the parent branch\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
     assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
@@ -351,4 +351,74 @@ test('false skip: the rendered guidance says # covers: must name the check\'s he
   assert.match(sh, /`# covers:` must name every path the check reads, its own helper scripts and fixtures included/);
   assert.match(fs.readFileSync(TPL, 'utf8'), /'# covers:' must name every path the check reads, its helper scripts and fixtures too/);
   assert.match(fs.readFileSync(TPL, 'utf8'), /none can contain a space, and globs are not expanded/, 'the template states the no-glob rule');
+});
+
+// Fix round 4 (both round-4 verifiers on ed87514): git names a symlink, never its target, so selection resolves the checks
+// dir, each check file and each covered path to its real paths. A change only to a target still runs the check.
+const link = (target, at) => { fs.mkdirSync(path.dirname(path.join(dir, at)), { recursive: true }); fs.symlinkSync(target, path.join(dir, at)); };
+const onMain = setup => { git('checkout -q main'); setup(); git('add -A'); git('commit -qm links'); git('checkout -q -B pr'); };
+const failsAndRan = (r, ids, label) => { assert.equal(r.status, 1, `${label}: the check must run and fail: ${out(r)}`); assert.deepEqual(ran(), ids, `${label}: ${out(r)}`); };
+
+test('symlinks: a symlinked check file whose target alone changed runs every check and fails', async () => {
+  await inRepo({ o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n', 'scripts/a.sh': counting('a', 'src') }, () => {
+    onMain(() => { fs.chmodSync(path.join(dir, 'scripts/a.sh'), 0o755); link('../../scripts/a.sh', '.eng/checks/a.sh'); });
+    write('scripts/a.sh', counting('a', 'src', 1)); git('commit -qam target');
+    const r = gatePr(); failsAndRan(r, { a: 1, o: 1 }, 'symlinked check');
+    assert.match(r.stdout, /checks: all 2, because scripts\/a\.sh changed, a real path of verification\.checks_dir/);
+  });
+});
+
+test('symlinks: a symlinked checks dir whose target alone changed runs every check and fails', async () => {
+  await inRepo({}, { 'src/a': '1\n', 'other/b': '1\n', 'scripts/a.sh': counting('a', 'src'), 'scripts/o.sh': counting('o', 'other') }, () => {
+    onMain(() => { for (const f of ['a', 'o']) fs.chmodSync(path.join(dir, `scripts/${f}.sh`), 0o755); link('../scripts', '.eng/checks'); });
+    write('scripts/a.sh', counting('a', 'src', 1)); git('commit -qam target');
+    failsAndRan(gatePr(), { a: 1, o: 1 }, 'symlinked checks dir');
+  });
+});
+
+test('symlinks: a symlinked folder on the way to a covered path or the checks dir still selects', async () => {
+  const reads = (id, p) => counting(id, p).replace('exit 0', `grep -q broken ${p} && exit 1; exit 0`);
+  await inRepo({ k: reads('k', 'lib/a.js'), o: counting('o', 'other') }, { 'src/a.js': '1\n', 'other/b': '1\n' }, () => {
+    onMain(() => link('src', 'lib'));
+    write('src/a.js', 'broken\n'); git('commit -qam target');
+    failsAndRan(gatePr(), { k: 1 }, 'covers lib/a.js through lib -> src');
+  });
+  await inRepo({}, { 'src/a': '1\n', 'tooling/checks/a.sh': counting('a', 'src'), 'tooling/checks/o.sh': counting('o', 'other'), 'other/b': '1\n' }, () => {
+    onMain(() => { for (const f of ['a', 'o']) fs.chmodSync(path.join(dir, `tooling/checks/${f}.sh`), 0o755); link('tooling', 'ci');
+      write('eng.config.yml', YAML.stringify(config({ flake_runs_pr: 1, pr_checks: 'affected', checks_dir: 'ci/checks' }))); });
+    write('tooling/checks/a.sh', counting('a', 'src', 1)); git('commit -qam target');
+    failsAndRan(gatePr(), { a: 1, o: 1 }, 'checks_dir ci/checks through ci -> tooling');
+  });
+});
+
+test('symlinks: a covered path that is a symlinked folder, or holds a symlink, follows its target', async () => {
+  await inRepo({ s: breaks('s', 'lib'), t: breaks('t', 'pkg'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n', 'pkg/real.txt': 'r\n' }, () => {
+    onMain(() => { link('src', 'lib'); link('../src/a', 'pkg/a'); });
+    write('src/a', 'broken\n'); git('commit -qam target');
+    failsAndRan(gatePr(), { s: 1, t: 1 }, 'covers lib -> src, and pkg holding pkg/a -> ../src/a');
+  });
+});
+
+test('symlinks: a check file or covered path pointing outside the repo always runs', async () => {
+  await inRepo({ o: counting('o', 'other'), x: counting('x', 'ext') }, { 'src/a': '1\n', 'other/b': '1\n', 'docs/x': 'x\n' }, () => {
+    const outside = fs.mkdtempSync(path.join(path.dirname(dir), 'eng-select-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'a.sh'), counting('a', 'src', 1), { mode: 0o755 });
+      onMain(() => { link(path.join(outside, 'a.sh'), '.eng/checks/a.sh'); link(outside, 'ext'); });
+      write('docs/x', 'y\n'); git('commit -qam docs');
+      const r = gatePr(); failsAndRan(r, { a: 1, x: 1 }, 'outside targets');
+      assert.match(r.stdout, /checks: 2 of 3/);
+    } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
+test('symlinks: a retargeted symlink on the way to a covered path runs the check', async () => {
+  await inRepo({ k: counting('k', 'lib/a.js').replace('exit 0', 'grep -q broken lib/a.js && exit 1; exit 0'), o: counting('o', 'other') },
+    { 'v1/a.js': '1\n', 'v2/a.js': 'broken\n', 'other/b': '1\n' }, () => {
+      onMain(() => link('v1', 'lib'));
+      fs.rmSync(path.join(dir, 'lib')); link('v2', 'lib'); git('commit -qam retarget');
+      failsAndRan(gatePr(), { k: 1 }, 'lib retargeted from v1 to v2');
+    });
+  assert.equal(affectedBy(['lib'], '.eng/checks').runs({ covers: ['lib/a.js'] }), true, 'a changed folder on the way counts');
+  assert.deepEqual(affectedBy(['.eng'], '.eng/checks'), { all: '.eng changed' }, 'a retargeted parent of the checks dir runs every check');
 });

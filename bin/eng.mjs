@@ -863,10 +863,36 @@ function gateSelection(cfg, event, dir, steps, only) {
   if (prChecksOf(cfg) !== 'affected') return { ...none, text: `all ${all.length} (verification.pr_checks: all)` };
   let files = null, why;
   try { files = changedFiles(cfg); } catch (e) { why = e.notTarget ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
-  const pick = affectedBy(files, dir, why);
+  const pick = affectedBy(files, dir, why, files ? reacher() : undefined);
   if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
   const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));
   return { skip, files, text: `${all.length - skip.size} of ${all.length}, those whose # covers: paths changed against ${prBase(cfg)} (verification.pr_checks: affected)` };
+}
+// reach(p) for affectedBy: the repo-relative real paths a path stands for, or null when one leaves the repo or cannot be
+// resolved. It resolves p (symlinks in every folder on the way), then, for a folder, each symlink git tracks under its real
+// path, and so on through every folder they lead to. loose (the checks dir): a link under p that cannot be placed is left
+// out instead; the check it belongs to gets null from its own reach and runs. An untracked or changed symlink is itself a
+// changed path, so git's diff names it. Any error (a dangling or looping link, git failing) is null, so the check runs.
+function reacher() {
+  let top; try { top = fs.realpathSync(ROOT); } catch { return () => null; }
+  const memo = new Map();
+  const rel = r => { const x = path.relative(top, r); return x === '' ? '.' : path.isAbsolute(x) || /^\.\.(\/|\\|$)/.test(x) ? null : x.split(path.sep).join('/'); };
+  const links = x => gitZ(['ls-files', '-s', '-z', '--', `:(literal)${x}`]).filter(l => l.startsWith('120000 ')).map(l => l.slice(l.indexOf('\t') + 1));
+  return (p, loose = false) => {
+    const key = `${loose}\0${p}`;
+    if (memo.has(key)) return memo.get(key);
+    const out = new Set();
+    const visit = (abs, top1) => {
+      let r; try { r = fs.realpathSync(abs); } catch { return loose && !top1; }
+      const x = rel(r); if (x === null) return loose && !top1;
+      if (out.has(x)) return true;
+      out.add(x);
+      if (!fs.statSync(r).isDirectory()) return true;
+      return links(x).every(l => visit(path.join(top, l), false));
+    };
+    let ok; try { ok = visit(path.join(ROOT, p), true); } catch { ok = false; }
+    const v = ok ? [...out] : null; memo.set(key, v); return v;
+  };
 }
 // A step's row: [name, status, the line that says why, more lines, the end of its output if it failed]. Removes the step's
 // private TMPDIR and reports what it left; a step that passed but left something fails here, so its tail is decided last.
@@ -1050,7 +1076,7 @@ const COMMANDS = [
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
-  ['gate', 'gate [--heavy] [--event pr|main [--base <ref>]] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts). --event pr: each check runs verification.flake_runs_pr times, and with verification.pr_checks: affected only the checks whose # covers: paths changed against the merge base with --base run', gate],
+  ['gate', 'gate [--heavy] [--event pr|main [--base <ref>]] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts). --event pr: each check runs verification.flake_runs_pr times, and with verification.pr_checks: affected only the checks whose # covers: paths changed against the pull request target run (the CI PR base branch, else project.default_branch; a --base or ENG_BASE that is not that commit runs every check)', gate],
   ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
