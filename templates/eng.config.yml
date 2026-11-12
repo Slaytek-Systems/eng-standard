@@ -268,9 +268,8 @@ constraints:
 # See docs/trust-levels.md and principles/slow-down-to-speed-up.md.
 # trust:
 #   level: draft-only               # draft-only -> merge-on-verifier-pass -> deploy-on-own
-#   promote:                        # measured evidence since the last level change; any crash below resets it
-#     merge-on-verifier-pass: { consecutive_verifier_passes: 10, min_days: 14 }
-#     deploy-on-own: { consecutive_verifier_passes: 25, min_days: 30 }
+#   # promote: promotion is undecided, so this example sets no thresholds and trust stays off. eng (lib/trust.mjs)
+#   # still requires a promote entry per level, so decide your own before you uncomment this block.
 #   demote:                         # automatic, on any one event: one-level | draft-only
 #     failed_check: one-level       # a declared check failed on the default branch
 #     revert: draft-only

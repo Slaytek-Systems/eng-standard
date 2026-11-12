@@ -65,3 +65,15 @@ test('an existing AGENTS.md keeps its human text; only the block between the mar
   assert.ok(!a.includes('old rule text'));
   assert.ok(words(blockOf(a)) < 120);
 });
+
+test('the PASS line always shows in AGENTS.md and SHIPPING.md, whatever merge.auto.gate_app_id says', () => {
+  const FULL = 'A verification PASS proves a recorded run on the exact commit, not a re-run at merge time. A review PASS on docs-only changes has no runs.';
+  for (const profile of ['generic', 'slaytek']) for (const app of [undefined, 12345]) {
+    const c = template(); c.profile = profile;
+    if (app) c.merge = { ...c.merge, auto: { gate_app_id: app } };
+    const out = renderAll(c, null);
+    assert.match(blockOf(out['AGENTS.md']), /A verification PASS is a recorded run, not a re-run\. Review PASS: no runs\./);
+    assert.ok(out['SHIPPING.md'].includes(FULL), `${profile}/${app}: SHIPPING.md carries the full line`);
+    assert.doesNotMatch(out['SHIPPING.md'], /<PASS_PROVES>/);
+  }
+});

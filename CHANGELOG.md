@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.21.1 (12 Nov 2026)
+
+**Rendered text and `eng doctor` say what a PASS proves; trust levels state no promotion numbers** (Core task p57ayk8fmv9c7zabmpz3jgsp018j255b, Matt's decision nd7d20nkg8d89ygyh30we1ybqd8j3hqg on outside assessment points E2 and E6).
+
+- **A PASS is a recorded run, not a re-run.** The AGENTS.md block (short form: "A verification PASS is a recorded run, not a re-run. Review PASS: no runs."), SHIPPING.md rule 3 and `eng doctor` (a `NOTE` line, not a failure) always say: "A verification PASS proves a recorded run on the exact commit, not a re-run at merge time. A review PASS on docs-only changes has no runs." The line does not depend on `merge.auto.gate_app_id`: an App ID only names who posts a status, and no merge path re-runs commands. A review PASS (`verification.review_only_paths`) carries no runs and still counts, so the line names both kinds.
+- **Trust levels.** `docs/trust-levels.md` and the `trust:` block in `templates/eng.config.yml` no longer show 10/14 and 25/30. They say promotion is undecided and the setting stays off. The commented `trust:` block sets no thresholds; `lib/trust.mjs` still requires a `promote` entry per level, so a repo decides its own before it uncomments the block. Behaviour is unchanged: `lib/trust.mjs` reads whatever thresholds a repo writes and enforces none of its own.
+- **eng-standard's own `eng.config.yml`** sets `ship.self_merge.verifier_logins: [Mattslayga]`, the one login that has posted verdict comments here.
+
 ## 0.21.0 (12 Nov 2026)
 
 **A repo-level guard blocks what damages this repo's history or work before the command runs** (Safe YOLO lite, Matt, 11 Nov 2026). Since 0.19.0 the AGENTS.md block says hooks, `eng lint`, `eng gate` and CI enforce the repo's rules and name the route when they block. The git hooks only saw a forced push after the fact, and nothing saw `--no-verify`, `--admin` or a discard of local work. Now `eng sync` renders a small guard into `.eng/guard`, and Claude Code, Codex and Cursor run it before each shell command. Matt's machine-wide Safe YOLO keeps everything else (deletes outside the repo, deploys, credentials, network exposure); both can run, and any deny wins.

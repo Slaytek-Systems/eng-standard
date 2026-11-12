@@ -36,7 +36,7 @@ Verdict comments, the trust policy (`author_association`, `verifier_logins`, an 
 5. Repo secret `ENG_RESTART_WEBHOOK`: the URL that restarts an owning job. Without it, `eng merge post` only comments.
 6. Post verdicts from a dedicated GitHub login (a bot account or GitHub App), and list it in `merge.auto.verifier_logins`.
 
-Until lock A (required results from CI or one App the builder cannot forge) lands, the gate trusts recorded run evidence and does not re-run the commands, so a builder can certify its own risk:low PR. High-risk paths count distinct `--by` names, so one login posting under two names counts as two verifiers. See the caveats in [self-merge.md](self-merge.md).
+The gate trusts recorded run evidence, and no path re-runs the commands at merge time, with or without a `gate_app_id`: a PASS proves a recorded run on the exact commit, so a builder can certify its own risk:low PR. Lock A (required results from CI or one App the builder cannot forge) would close that later. High-risk paths count distinct `--by` names, so one login posting under two names counts as two verifiers. See the caveats in [self-merge.md](self-merge.md).
 
 eng-standard (`Slaytek-Systems/eng-standard`, org-owned and public, so both modes are available) has not adopted it: `allow_auto_merge` is false and its ruleset requires `test` and `verdict`.
 
