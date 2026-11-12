@@ -209,11 +209,13 @@ test('eng merge gate, strict (pull_request): PASS bound to the exact head; a beh
   assert.equal(r.status, 1); assert.match(r.stdout, /behind main: update the branch/);
 });
 
-test('eng merge gate reads the PR\'s own gate levels, even when the PR lowers them; the required check name stays the trusted one', () => {
+test('eng merge gate ignores a PR head that loosens merge.auto: every gate setting comes from the trusted checkout', () => {
   setMode('strict');
   git('checkout -q -B lower origin/main');
   const p = path.join(dir, 'eng.config.yml'), c = YAML.parse(fs.readFileSync(p, 'utf8'));
-  c.merge.auto.high_risk_verifiers = 1; c.merge.auto.check = 'renamed-gate'; fs.writeFileSync(p, YAML.stringify(c));
+  Object.assign(c.merge.auto, { high_risk_verifiers: 1, high_risk_paths: ['nothing/**'], check: 'renamed-gate' });
+  c.verification = { ...c.verification, review_only_paths: ['**'] };
+  fs.writeFileSync(p, YAML.stringify(c));
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.writeFileSync(path.join(dir, 'bin/lower.mjs'), 'x\n');
   git('add -A'); git('commit -qm "lower verifiers" -m "Agent: builder-1"');
   const head = git('rev-parse HEAD'), patch = pidOf(`origin/main ${head}`), evp = path.join(dir, '.gh/event-lower.json');
@@ -222,9 +224,29 @@ test('eng merge gate reads the PR\'s own gate levels, even when the PR lowers th
   put('repos/o/r/pulls/7/commits?per_page=100', [[{ commit: { message: 'lower verifiers\n\nAgent: builder-1', author: { email: 't@t' } } }]]);
   comments([V({ patch_id: patch, sha: head })]);
   git('checkout -q --detach origin/main');
-  const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
-  assert.equal(r.status, 0, `the PR's own high_risk_verifiers: 1 applies in that PR: ${r.stdout}${r.stderr}`);
-  assert.match(r.stdout, /^eng-merge-gate: PASS/m, 'the status keeps the trusted checkout\'s check name');
+  let r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
+  assert.equal(r.status, 1, `main's high_risk_verifiers: 2 and high_risk_paths still apply: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /^eng-merge-gate: FAIL/m, 'the status keeps the trusted checkout\'s check name');
+  assert.match(r.stdout, /gate\/auth\/billing paths changed \(bin\/lower\.mjs, eng\.config\.yml\): need counted PASSes from 2 distinct verifiers/);
+  assert.match(r.stdout, /PR #7 changes merge\.auto or verification\.review_only_paths; this gate uses main's values, and the change applies after it merges/);
+  comments([V({ patch_id: patch, sha: head, runs: [] })]);
+  assert.match(eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp }).stdout, /no counted PASS/, 'main\'s review_only_paths: a PASS with no runs does not count for code');
+  comments([V({ patch_id: patch, sha: head }), V({ patch_id: patch, sha: head, by: 'verifier-2' })]);
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evp });
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /high-risk rule met: 2 distinct verifiers/);
+
+  git('merge -q --squash lower'); git('commit -qm group'); const group = git('rev-parse HEAD'), evq = path.join(dir, '.gh/event-lower-q.json');
+  const queued = ev => fs.writeFileSync(evq, JSON.stringify({ merge_group: { head_sha: group, base_sha: ev, head_ref: `refs/heads/gh-readonly-queue/main/pr-7-${head}` } }));
+  queued(git('rev-parse origin/main'));
+  comments([V({ patch_id: patch, sha: head })]);
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evq });
+  assert.equal(r.status, 1, `merge_group: the queued commit's own config is not trusted; the base's is: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /need counted PASSes from 2 distinct verifiers/);
+  queued('0'.repeat(40));
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: evq });
+  assert.equal(r.status, 1, 'an unreadable trusted config fails closed');
+  assert.match(r.stderr, /merge gate: cannot read the trusted eng\.config\.yml at 00000000/);
+  git('checkout -q --detach origin/main');
 });
 
 test('eng merge gate, queue (merge_group): binds the queued patch-id; gate files need two distinct verifiers', () => {
