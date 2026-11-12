@@ -555,7 +555,13 @@ function e2eFiles(cfg) {
   const mb = sh(`git merge-base ${base} HEAD`);  // throws if unknown: caller treats that as required
   const committed = sh(`git diff --name-only ${mb} HEAD`).split('\n');
   const local = sh('git status --porcelain --untracked-files=all -- . ":(exclude).eng/mistakes.jsonl"').split('\n').map(x => x.slice(3).split(' -> ').at(-1));
-  return [...new Set([...committed, ...local].filter(Boolean))].sort();
+  const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a link on disk now
+  // (an untracked one included). Any such path runs every check under pr_checks: affected (affectedBy).
+  const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
+  const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
+  const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
+  return Object.assign(files, { links });
 }
 // Gate selection (verification.pr_checks: affected) only. e2eFiles above keeps its 0.21.1 base handling, so a repo with none
 // of the new keys decides e2e exactly as before, stacked bases (--base, ENG_BASE) included.
@@ -584,7 +590,13 @@ function changedFiles(cfg) {
   const committed = gitZ(['diff', '--no-renames', '--name-only', '-z', mb, 'HEAD']);
   // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
   const local = gitZ(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ':(exclude).eng/mistakes.jsonl']).map(x => x.slice(3));
-  return [...new Set([...committed, ...local].filter(Boolean))].sort();
+  const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a link on disk now
+  // (an untracked one included). Any such path runs every check under pr_checks: affected (affectedBy).
+  const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
+  const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
+  const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
+  return Object.assign(files, { links });
 }
 function e2eDecision(cfg) {
   const event = e2eEvent(cfg);
@@ -863,36 +875,39 @@ function gateSelection(cfg, event, dir, steps, only) {
   if (prChecksOf(cfg) !== 'affected') return { ...none, text: `all ${all.length} (verification.pr_checks: all)` };
   let files = null, why;
   try { files = changedFiles(cfg); } catch (e) { why = e.notTarget ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
-  const pick = affectedBy(files, dir, why, files ? reacher() : undefined);
+  const pick = affectedBy(files, dir, why, files ? { links: files.links, linked: linker() } : undefined);
   if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
   const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));
   return { skip, files, text: `${all.length - skip.size} of ${all.length}, those whose # covers: paths changed against ${prBase(cfg)} (verification.pr_checks: affected)` };
 }
-// reach(p) for affectedBy: the repo-relative real paths a path stands for, or null when one leaves the repo or cannot be
-// resolved. It resolves p (symlinks in every folder on the way), then, for a folder, each symlink git tracks under its real
-// path, and so on through every folder they lead to. loose (the checks dir): a link under p that cannot be placed is left
-// out instead; the check it belongs to gets null from its own reach and runs. An untracked or changed symlink is itself a
-// changed path, so git's diff names it. Any error (a dangling or looping link, git failing) is null, so the check runs.
-function reacher() {
-  let top; try { top = fs.realpathSync(ROOT); } catch { return () => null; }
+// linked(p) for affectedBy: whether the repo-relative path p goes through a symlink on disk. True when p or a folder on its
+// way is a symlink, or p is a folder with a symlink anywhere below it. It reads the filesystem with lstat and never follows a
+// link, so ignored and untracked links count and nothing loops. Fails closed: an error other than a missing path, or a
+// folder with more than LINK_SCAN_LIMIT entries below it, counts as linked, so the check runs.
+const LINK_SCAN_LIMIT = 200000;
+function linker() {
   const memo = new Map();
-  const rel = r => { const x = path.relative(top, r); return x === '' ? '.' : path.isAbsolute(x) || /^\.\.(\/|\\|$)/.test(x) ? null : x.split(path.sep).join('/'); };
-  const links = x => gitZ(['ls-files', '-s', '-z', '--', `:(literal)${x}`]).filter(l => l.startsWith('120000 ')).map(l => l.slice(l.indexOf('\t') + 1));
-  return (p, loose = false) => {
-    const key = `${loose}\0${p}`;
-    if (memo.has(key)) return memo.get(key);
-    const out = new Set();
-    const visit = (abs, top1) => {
-      let r; try { r = fs.realpathSync(abs); } catch { return loose && !top1; }
-      const x = rel(r); if (x === null) return loose && !top1;
-      if (out.has(x)) return true;
-      out.add(x);
-      if (!fs.statSync(r).isDirectory()) return true;
-      return links(x).every(l => visit(path.join(top, l), false));
-    };
-    let ok; try { ok = visit(path.join(ROOT, p), true); } catch { ok = false; }
-    const v = ok ? [...out] : null; memo.set(key, v); return v;
+  const holds = top => {
+    let n = 0; const todo = [top];
+    while (todo.length) {
+      const d = todo.pop();
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (e.isSymbolicLink() || ++n > LINK_SCAN_LIMIT) return true;
+        if (e.isDirectory() && !(d === ROOT && e.name === '.git')) todo.push(path.join(d, e.name));
+      }
+    }
+    return false;
   };
+  const scan = p => {
+    let at = ROOT, st = fs.lstatSync(ROOT);
+    for (const part of p === '.' || p === '' ? [] : p.split('/')) {
+      at = path.join(at, part);
+      try { st = fs.lstatSync(at); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false; throw e; }
+      if (st.isSymbolicLink()) return true;
+    }
+    return st.isDirectory() && holds(at);
+  };
+  return p => { if (!memo.has(p)) { let v; try { v = scan(p); } catch { v = true; } memo.set(p, v); } return memo.get(p); };
 }
 // A step's row: [name, status, the line that says why, more lines, the end of its output if it failed]. Removes the step's
 // private TMPDIR and reports what it left; a step that passed but left something fails here, so its tail is decided last.
