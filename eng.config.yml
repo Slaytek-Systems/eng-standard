@@ -74,8 +74,8 @@ ship:
     hold_label: hold              # Matt (or anyone) adds it to stop a PR; remove it to let it go. There is no hold window.
     check: test                   # GitHub Actions check run (.github/workflows/ci.yml)
     status: verdict               # commit status eng verdict ... --pr <n> posts
-    # verifier_logins: [<login>, <login>]   # with a dedicated verifier login: only these logins'
-    #                               verdict comments count; guards against forged comments (docs/self-merge.md)
+    verifier_logins: [Mattslayga]   # only these logins' verdict comments count; guards against forged comments (docs/self-merge.md).
+    #                               The one login that has posted eng-verdict/v1 comments here (PRs #71-#78).
 
 hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs npm test through eng run test (.github/workflows/ci.yml).
   disk_rules:

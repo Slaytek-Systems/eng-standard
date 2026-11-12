@@ -10,7 +10,9 @@ import { trustErrors, nextLevel } from '../lib/trust.mjs';
 const TPL = fs.readFileSync('templates/eng.config.yml', 'utf8');
 // The template ships the proposal commented out: uncomment the `# trust:` block to get the documented example.
 const uncommented = () => TPL.replace(/^# (trust:\n(?:#   .*\n)+)/m, (_, b) => b.replace(/^# {2}/gm, '  ').replace(/^ {2}trust:/, 'trust:'));
-const example = () => YAML.parse(uncommented()).trust;
+// The template names no thresholds (promotion is undecided), so the tests add values of their own.
+const withThresholds = () => uncommented().replace('  # promote:', '  promote:\n    merge-on-verifier-pass: { consecutive_verifier_passes: 10, min_days: 14 }\n    deploy-on-own: { consecutive_verifier_passes: 25, min_days: 30 }\n  # promote:');
+const example = () => ({ ...YAML.parse(uncommented()).trust, promote: { 'merge-on-verifier-pass': { consecutive_verifier_passes: 10, min_days: 14 }, 'deploy-on-own': { consecutive_verifier_passes: 25, min_days: 30 } } });
 const ev = (o = {}) => ({ consecutive_verifier_passes: 0, reverts: 0, rollbacks: 0, failed_checks: 0, days: 0, ...o });
 
 test('the template example is a valid trust block, and it is commented out (proposal, not live)', () => {
@@ -18,6 +20,7 @@ test('the template example is a valid trust block, and it is commented out (prop
   assert.equal(example().level, 'draft-only');
   assert.deepEqual(trustErrors(example()), []);
   assert.deepEqual(trustErrors(undefined), []);
+  assert.match(trustErrors(YAML.parse(uncommented()).trust).join('\n'), /promote\.merge-on-verifier-pass must state the evidence/, 'the template block alone asks the repo to decide its thresholds');
 });
 
 test('schema rejects unknown levels, missing evidence, bad demotions and bad checks', () => {
@@ -54,11 +57,19 @@ test('eng rejects an invalid trust block in eng.config.yml', () => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-trust-'));
   try {
     const run = () => spawnSync(process.execPath, [path.resolve('bin/eng.mjs'), 'e2e', '--required'], { cwd: dir, encoding: 'utf8' });
-    fs.writeFileSync(path.join(dir, 'eng.config.yml'), uncommented().replace('level: draft-only', 'level: yolo'));
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), withThresholds().replace('level: draft-only', 'level: yolo'));
     const r = run();
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /config invalid[\s\S]*trust\.level must be one of/);
-    fs.writeFileSync(path.join(dir, 'eng.config.yml'), uncommented());
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), withThresholds());
     assert.doesNotMatch(run().stderr, /config invalid/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('no user-facing text states promotion thresholds; promotion is undecided and the setting stays off', () => {
+  for (const f of ['templates/eng.config.yml', 'docs/trust-levels.md']) {
+    const t = fs.readFileSync(f, 'utf8');
+    assert.doesNotMatch(t, /consecutive_verifier_passes: \d|min_days: \d|\b(10|25) consecutive|\b(14|30) days/, f);
+  }
+  assert.match(fs.readFileSync('docs/trust-levels.md', 'utf8'), /Promotion is undecided[\s\S]*stays off/);
 });

@@ -242,3 +242,8 @@ test('spawn table names playbooks that exist in vendored poteto-mode', () => {
   assert.ok(named.length >= 4);
   for (const f of named) assert.ok(fs.existsSync(path.join(pb, f)), f);
 });
+
+test('eng doctor always says what a PASS proves, and that a review PASS has no runs', () => {
+  const r = eng('doctor');
+  assert.match(r.stdout + r.stderr, /NOTE A verification PASS proves a recorded run on the exact commit, not a re-run at merge time\. A review PASS on docs-only changes has no runs\./);
+});

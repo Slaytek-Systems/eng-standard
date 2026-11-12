@@ -15,6 +15,13 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **Rendered text.** With `flake_runs_pr` or `pr_checks` set, SHIPPING.md adds what a PR runs and that main runs every check `flake_runs` times. With `verification.parallel` set, SHIPPING.md states the cap and `# serial:`. Unset, both render byte for byte as in 0.21.0 (`test/profile.test.mjs`).
 - **`eng e2e --required`** now lists both paths of a rename. It can only add files, so it can only make e2e required more often.
 - **Upgrade:** zero manual edits. To use it, set the keys and pass the event from CI, for example `eng gate checks --event pr` on `pull_request` and `eng gate checks --event main` on a push to main. A repo whose CI checks out one commit needs enough history for the merge base (`fetch-depth: 0`); without it every check runs. A repo on `parallel: true` with more than 4 checks that fit side by side now runs 4 at a time; set a number to keep more.
+## 0.21.1 (12 Nov 2026)
+
+**Rendered text and `eng doctor` say what a PASS proves; trust levels state no promotion numbers** (Core task p57ayk8fmv9c7zabmpz3jgsp018j255b, Matt's decision nd7d20nkg8d89ygyh30we1ybqd8j3hqg on outside assessment points E2 and E6).
+
+- **A PASS is a recorded run, not a re-run.** The AGENTS.md block (short form: "A verification PASS is a recorded run, not a re-run. Review PASS: no runs."), SHIPPING.md rule 3 and `eng doctor` (a `NOTE` line, not a failure) always say: "A verification PASS proves a recorded run on the exact commit, not a re-run at merge time. A review PASS on docs-only changes has no runs." The line does not depend on `merge.auto.gate_app_id`: an App ID only names who posts a status, and no merge path re-runs commands. A review PASS (`verification.review_only_paths`) carries no runs and still counts, so the line names both kinds.
+- **Trust levels.** `docs/trust-levels.md` and the `trust:` block in `templates/eng.config.yml` no longer show 10/14 and 25/30. They say promotion is undecided and the setting stays off. The commented `trust:` block sets no thresholds; `lib/trust.mjs` still requires a `promote` entry per level, so a repo decides its own before it uncomments the block. Behaviour is unchanged: `lib/trust.mjs` reads whatever thresholds a repo writes and enforces none of its own.
+- **eng-standard's own `eng.config.yml`** sets `ship.self_merge.verifier_logins: [Mattslayga]`, the one login that has posted verdict comments here.
 
 ## 0.21.0 (12 Nov 2026)
 
