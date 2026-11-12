@@ -253,3 +253,20 @@ test('eng verdict check: removing eng.config.yml from ship.high_risk.paths is ri
     assert.match(r.stdout, /PASS \(risk:high, 2 of 2 verifiers/);
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
+
+test('a pull request gate below main: flake_runs_pr and pr_checks: affected are listed as below the default, never silent', () => {
+  fs.writeFileSync(cfgPath(), base);
+  setCfg(c => { c.verification.flake_runs_pr = 1; c.verification.pr_checks = 'affected'; });
+  const r = eng('doctor');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(section(r.stdout), [
+    `  ${SECTION}: 2 (allowed; informational, not a failure)`,
+    '    verification.flake_runs_pr: 1 (standard: 3, verification.flake_runs). Restore: verification.flake_runs_pr: 3',
+    '    verification.pr_checks: affected (standard: all). Restore: verification.pr_checks: all',
+  ]);
+  assert.ok(!section(r.stdout, OTHER).some(l => /flake_runs_pr|pr_checks/.test(l)), 'judged rows are not repeated as direction not judged');
+  restore(section(r.stdout).slice(1));
+  assert.deepEqual(section(eng('doctor').stdout), [`  ${SECTION}: none (every merge gate is at or above the standard default)`], 'applying the restore lines clears them');
+  setCfg(c => { c.verification.flake_runs_pr = 3; c.verification.pr_checks = 'all'; });
+  assert.deepEqual(section(eng('doctor').stdout), [`  ${SECTION}: none (every merge gate is at or above the standard default)`], 'flake_runs_pr equal to flake_runs and pr_checks: all lower nothing');
+});

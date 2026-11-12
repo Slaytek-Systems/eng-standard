@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, spawnSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { renderAll, renderErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, checkErrors, checkSteps } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, checkSteps } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
@@ -555,7 +555,52 @@ function e2eFiles(cfg) {
   const mb = sh(`git merge-base ${base} HEAD`);  // throws if unknown: caller treats that as required
   const committed = sh(`git diff --name-only ${mb} HEAD`).split('\n');
   const local = sh('git status --porcelain --untracked-files=all -- . ":(exclude).eng/mistakes.jsonl"').split('\n').map(x => x.slice(3).split(' -> ').at(-1));
-  return [...new Set([...committed, ...local].filter(Boolean))].sort();
+  const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a changed path
+  // (committed, staged, unstaged or untracked) that is a link on disk now. A git-ignored path is never a changed path, so a
+  // git-ignored link is not seen here; linker() below finds one inside a covered path or the checks dir. Any such path runs
+  // every check under pr_checks: affected (affectedBy).
+  const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
+  const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
+  const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
+  return Object.assign(files, { links });
+}
+// Gate selection (verification.pr_checks: affected) only. e2eFiles above keeps its 0.21.1 base handling, so a repo with none
+// of the new keys decides e2e exactly as before, stacked bases (--base, ENG_BASE) included.
+// The PR's base: --base (or --base=), else the CI's PR base branch, else the default branch (ENG_BASE through baseRef).
+function prBase(cfg) {
+  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF, eq = process.argv.find(x => x.startsWith('--base='));
+  return (eq ? eq.slice(7) : arg('--base')) || (pb ? `origin/${pb}` : baseRef(cfg));
+}
+// The PR's target without any --base or ENG_BASE override: the CI's PR base branch, else the default branch.
+function trustedBase(cfg) {
+  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF, b = pb || cfg.project.default_branch;
+  try { sh(`git rev-parse --verify origin/${b}`); return `origin/${b}`; } catch { return b; }
+}
+// git with NUL-delimited output (-z): without it git C-quotes non-ASCII, tab and newline names, and nothing would match them.
+const gitZ = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).split('\0');
+// Every path this change touches against the merge base with the PR's target, committed or not. A rename lists both of its
+// paths. Throws when the merge base is unknown (a shallow clone, a missing base), and with .notTarget when the base is not
+// the PR's target commit: no local base can be proven to be a stacked PR's fork point, so its diff could hide this PR's
+// changes. A stacked PR selects in CI, where its target is the parent branch. Callers then act as if everything changed.
+function changedFiles(cfg) {
+  const base = prBase(cfg), want = trustedBase(cfg);
+  const rev = r => gitZ(['rev-parse', '--verify', '--end-of-options', `${r}^{commit}`])[0].trim();
+  const b = rev(base);
+  if (b !== rev(want)) throw Object.assign(new Error(`${base} is not the pull request's target ${want}; selection needs the PR target, since another base's diff could hide this PR's changes`), { notTarget: true });
+  const mb = gitZ(['merge-base', b, 'HEAD'])[0].trim();
+  const committed = gitZ(['diff', '--no-renames', '--name-only', '-z', mb, 'HEAD']);
+  // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
+  const local = gitZ(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ':(exclude).eng/mistakes.jsonl']).map(x => x.slice(3));
+  const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a changed path
+  // (committed, staged, unstaged or untracked) that is a link on disk now. A git-ignored path is never a changed path, so a
+  // git-ignored link is not seen here; linker() below finds one inside a covered path or the checks dir. Any such path runs
+  // every check under pr_checks: affected (affectedBy).
+  const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
+  const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
+  const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
+  return Object.assign(files, { links });
 }
 function e2eDecision(cfg) {
   const event = e2eEvent(cfg);
@@ -766,15 +811,19 @@ function riskOf(cfg, mb) {
 // declared runs that are not steps. Named steps run only those; `checks` names the checks. CI runs `eng gate checks` on its
 // own identity. Stages: light checks run everywhere; heavy ones run in CI (CI set) or with --heavy, and are listed as
 // deferred otherwise, which makes the gate exit 3 (incomplete), never 0. Each check runs under its budget (lib/budget.mjs),
-// in order (side by side with verification.parallel).
+// in order (side by side with verification.parallel). --event pr (a pull request): each check runs flake_runs_pr times, and
+// with verification.pr_checks: affected only the checks the change reaches run (gateSelection). --event main or none: all of
+// them, flake_runs times each.
 const GATE_INCOMPLETE = 3;
 async function gate() {
   const cfg = loadConfig(); const t = withTmp(cfg), keep = diskRules(cfg).tests_leave_nothing.mode;
-  const map = GATE_COMMANDS, only = a.filter(x => !x.startsWith('--'));
+  const eq = a.find(x => x.startsWith('--event=')), event = eq ? eq.slice(8) : arg('--event');
+  if ((eq || a.includes('--event')) && !EVENTS.includes(event)) die(`gate: --event must be ${EVENTS.join(' or ')} (got ${event || 'nothing'})`);
+  const map = GATE_COMMANDS, only = a.filter((x, i) => !x.startsWith('--') && !['--event', '--base'].includes(a[i - 1]));
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   const dir = checksDir(cfg), abs = path.join(ROOT, dir), entries = fs.existsSync(abs) ? fs.readdirSync(abs, { withFileTypes: true }).map(e => [e.name, e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name), { throwIfNoEntry: false })?.isFile()) ? 'file' : e.isDirectory() ? 'dir' : 'other']) : null;
-  const checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs: flakeRunsOf(cfg) });
+  const runs = flakeRunsOf(cfg, event), checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs, select: prChecksOf(cfg) === 'affected' });
   const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
   for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
@@ -783,14 +832,17 @@ async function gate() {
   // A gate run inside a step that deferred anything signals this gate (lib/nested.mjs); that step is incomplete.
   const repo = commonDir(ROOT), inner = enclose();
   const nestedRow = (row, hit) => !hit || row[1] !== 'pass' ? row : [row[0], 'INCOMPLETE', `eng: INCOMPLETE ${row[0]}: a gate inside it ended incomplete (exit 3), so it did not run everything. A check is a leaf: the gate composes the checks, so do not run eng gate inside one`, []];
-  const bounded = steps.filter(s => s.check && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !bounded.includes(s)), parallel = parallelOf(cfg);
-  console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel ? 'side by side while the budgets fit (verification.parallel)' : 'one after another'}`);
+  const sel = gateSelection(cfg, event, dir, steps, only), parallel = parallelOf(cfg);
+  const bounded = steps.filter(s => s.check && !sel.skip.has(s) && (heavy || s.check.weight === 'light')), deferred = steps.filter(s => s.check && !sel.skip.has(s) && !bounded.includes(s));
+  console.log(`  stage: ${heavy ? `light and heavy (${ci ? 'CI' : '--heavy'})` : 'light (heavy checks run in CI, or here with eng gate --heavy)'}; check budgets enforced by ${enforcerText(how)}; ${parallel > 1 ? `up to ${parallel} side by side while the budgets fit (verification.parallel)` : 'one after another'}`);
+  if (cfg.verification?.flake_runs_pr !== undefined || prChecksOf(cfg) === 'affected') console.log(`  checks: ${sel.text}; each runs ${runs} time${runs === 1 ? '' : 's'} (${event === 'pr' && cfg.verification?.flake_runs_pr !== undefined ? 'verification.flake_runs_pr, --event pr' : 'verification.flake_runs'})`);
   const done = await runChecks(bounded, how, t, keep, parallel, inner, nestedRow);
   const res = [];
   for (const s of steps) {
     const g = s.name;
     if (s.none) { res.push([g, 'pass', s.none, []]); continue; }
     if (s.fail) { res.push([g, 'FAIL', s.fail, []]); continue; }
+    if (sel.skip.has(s)) { res.push([g, 'unaffected', `not run on this pull request: it covers none of the ${sel.files.length} changed path${sel.files.length === 1 ? '' : 's'} (verification.pr_checks: affected); main runs it`, []]); continue; }
     if (deferred.includes(s)) { res.push([g, 'deferred', `heavy check, not run in this stage: CI runs it, or run eng gate --heavy (${budgetText(s.check.budget)})`, []]); continue; }
     if (s.check) { res.push(done.get(s)); continue; }
     const n = g.replace(/^ephemeral:/, ''), c = wrap.has(g) || g !== n ? `node ${path.join(PKG, 'bin/eng.mjs')} run ${n}` : map[g] ? `node ${path.join(PKG, 'bin/eng.mjs')} ${map[g]}` : cfg.project.commands[g];
@@ -803,7 +855,7 @@ async function gate() {
   }
   if (inner.stray()) res.push(nestedRow(['nested', 'pass', '', []], true));
   res.forEach(([g, s, l, more]) => { console.log(`  ${s.padEnd(12)} ${g.padEnd(9)} ${l}`); for (const m of more || []) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}   ${m}`); });
-  const failed = res.filter(r => !['pass', 'deferred', 'INCOMPLETE'].includes(r[1]));
+  const failed = res.filter(r => !['pass', 'unaffected', 'deferred', 'INCOMPLETE'].includes(r[1]));
   // A failed step's output is printed here, its end only; eng keeps no other copy.
   for (const [g, , , , tail] of failed) if (tail) console.error(`eng gate: ${g} failed; the end of its output (at most ${TAIL_LINES} lines, ${TAIL_BYTES >> 10} KiB):\n${tail}`);
   if (failed.length) die('gate: not all required gates passed');
@@ -817,6 +869,53 @@ async function gate() {
     process.exit(GATE_INCOMPLETE);
   }
   console.log('eng gate: PASS');
+}
+// Which checks this gate leaves out: { skip: steps not run, files, text for the log }. Only a pull request (--event pr) with
+// verification.pr_checks: affected leaves any out, and never one named on the command line (check:<id>). affectedBy fails
+// closed: an unknown diff, an empty one, or a change to eng's config or the checks dir runs them all.
+function gateSelection(cfg, event, dir, steps, only) {
+  const all = steps.filter(s => s.check), none = { skip: new Set(), files: [] };
+  if (event !== 'pr') return { ...none, text: `all ${all.length} (${event ? '--event main' : 'no --event'})` };
+  if (prChecksOf(cfg) !== 'affected') return { ...none, text: `all ${all.length} (verification.pr_checks: all)` };
+  let files = null, why;
+  try { files = changedFiles(cfg); } catch (e) { why = e.notTarget ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
+  const pick = affectedBy(files, dir, why, files ? { links: files.links, linked: linker() } : undefined);
+  if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
+  const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));
+  // Each check that runs for a reason other than a changed covered path is named with that reason.
+  const other = all.filter(s => !skip.has(s)).map(s => [s.check.id, only.includes(s.name) && !pick.runs(s.check) ? 'named on the command line' : pick.why(s.check)]).filter(([, w]) => w !== 'changed');
+  return { skip, files, text: `${all.length - skip.size} of ${all.length}, those whose # covers: paths changed against ${prBase(cfg)}${other.length ? `, and ${other.map(([id, w]) => `${id} (${w})`).join(', ')}` : ''} (verification.pr_checks: affected)` };
+}
+// linked(p) for affectedBy: false, or why the repo-relative path p counts as going through a symlink on disk. p is
+// canonical (affectedBy asks about no other), so each segment is read as written. It reads the filesystem with lstat and
+// never follows a link, so ignored and untracked links count and nothing loops. Fails closed: a folder with more than
+// LINK_SCAN_LIMIT entries below it, or an error other than a missing path, counts too, so the check runs.
+const LINK_SCAN_LIMIT = 200000;
+function linker() {
+  const memo = new Map();
+  const holds = top => {
+    let n = 0; const todo = [top];
+    while (todo.length) {
+      const d = todo.pop();
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (e.isSymbolicLink()) return 'holds a symlink';
+        if (++n > LINK_SCAN_LIMIT) return `holds more than ${LINK_SCAN_LIMIT} entries, so eng did not scan it for symlinks`;
+        if (e.isDirectory() && !(d === ROOT && e.name === '.git')) todo.push(path.join(d, e.name));
+      }
+    }
+    return false;
+  };
+  const scan = p => {
+    let at = ROOT, st = fs.lstatSync(ROOT);
+    const parts = p.split('/');
+    for (const [i, part] of parts.entries()) {
+      at = path.join(at, part);
+      try { st = fs.lstatSync(at); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false; throw e; }
+      if (st.isSymbolicLink()) return i === parts.length - 1 ? 'is a symlink' : `goes through the symlink ${parts.slice(0, i + 1).join('/')}`;
+    }
+    return st.isDirectory() && holds(at);
+  };
+  return p => { if (!memo.has(p)) { let v; try { v = scan(p); } catch (e) { v = `cannot be read (${e.code || e.message})`; } memo.set(p, v); } return memo.get(p); };
 }
 // A step's row: [name, status, the line that says why, more lines, the end of its output if it failed]. Removes the step's
 // private TMPDIR and reports what it left; a step that passed but left something fails here, so its tail is decided last.
@@ -844,10 +943,11 @@ function streamed(cmd, env, o, g) {
     });
   });
 }
-// Runs the checks under their budgets, one after another; with verification.parallel, side by side while the budgets fit
-// the memory free when the gate started and the cores, and a check that does not fit waits for a running one to finish.
-// Each check runs flake_runs times, one after another.
-async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
+// Runs the checks under their budgets, at most `limit` at once (verification.parallel; 1 is one after another), side by
+// side while the budgets fit the memory free when the gate started and the cores. A check that does not fit, or one marked
+// `# serial:`, waits for the running ones to finish; nothing starts beside a serial check. Each check runs its runs one
+// after another.
+async function runChecks(list, how, t, keep, limit, inner, nestedRow) {
   const machine = { memoryMb: freeMemoryMb(), cores: cores() }, running = new Set(), waited = new Set(), out = new Map();
   // A signal ends the gate through process.exit, whoever owns ENG_TMP: lib/budget.mjs's exit hook then kills and awaits
   // every running check, its scope and its detached workers.
@@ -869,14 +969,16 @@ async function runChecks(list, how, t, keep, parallel, inner, nestedRow) {
   await new Promise(resolve => {
     let i = 0;
     const pump = () => {
-      while (i < list.length && (parallel || !running.size)) {
-        const s = list[i], d = admit(s.check.budget, [...running], machine);
-        if (d === 'wait') { if (!waited.has(s)) console.log(`  wait   ${s.name}: its budget (${budgetText(s.check.budget)}) does not fit next to the ${running.size} running (${machine.memoryMb} MB free at start, ${machine.cores} cores)`); waited.add(s); break; }
+      while (i < list.length && running.size < limit) {
+        const s = list[i], alone = [...running].find(x => x.check.serial);
+        const why = alone ? `${alone.name} runs alone (# serial: ${alone.check.serial})` : s.check.serial && running.size ? `it runs alone (# serial: ${s.check.serial})` : null;
+        const d = why ? 'wait' : admit(s.check.budget, [...running].map(x => x.check.budget), machine);
+        if (d === 'wait') { if (!waited.has(s)) console.log(`  wait   ${s.name}: ${why ?? `its budget (${budgetText(s.check.budget)}) does not fit next to the ${running.size} running (${machine.memoryMb} MB free at start, ${machine.cores} cores)`}`); waited.add(s); break; }
         i++;
         if (d === 'never') { out.set(s, [s.name, 'FAIL', `eng: FAIL check ${s.check.id}: not started: its budget (${budgetText(s.check.budget)}) is more than the ${machine.memoryMb} MB free here; free memory, lower the budget, or let CI run it`, []]); continue; }
         console.log(`  start  ${s.name} (${s.check.weight}, ${s.check.declared ? 'declared' : 'default'} budget: ${budgetText(s.check.budget)})`);
-        running.add(s.check.budget);
-        runCheck(s).then(r => { out.set(s, r); running.delete(s.check.budget); pump(); });
+        running.add(s);
+        runCheck(s).then(r => { out.set(s, r); running.delete(s); pump(); });
       }
       if (i >= list.length && !running.size) resolve();
     };
@@ -997,7 +1099,7 @@ const COMMANDS = [
   ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
-  ['gate', 'gate [--heavy] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts)', gate],
+  ['gate', 'gate [--heavy] [--event pr|main [--base <ref>]] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts). --event pr: each check runs verification.flake_runs_pr times, and with verification.pr_checks: affected only the checks whose # covers: paths changed against the pull request target run (the CI PR base branch, else project.default_branch; a --base or ENG_BASE that is not that commit runs every check)', gate],
   ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
