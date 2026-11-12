@@ -603,6 +603,73 @@ test('untracked files: the rendered hook on a real repo decides every row the sa
   assert.equal(fs.readFileSync(path.join(dir, 'new.txt'), 'utf8'), 'mine\n');
 });
 
+// round 7 P1s: the branch being replaced counted as its own witness, and a branch named by a variable reached the probe
+// as its literal spelling. The repo: main has a commit on no other ref and no remote, HEAD is topic (older than main),
+// gone has a commit on no other ref, merged sits on topic and main, side sits on feature only, twin1 and twin2 share one
+// commit on no other ref. The shell has b=gone, s=ne, m=+main:gone, fresh=newb, EMPTY_SUFFIX empty. Every deny row loses
+// a commit when git runs it, and every allow row loses none: the real-git test runs each one to check.
+const R8_ROWS = [
+  ['git branch -D main', 'deny'], ['git branch -f main HEAD', 'deny'], ['git branch --force main topic', 'deny'], ['git branch -d -f main', 'deny'],
+  ['git switch -C main topic', 'deny'], ['git checkout -B main topic', 'deny'], ['git worktree add -B main ../wt-r8 topic', 'deny'],
+  ['git branch -M topic main', 'deny'], ['git branch -D twin1 twin2', 'deny'],
+  ['git switch -C "$b" main', 'deny'], ['git switch --force-create="$b" main', 'deny'], ['git switch --force-create "$b" main', 'deny'],
+  ['git switch --force-c="$b" main', 'deny'], ['git switch -C "gone${EMPTY_SUFFIX}" main', 'deny'], ['git checkout -B "$b" main', 'deny'],
+  ['git checkout -Bgo"$s" main', 'deny'], ['git worktree add -B "$b" ../wt-r8 main', 'deny'], ['git fetch --refmap="$m" . main', 'deny'],
+  ['git fetch --refmap "$m" . main', 'deny'], ['git pull --refmap +main:gone . main', 'deny'], ['git branch -D "$b"', 'deny'], ['git branch -f "$b" main', 'deny'],
+  ['git branch -D merged', 'allow'], ['git branch -D side', 'allow'], ['git branch -D twin1', 'allow'], ['git branch -f merged main', 'allow'],
+  ['git checkout -B merged main', 'allow'], ['git switch -c "$fresh"', 'allow'], ['git checkout -b "$fresh"', 'allow'],
+  ['git worktree add -b "$fresh" ../wt-r8', 'allow'], ['git fetch --refmap=+main:refs/remotes/o/main . main', 'allow'],
+];
+const R8_ENV = { b: 'gone', s: 'ne', m: '+main:gone', fresh: 'newb', EMPTY_SUFFIX: '' };
+let r8Base;
+const r8Repo = () => {
+  if (!r8Base) {
+    r8Base = tmp('eng-guard-r8-');
+    const sh = c => execSync(c, { cwd: r8Base, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+    sh('git init -q -b main');
+    assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: r8Base, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
+    sh('echo one > a.txt && git add a.txt && git commit -qm base && git branch topic && git branch merged && git branch gone');
+    sh('git commit -q --allow-empty -m unique && git switch -q gone && git commit -q --allow-empty -m lost && git switch -q -c twin1 topic');
+    sh('git commit -q --allow-empty -m twin && git branch twin2 && git switch -q -c side topic && git commit -q --allow-empty -m side');
+    sh('git switch -q -c feature && git commit -q --allow-empty -m feat && git switch -q topic');
+  }
+  const dir = path.join(tmp('eng-guard-r8-row-'), 'repo');
+  fs.cpSync(r8Base, dir, { recursive: true, verbatimSymlinks: true });
+  return dir;
+};
+const r8Hook = (tool, dir, command) => {
+  const input = tool === 'cursor' ? { hook_event_name: 'beforeShellExecution', command, cwd: dir, workspace_roots: [dir] } : { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: dir, tool_input: { command } };
+  const r = hook(tool, input, dir);
+  assert.equal(r.stderr, '', `${tool}: ${command}`);
+  const out = r.stdout && JSON.parse(r.stdout);
+  return (tool === 'cursor' ? out.permission === 'deny' : out && out.hookSpecificOutput.permissionDecision === 'deny') ? 'deny' : 'allow';
+};
+
+test('round 8 table: the policy with the real git probe denies every row that loses a commit', () => {
+  const dir = r8Repo(), cfg = { rewrite: 'never', defaultBranch: 'main', protected: ['main'] };
+  const wrong = R8_ROWS.filter(([command, want]) => (decide({ tool: 'bash', command, cwd: dir }, cfg, gitProbe(cfg)).allow ? 'allow' : 'deny') !== want);
+  assert.deepEqual(wrong, []);
+  assert.match(decide({ tool: 'bash', command: 'git branch -f main HEAD', cwd: dir }, cfg, gitProbe(cfg)).reason, /would drop commits on main that no other branch holds/);
+  assert.match(decide({ tool: 'bash', command: 'git switch -C "$b" main', cwd: dir }, cfg, gitProbe(cfg)).reason, /names a branch or ref with a word made from a variable.*Write the branch name out literally/);
+});
+
+test('round 8 table: the rendered hook decides every row the same way for Claude Code, Codex and Cursor', () => {
+  const dir = r8Repo();
+  const wrong = R8_ROWS.flatMap(([command, want]) => ['claude-code', 'codex', 'cursor'].filter(t => r8Hook(t, dir, command) !== want).map(t => [t, command]));
+  assert.deepEqual(wrong, []);
+});
+
+test('round 8 table: real git loses a commit for every deny row and none for every allow row', () => {
+  const tips = (dir, refs) => execFileSync('git', ['for-each-ref', '--format=%(objectname)', ...refs], { cwd: dir, env, encoding: 'utf8' }).split('\n').filter(Boolean);
+  const wrong = R8_ROWS.filter(([command, want]) => {
+    const dir = r8Repo(), before = [...new Set(tips(dir, ['refs/heads']))];
+    spawnSync('/bin/sh', ['-c', command], { cwd: dir, env: { ...env, ...R8_ENV }, stdio: 'ignore', timeout: 30_000 });
+    const lost = before.some(sha => tips(dir, ['--contains', sha, 'refs/heads', 'refs/remotes', 'refs/tags']).length === 0);
+    return (lost ? 'deny' : 'allow') !== want;
+  });
+  assert.deepEqual(wrong, []);
+});
+
 // ---------- rendering ----------
 
 const template = () => YAML.parse(fs.readFileSync(TPL, 'utf8'));
