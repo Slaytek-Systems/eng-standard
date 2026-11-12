@@ -550,9 +550,16 @@ function e2eLabels() {
 }
 function e2eFiles(cfg) {
   const f = arg('--files'); if (f != null) return envList(f);
-  return changedFiles(cfg);
+  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF;
+  const base = arg('--base') || (pb ? `origin/${pb}` : baseRef(cfg));
+  const mb = sh(`git merge-base ${base} HEAD`);  // throws if unknown: caller treats that as required
+  const committed = sh(`git diff --name-only ${mb} HEAD`).split('\n');
+  const local = sh('git status --porcelain --untracked-files=all -- . ":(exclude).eng/mistakes.jsonl"').split('\n').map(x => x.slice(3).split(' -> ').at(-1));
+  return [...new Set([...committed, ...local].filter(Boolean))].sort();
 }
-// The PR's base: --base, else the CI's PR base branch, else the default branch.
+// Gate selection (verification.pr_checks: affected) only. e2eFiles above keeps its 0.21.1 base handling, so a repo with none
+// of the new keys decides e2e exactly as before, stacked bases (--base, ENG_BASE) included.
+// The PR's base: --base, else the CI's PR base branch, else the default branch (ENG_BASE through baseRef).
 function prBase(cfg) {
   const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF;
   return arg('--base') || (pb ? `origin/${pb}` : baseRef(cfg));
@@ -564,13 +571,22 @@ function trustedBase(cfg) {
 }
 // git with NUL-delimited output (-z): without it git C-quotes non-ASCII, tab and newline names, and nothing would match them.
 const gitZ = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).split('\0');
+const gitOk = args => spawnSync('git', args, { cwd: ROOT, stdio: 'ignore' }).status === 0;
 // Every path this change touches against the merge base with the PR's base, committed or not. A rename lists both of its
-// paths. Throws when the merge base is unknown (a shallow clone, a missing base) or the base is not the PR's target (a
-// --base that names another commit would hide changes): callers then act as if everything changed.
+// paths. The base is the PR's target, or a stack base: an ancestor of HEAD that contains the target's merge base with HEAD
+// (the parent PR's branch), whose diff is this PR's own change. Throws when the merge base is unknown (a shallow clone, a
+// missing base); throws with .notStack when the base is neither, since its diff could hide changes. Callers then act as if
+// everything changed.
 function changedFiles(cfg) {
   const base = prBase(cfg), want = trustedBase(cfg);
-  if (base !== want && sh(`git rev-parse --verify ${base}^{commit}`) !== sh(`git rev-parse --verify ${want}^{commit}`)) throw new Error(`--base ${base} is not the pull request's target ${want}, so its diff could hide changes`);
-  const mb = sh(`git merge-base ${base} HEAD`);
+  const rev = r => gitZ(['rev-parse', '--verify', '--end-of-options', `${r}^{commit}`])[0].trim();
+  const b = rev(base);
+  if (base !== want && b !== rev(want)) {
+    const target = gitZ(['merge-base', want, 'HEAD'])[0].trim();
+    if (!gitOk(['merge-base', '--is-ancestor', b, 'HEAD']) || !gitOk(['merge-base', '--is-ancestor', target, b]))
+      throw Object.assign(new Error(`${base} is neither the pull request's target ${want} nor a stack base (an ancestor of HEAD that contains HEAD's merge base with ${want}), so its diff could hide changes`), { notStack: true });
+  }
+  const mb = gitZ(['merge-base', b, 'HEAD'])[0].trim();
   const committed = gitZ(['diff', '--no-renames', '--name-only', '-z', mb, 'HEAD']);
   // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
   const local = gitZ(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ':(exclude).eng/mistakes.jsonl']).map(x => x.slice(3));
@@ -797,7 +813,7 @@ async function gate() {
   // ephemeral_runs: a step that is a declared run runs through the check; declared runs that are not steps are added.
   const eph = runRules(cfg).ephemeral_runs.mode === 'off' && !alwaysWatched(cfg) ? [] : declaredRuns(cfg), wrap = new Set(eph.filter(n => !map[n] && cfg.gates.required.includes(n)));
   const dir = checksDir(cfg), abs = path.join(ROOT, dir), entries = fs.existsSync(abs) ? fs.readdirSync(abs, { withFileTypes: true }).map(e => [e.name, e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(abs, e.name), { throwIfNoEntry: false })?.isFile()) ? 'file' : e.isDirectory() ? 'dir' : 'other']) : null;
-  const runs = flakeRunsOf(cfg, event), checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs });
+  const runs = flakeRunsOf(cfg, event), checks = checkSteps({ dir, entries, configured: cfg.verification?.checks_dir !== undefined, read: p => readOr(p, ''), exists: p => fs.existsSync(path.join(ROOT, p)), runs, select: prChecksOf(cfg) === 'affected' });
   const all = [...(checks.length ? checks : [{ name: 'checks', none: `no scripts in ${dir}` }]), ...[...cfg.gates.required, ...eph.filter(n => !wrap.has(n)).map(n => `ephemeral:${n}`)].map(name => ({ name }))];
   for (const x of only) if (x !== 'checks' && !all.some(s => s.name === x)) die(`gate: ${x} is not a step here (checks, ${cfg.gates.required.join(', ')})`);
   const steps = only.length ? all.filter(s => only.includes(s.name) || (only.includes('checks') && (s.name === 'checks' || s.name.startsWith('check:')))) : all;
@@ -852,7 +868,7 @@ function gateSelection(cfg, event, dir, steps, only) {
   if (event !== 'pr') return { ...none, text: `all ${all.length} (${event ? '--event main' : 'no --event'})` };
   if (prChecksOf(cfg) !== 'affected') return { ...none, text: `all ${all.length} (verification.pr_checks: all)` };
   let files = null, why;
-  try { files = changedFiles(cfg); } catch (e) { why = `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
+  try { files = changedFiles(cfg); } catch (e) { why = e.notStack ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
   const pick = affectedBy(files, dir, why);
   if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
   const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));

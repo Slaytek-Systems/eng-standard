@@ -169,7 +169,7 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
     assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
-    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
+    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
     assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
@@ -224,15 +224,82 @@ test('false skip: a covers path with .. is normalised, and one that leaves the r
   });
 });
 
-test('false skip: a --base that is not the PR target runs every check', async () => {
+test('false skip: a --base that is neither the PR target nor a stack base runs every check, and says why', async () => {
   await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n' }, () => {
-    write('src/a', '2\n'); git('commit -qam src'); git('branch wrong');
+    git('checkout -q -b sibling main'); write('docs', 'd\n'); git('add -A'); git('commit -qm sibling'); git('checkout -q pr');
+    write('src/a', '2\n'); git('commit -qam src');
     write('other/b', '2\n'); git('commit -qam other');
-    let r = gatePr('--base', 'wrong');
-    assert.deepEqual(ran(), { s: 1, o: 1 }, out(r)); assert.match(r.stdout, /checks: all 2, because the diff against wrong cannot be computed \(--base wrong is not the pull request's target main/);
+    let r = gatePr('--base', 'sibling');
+    assert.deepEqual(ran(), { s: 1, o: 1 }, out(r));
+    assert.match(r.stdout, /checks: all 2, because the base sibling is neither the pull request's target main nor a stack base \(an ancestor of HEAD that contains HEAD's merge base with main\), so its diff could hide changes/);
+    assert.doesNotMatch(r.stdout, /cannot be computed/, 'the diff can be computed; the base is what is refused');
     r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1, o: 1 }, 'the real target gives the real diff: both changed');
     git('checkout -q HEAD~1'); r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1 }, 'a correct --base still selects');
   });
+});
+
+// Fix round 2 (both round-2 verifiers on b46d8a2): no-keys repos gate as in 0.21.1; stack bases select; checks_dir is normalised.
+test('stack base: --base or ENG_BASE naming the parent PR selects on the child PR\'s own diff', async () => {
+  await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n' }, () => {
+    git('checkout -q -b parent'); write('src/a', '2\n'); git('commit -qam parent');
+    git('checkout -q -b child'); write('other/b', '2\n'); git('commit -qam child');
+    let r = gatePr('--base', 'parent');
+    assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { o: 1 }, 'only the child changed other/; src changed in the parent PR');
+    assert.match(r.stdout, /checks: 1 of 2, those whose # covers: paths changed against parent/);
+    r = eng(['gate', 'checks', '--event', 'pr'], { ENG_BASE: 'parent' });
+    assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { o: 1 }, 'ENG_BASE names the stack base too');
+    git('checkout -q main'); write('later', 'l\n'); git('add -A'); git('commit -qm later'); git('checkout -q child');
+    r = gatePr('--base', 'main~1'); assert.deepEqual(ran(), { s: 1, o: 1 }, `a base behind the target's merge base runs every check: ${r.stdout}`);
+  });
+});
+
+test('no new keys: a stacked --base or ENG_BASE gives the v0.21.1 e2e decision (docs-only child of a source-changing parent)', async () => {
+  await inRepo({}, { 'src/a.js': '1\n', 'docs/x.md': 'x\n' }, () => {
+    const c = config({}); c.gates.required = ['e2e']; write('eng.config.yml', YAML.stringify(c)); git('checkout -q main'); git('add -A'); git('commit -qm no-keys');
+    git('checkout -q -B parent'); write('src/a.js', '2\n'); git('commit -qam parent');
+    git('checkout -q -b child'); write('docs/x.md', 'y\n'); git('commit -qam child');
+    let r = eng(['e2e', '--required', '--json', '--event', 'pr', '--base', 'parent']);
+    assert.equal(JSON.parse(r.stdout).required, false, out(r));
+    r = eng(['e2e', '--required', '--event', 'pr'], { ENG_BASE: 'parent' });
+    assert.match(r.stdout, /eng e2e --required: NOT REQUIRED \(only docs/, out(r));
+    r = eng(['gate', 'e2e'], { ENG_BASE: 'parent' });
+    assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /eng gate: PASS/);
+    r = eng(['e2e', '--required', '--json', '--event', 'pr']);
+    assert.equal(JSON.parse(r.stdout).required, true, 'against main the parent\'s src change still requires e2e');
+  });
+});
+
+test('checks_dir is normalised like the filesystem path, so a changed check always runs every check', async () => {
+  for (const d of ['.eng//checks', 'other/../.eng/checks', './.eng/checks/']) {
+    await inRepo({ a: counting('a', 'src') }, { 'src/x': '1\n', 'other/y': '1\n' }, () => {
+      git('checkout -q main'); write('eng.config.yml', YAML.stringify(config({ flake_runs_pr: 1, pr_checks: 'affected', checks_dir: d }))); git('commit -qam dir'); git('checkout -q -B pr');
+      write('.eng/checks/a.sh', counting('a', 'src', 9)); git('commit -qam failing-check');
+      const r = gatePr();
+      assert.equal(r.status, 1, `checks_dir ${d}: a changed failing check must run: ${out(r)}`);
+      assert.deepEqual(ran(), { a: 1 }, d); assert.match(r.stdout, /because \.eng\/checks\/a\.sh changed/, d);
+    });
+  }
+  assert.deepEqual(affectedBy(['.eng/checks/a.sh'], '.eng//checks'), { all: '.eng/checks/a.sh changed' });
+  assert.match(checkErrors({ pr_checks: 'affected', checks_dir: '../checks' }).join(), /verification\.checks_dir \(\.\.\/checks\) leaves the repo/);
+  assert.deepEqual(checkErrors({ checks_dir: '../checks' }), [], 'without pr_checks: affected, checks_dir validates as in 0.21.1');
+});
+
+test('a glob in # covers: says globs are unsupported under pr_checks: affected; without it the 0.21.1 stale message stays', async () => {
+  await inRepo({ g: counting('g', 'src/*.js') }, { 'src/a.js': '1\n' }, () => {
+    let r = gatePr();
+    assert.equal(r.status, 1); assert.match(r.stdout, /check g: "# covers:" in \.eng\/checks\/g\.sh names glob\(s\) src\/\*\.js; globs are unsupported/, out(r));
+    assert.doesNotMatch(r.stdout, /stale/);
+    write('eng.config.yml', YAML.stringify(config({})));
+    r = eng(['gate', 'checks']); assert.equal(r.status, 1); assert.match(r.stdout, /check g is stale: covers missing path\(s\) src\/\*\.js/);
+  });
+});
+
+test('SHIPPING.md states the no-spaces and no-globs limit only under pr_checks: affected', () => {
+  const cwd = process.cwd(); process.chdir(dir);
+  try {
+    assert.match(shippingMd(config({ pr_checks: 'affected' })), /Covers paths are split on whitespace, so none can contain a space, and globs are not expanded/);
+    for (const v of [{}, { flake_runs_pr: 1 }]) assert.doesNotMatch(shippingMd(config(v)), /split on whitespace/);
+  } finally { process.chdir(cwd); }
 });
 
 test('--event=pr is accepted like --event pr, and a repo with none of the new keys prints no checks: line', async () => {
