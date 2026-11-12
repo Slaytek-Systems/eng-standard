@@ -29,7 +29,7 @@ const PROTECTED = { ...NEVER, rewrite: 'protected' };
 // A fake read-only probe rooted at /r: dirty folders, branch safety, file text and real paths.
 const fake = (o = {}) => ({
   root: () => o.root === undefined ? '/r' : o.root,
-  dirty: (cwd, specs) => typeof o.dirty === 'function' ? o.dirty(cwd, specs) : o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
+  dirty: (cwd, specs, untracked) => typeof o.dirty === 'function' ? o.dirty(cwd, specs, untracked) : o.dirty === null ? null : o.dirty === true || (o.dirty ?? []).includes?.(cwd) || false,
   branchSafe: (cwd, b) => Object.hasOwn(o.safe ?? {}, b) ? o.safe[b] : true,
   read: abs => o.files?.[abs] ?? null,
   real: abs => o.real?.[abs] ?? abs,
@@ -248,7 +248,8 @@ test('destructive git runs only alone from the repo root: any other shape is den
   assert.equal(at('/r/sub', 'git reset --hard', clean), 'discard-local-work', 'alone, but from a subfolder of the repo');
   assert.match(bash('git reset --hard', fake({ dirty: false, root: null })).reason, /Run it alone from the repo root/, 'no repo root found');
   assert.equal(ruleOf('git branch -D gone', clean), 'discard-local-work', 'alone at the root, the existing rules still decide');
-  assert.match(bash('git reset --hard', fake({ dirty: true })).reason, /would throw away uncommitted changes in \/r\. Commit or stash them first/);
+  assert.match(bash('git reset --hard', fake({ dirty: true })).reason, /would throw away uncommitted changes or overwrite untracked files in \/r\. Commit or stash them first/);
+  assert.match(bash('git restore .', fake({ dirty: true })).reason, /would throw away uncommitted changes in \. in \/r\. Commit or stash them first \(git stash push -m <name>\)/);
 });
 
 test('a probe that cannot answer denies destructive git: no repo, an unreadable status or an unreadable branch', () => {
@@ -314,7 +315,7 @@ test('Edit and Write tool calls: never on .eng/guard, on eng-rendered .claude/se
 
 // ---------- the real git probe ----------
 
-test('the git probe: tracked changes are dirty and untracked files are not; a branch is safe on its upstream or the default branch, else not', () => {
+test('the git probe: tracked changes are dirty, untracked files only when asked and ignored files never; a branch is safe on its upstream or the default branch, else not', () => {
   const dir = tmp('eng-guard-probe-'), remote = tmp('eng-guard-remote-');
   const git = (...a) => execFileSync('git', a, { cwd: dir, env, stdio: 'pipe', encoding: 'utf8' });
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env });
@@ -324,6 +325,9 @@ test('the git probe: tracked changes are dirty and untracked files are not; a br
   assert.equal(p.root(dir), fs.realpathSync(dir));
   assert.equal(p.dirty(dir, []), false);
   fs.writeFileSync(path.join(dir, 'new.txt'), 'x'); assert.equal(p.dirty(dir, []), false, 'untracked only');
+  assert.equal(p.dirty(dir, [], true), true, 'untracked, when asked'); assert.equal(p.dirty(dir, ['a.txt'], true), false, 'untracked, but not under the paths');
+  fs.rmSync(path.join(dir, 'new.txt')); fs.writeFileSync(path.join(dir, '.gitignore'), 'skip\n'); git('add', '.gitignore'); git('commit', '-qm', 'ignore');
+  fs.writeFileSync(path.join(dir, 'skip'), 'x'); assert.equal(p.dirty(dir, [], true), false, 'an ignored file is never counted');
   fs.writeFileSync(path.join(dir, 'a.txt'), 'b\n'); assert.equal(p.dirty(dir, []), true); assert.equal(p.dirty(dir, ['.']), true);
   const index = fs.statSync(path.join(dir, '.git/index')).mtimeMs;
   p.dirty(dir, []); assert.equal(fs.statSync(path.join(dir, '.git/index')).mtimeMs, index, 'the probe never refreshes the index');
@@ -451,8 +455,29 @@ test('the rendered hook on real repos: destructive git runs only alone from the 
 
 // The repo every row runs against: at its root, a.txt has an uncommitted change, sub/ is clean, branch gone has a commit
 // on neither its upstream nor main, branch merged sits on main. deny: the row must be blocked; allow: it must pass.
-// Rows: the round 4 and round 5 verifier findings on 11166b5 and d3036f8, then the construct class they belong to.
+// Rows: the round 4, 5 and 6 verifier findings on 11166b5, d3036f8 and ad222f1, then the construct class they belong to.
 const ROWS = [
+  // round 6 P1: forms that move an existing branch's tip and drop its commits (gone), in any shape; a new or merged branch passes
+  ['cd sub && git switch -C gone main', 'deny'], ['git switch -C gone main', 'deny'], ['git switch -Cgone', 'deny'], ['git switch --force-create gone', 'deny'],
+  ['git switch --force-c=gone main', 'deny'], ['git checkout -B gone', 'deny'], ['git checkout -B gone main', 'deny'], ['git checkout -Bgone', 'deny'],
+  ['git branch -f gone', 'deny'], ['git branch -f gone main', 'deny'], ['git branch --force gone HEAD', 'deny'], ['git branch --forc gone main', 'deny'],
+  ['git branch -M merged gone', 'deny'], ['git branch -M gone', 'deny'], ['git branch -m -f merged gone', 'deny'], ['git branch --move --force merged gone', 'deny'],
+  ['git branch -C merged gone', 'deny'], ['git branch -c --force merged gone', 'deny'], ['git worktree add -B gone ../wt main', 'deny'],
+  ['git fetch . +main:gone', 'deny'], ['git fetch -f . main:gone', 'deny'], ['git fetch --force . main:refs/heads/gone', 'deny'], ["git fetch origin '+refs/heads/*:refs/heads/*'", 'deny'],
+  ['git pull . +main:gone', 'deny'], ['git fetch . +main:fresh', 'deny'], ['git update-ref refs/heads/gone main', 'deny'], ['git status && git branch -f merged main', 'deny'],
+  ['git switch -C fresh', 'allow'], ['git switch -C merged main', 'allow'], ['git checkout -B fresh', 'allow'], ['git checkout -B merged main', 'allow'],
+  ['git branch -f merged main', 'allow'], ['git branch -M merged renamed', 'allow'], ['git branch -c merged copy', 'allow'], ['git branch fresh', 'allow'],
+  ['git worktree add -b fresh ../wt', 'allow'], ['git worktree add -B fresh ../wt main', 'allow'], ['git fetch . main:merged', 'allow'], ['git fetch --force origin', 'allow'],
+  ["git fetch origin '+refs/heads/*:refs/remotes/origin/*'", 'allow'], ['git fetch -f origin +v1:refs/tags/v1', 'allow'], ['git pull origin main', 'allow'],
+  // round 6 P2: a --no- form after a safety flag turns it off again, as git reads it (last wins)
+  ['git clean -fn --no-dry-run', 'deny'], ['git clean -f --dry-run --no-dry', 'deny'], ['git rm -f --cached --no-cached a.txt', 'deny'],
+  ['git checkout --detach --no-detach a.txt', 'deny'], ['git checkout --orphan x --no-orphan a.txt', 'deny'],
+  ['git clean -f --no-dry-run -n', 'allow'], ['git rm -f --no-cached --cached a.txt', 'allow'], ['git checkout --no-detach --detach main', 'allow'],
+  // round 6 P3: gh reads --admin=false as off, and the last --admin wins
+  ['gh pr merge 5 --admin=false --squash', 'allow'], ['gh pr merge 5 --admin --admin=0', 'allow'], ['gh pr merge 5 --admin=true', 'deny'],
+  ['gh pr merge 5 --admin=false --admin', 'deny'], ['gh pr merge 5 --admin=no', 'deny'],
+  // round 6 P2 friction, kept: git checkout <word> may be a path, so in a chain it is denied with the route git switch <branch>
+  ['git checkout main && git pull', 'deny'], ['git switch main && git pull', 'allow'],
   // round 5 P1: checkout forms that discard work
   ['cd sub && git checkout -f', 'deny'], ['git checkout HEAD .', 'deny'], ['git checkout -f', 'deny'], ['git checkout --force main', 'deny'],
   ['git checkout -- a.txt', 'deny'], ['git checkout a.txt', 'deny'], ['git checkout HEAD~1 -- a.txt', 'deny'], ['git checkout --fo', 'deny'],
@@ -543,6 +568,39 @@ test('round 6 table: the rendered hook on a real repo decides every row the same
   });
   assert.deepEqual(wrong, []);
   assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'dirty\n');
+});
+
+// round 6 P1: untracked files. The repo has no uncommitted change to a tracked file, and new.txt is untracked here while
+// HEAD~1 has a new.txt. A form that writes the tree from a commit overwrites it; the forms git refuses or that read the
+// index pass. reset --hard, checkout -f and switch -f count any untracked file (git stash push -u keeps them).
+const UNTRACKED_ROWS = [
+  ['git reset --hard HEAD~1', 'deny'], ['git reset --hard', 'deny'], ['git checkout -f HEAD~1', 'deny'], ['git checkout -f', 'deny'], ['git checkout --force main', 'deny'],
+  ['git switch -f --detach HEAD~1', 'deny'], ['git checkout HEAD~1 -- new.txt', 'deny'], ['git checkout HEAD~1 new.txt', 'deny'], ['git restore -s HEAD~1 new.txt', 'deny'],
+  ['git restore --source=HEAD~1 .', 'deny'],
+  ['git reset --keep HEAD~1', 'allow'], ['git reset --merge HEAD~1', 'allow'], ['git reset --soft HEAD~1', 'allow'], ['git reset HEAD~1', 'allow'], ['git checkout HEAD~1', 'allow'],
+  ['git checkout -- a.txt', 'allow'], ['git checkout -- .', 'allow'], ['git restore .', 'allow'], ['git restore -s HEAD~1 a.txt', 'allow'], ['git checkout HEAD~1 -- sub/s.txt', 'allow'],
+  ['git switch --detach HEAD~1', 'allow'], ['git stash push -u -m wip', 'allow'], ['git clean -n', 'allow'],
+];
+
+test('untracked files: forms that write the tree from a commit are denied when they could overwrite one, by the policy', () => {
+  const probe = fake({ dirty: (cwd, specs, untracked) => untracked === true && (!specs.length || specs.some(s => ['.', 'new.txt'].includes(s))) });
+  assert.deepEqual(UNTRACKED_ROWS.filter(([c, want]) => (bash(c, probe).allow ? 'allow' : 'deny') !== want), []);
+  assert.match(bash('git reset --hard HEAD~1', probe).reason, /would throw away uncommitted changes or overwrite untracked files in \/r\. Commit or stash them first \(git stash push --include-untracked -m <name>\)/);
+});
+
+test('untracked files: the rendered hook on a real repo decides every row the same way', () => {
+  const dir = tmp('eng-guard-r7-');
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  sh('git init -q -b main');
+  assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
+  sh('mkdir sub && echo one > a.txt && echo s > sub/s.txt && echo n > new.txt && git add -A && git commit -qm base && git rm -q new.txt && git commit -qm rm && echo mine > new.txt');
+  const wrong = UNTRACKED_ROWS.filter(([command, want]) => {
+    const r = hook('claude-code', { tool_name: 'Bash', cwd: dir, tool_input: { command } }, dir);
+    assert.equal(r.stderr, '', command);
+    return (r.stdout && JSON.parse(r.stdout).hookSpecificOutput.permissionDecision === 'deny' ? 'deny' : 'allow') !== want;
+  });
+  assert.deepEqual(wrong, []);
+  assert.equal(fs.readFileSync(path.join(dir, 'new.txt'), 'utf8'), 'mine\n');
 });
 
 // ---------- rendering ----------
