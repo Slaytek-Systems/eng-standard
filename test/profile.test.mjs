@@ -82,19 +82,26 @@ const MOVED = ['.agents/skills/eng-route/SKILL.md', 'AGENTS.md', 'SHIPPING.md'];
 const ROUTED = ['.githooks/pre-push', '.githooks/pre-rebase'];
 // The files 0.19.2 changed on purpose (skills no longer say to rebase or amend pushed work): the rewritten skill text.
 const UNREBASED = ['.agents/skills/eng-verify/SKILL.md', ...['autopilot-full', 'autopilot-stack', 'babysit', 'feature', 'multi-phase-plan', 'opening-a-pr', 'refactoring', 'worktree-cleanup'].map(p => `.agents/skills/poteto-mode/playbooks/${p}.md`), '.agents/skills/principle-sequence-verifiable-units/SKILL.md'];
+// The file 0.20.3 changed on purpose (issue #55): the pre-commit hook runs the installed eng with node before npx.
+const LOCAL_ENG = ['.githooks/pre-commit'];
 // The files 0.21.0 changed on purpose (the repo-level guard): .eng/guard, the Claude Code hook that runs it, its
 // SHIPPING.md entry and the lock that lists the new files.
 const GUARDED = ['.claude/settings.json', '.eng/guard/codex-hooks.json', '.eng/guard/config.json', '.eng/guard/cursor-hooks.json', '.eng/guard/guard.mjs', '.eng/guard/hook.mjs', '.eng/lock.json', 'SHIPPING.md'];
 const diff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(f => JSON.stringify(a[f]) !== JSON.stringify(b[f]));
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.21.0.json, which differs from v0.19.2 only in the guard files, v0.19.2 from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.0.json'), 'utf8')), v192 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.21.0.json, which differs from v0.20.3 only in the guard files, v0.20.3 from v0.19.2 only in the pre-commit hook, v0.19.2 from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.0.json'), 'utf8')), v203 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.20.3.json'), 'utf8')), v192 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
   assert.deepEqual(Object.keys(want), Object.keys(old));
   assert.deepEqual(Object.keys(prev), Object.keys(old)); assert.deepEqual(Object.keys(v190), Object.keys(old));
   assert.deepEqual(Object.keys(v192), Object.keys(old));
   for (const [name, w] of Object.entries(want)) {
-    const guarded = diff(w, v192[name]);
-    assert.deepEqual(guarded, w.refused ? [] : GUARDED, `${name}: exactly the guard files differ from v0.19.2`);
+    const guarded = diff(w, v203[name]);
+    assert.deepEqual(guarded, w.refused ? [] : GUARDED, `${name}: exactly the guard files differ from v0.20.3`);
+  }
+  for (const [name, w] of Object.entries(v203)) {
+    const hook = diff(w, v192[name]);
+    assert.ok(hook.every(f => LOCAL_ENG.includes(f)), `${name}: only the pre-commit hook differs from v0.19.2, got ${hook.join(', ')}`);
+    if (!w.refused) assert.ok(hook.includes('.githooks/pre-commit'), `${name}: the pre-commit hook changed`);
   }
   for (const [name, w] of Object.entries(v192)) {
     const skills = diff(w, v191[name]);

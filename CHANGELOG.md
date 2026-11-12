@@ -13,6 +13,39 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 - **On by default.** `guard: off` turns it off and removes `.eng/guard`; `eng doctor` names any `.codex` or `.cursor` link or entry still pointing at it, with the command that removes it, and lists the guard under "Gates below the standard default". Any other value is a config error. SHIPPING.md's Reference gets a Guard entry; the AGENTS.md block is unchanged.
 - **Upgrade:** zero manual edits. `eng sync` writes `.eng/guard` and the new `.claude/settings.json`. To wire Codex or Cursor, run the line `eng doctor` prints. To uninstall eng, set `guard: off` and sync first (`docs/lifecycle.md`, Uninstall).
 
+## 0.20.6 (12 Nov 2026)
+
+**The lib modules that decide what a gate runs, passes or requires are risk:high in eng-standard's own merge rule** (Core task p57ejat07k4vxe9q9y78d1m4vd8j1fvz). Before, a risk:low PR could point `GATE_COMMANDS.verdict` in `lib/render.mjs` at a command that always passes, merge on one PASS, and reach consumers as a version bump. Matt, 10 Nov 2026: a change to gate settings is high risk and never silent.
+
+- `eng.config.yml` `ship.high_risk.paths` gains `lib/render.mjs`, `lib/gate-levels.mjs`, `lib/flake.mjs`, `lib/ephemeral.mjs`, `lib/disk-rules.mjs`, `lib/hygiene.mjs`, `lib/standard.mjs` and `lib/lock.mjs`, each with its reason. Left out because they change no gate, run evidence or verdict: `lib/step-output.mjs` (display of a step's output; the exit code decides) and `lib/guards.mjs` (only a test imports it).
+- `test/self-merge.test.mjs` asserts each added path classifies high and a docs-only change low. This repo only: no template or consumer default changes. **Upgrade:** zero manual edits.
+
+## 0.20.5 (11 Nov 2026)
+
+**A gate step's TMPDIR survives a sandboxed `eng run <name>` the step starts, and `eng gate` reaps a killed run's TMPDIR folder** (Core task p57ab63hm8x5x0pqs6v93hzjsh8j0hgy; found reviewing PR #75).
+
+- **The step's TMPDIR moved out of the socket root.** Each `eng gate` step's TMPDIR was a folder in the gate's own folder under `$HOME/.cache/eng/s`. A step that starts a sandboxed `eng run <name>` runs it with a tmpfs over that socket root, so the nested command lost the TMPDIR it inherited (`test -d "$TMPDIR"` failed) and the gate step failed. It is now `$HOME/.cache/eng/t/<8 hex>/<6>`, the root `eng run --` has used since 0.20.4, which the sandbox leaves alone. Length, mode, symlink checks and removal on exit are unchanged (38 bytes for `/home/dev`) when the gate runs on its own. **Inside an `eng run <name>` with `isolation.mode: fail`**, `$HOME/.cache` is read-only, so `eng run` now makes a short writable folder of its own in that root and passes it as `ENG_RUN_TMP_DIR` (bound writable; its owner file read-only). A gate or run started there puts its TMPDIR folder in it (47 bytes for `/home/dev`, measured, the same as in 0.20.4). Without that, the first version of this fix fell back to the long `ENG_TMP` path there and a tsx socket failed with EINVAL. A gate that cannot get a short folder for any reason (no usable home, a home under `/tmp` or too long for a socket path, a symlinked `~/.cache` or `.cache/eng/t`, or a folder it cannot create) now says so on stderr, with the length of the TMPDIR it fell back to, instead of falling back silently.
+- **`eng gate` reaps stale folders in `.cache/eng/t`.** The docs for 0.20.4 said the next run or gate removes the folder of a killed `eng run --`. Only the next `eng run` did. A gate now removes any folder there whose eng process is gone, and still sweeps the socket root as before. A live run's folder is kept.
+- `eng run -- <cmd>` and `eng run <name>` also remove stale folders in `.cache/eng/t` when they start. `eng run --keep` does not.
+- `test/adoption.test.mjs` has these cases, the last under real enforced isolation: a gate check whose nested sandboxed `eng run probe` must see and write the check's TMPDIR (skipped where bwrap is unusable), a dead run's folder that `eng gate` removes, four cases where the home gives no short folder (under `/tmp`, too long, symlinked `~/.cache`, symlinked `.cache/eng/t`) and each must warn, and an `eng run gateprobe` under `isolation.mode: fail` whose `eng gate` check binds a tsx-shaped unix socket in its TMPDIR.
+- **Upgrade:** zero manual edits.
+
+## 0.20.4 (11 Nov 2026)
+
+**A command under `eng run --` can bind a unix socket in its TMPDIR** (Core task p571afvqnm9bsqkjh0y44y0tkd8j0ea9). The command's TMPDIR was the round's `tmp` folder under the scratch root, about 98 bytes on the devbox, so a socket under it went past the 107-byte limit. tsx's IPC pipe (`$TMPDIR/tsx-<uid>/<pid>.pipe`) failed with EINVAL, and so did the tmux test in `test/ephemeral.test.mjs`, whose socket is in a folder under `ENG_TMP`. That is why every verifier of PR #73 had to skip it by name or shorten `XDG_CACHE_HOME`. 0.17.1 fixed the same limit for `eng gate` steps and left `eng run -- <cmd>` unchanged.
+
+- **The command's TMPDIR is now short.** `eng run -- <cmd>` sets `TMPDIR`, `TMP`, `TEMP` and `ENG_TMP` to a fresh 0700 folder in its own short folder (`$HOME/.cache/eng/t/<8 hex>/<6>`, 38 bytes for `/home/dev`). It is made and reaped like a socket folder, but beside the socket root (`.cache/eng/s`), not in it: a nested `eng run <name>` hides the socket root under a tmpfs, and the command's temp files must stay visible to it. eng removes the folder with the round on a pass, a failure or a signal. When an eng run is killed with SIGKILL, the next `eng run --` removes its folder once its eng process is gone. With no usable home, or a read-only one, the TMPDIR stays the round's `tmp`, as before. `eng run --keep` is unchanged.
+- `test/adoption.test.mjs` binds `$TMPDIR/tsx-1000/12345.pipe` and a 40-character socket name through `eng run --` with a long repo name, and checks the folder is gone afterwards. Before the fix the pipe path was 189 bytes and binding it failed with EINVAL. `test/ephemeral.test.mjs` shows a killed `eng run`'s folder counts as stale. `test/scratch.test.mjs` no longer expects the TMPDIR inside the round; it checks the TMPDIR is removed after a failing command.
+- **Upgrade:** zero manual edits.
+
+## 0.20.3 (11 Nov 2026)
+
+**The pre-commit hook runs eng in bun repos whose overrides npm rejects** (issue #55). The hook ran `npx --no-install eng` unless `ENG` was set. In a bun repo whose package.json has an `overrides` entry npm rejects, npx fails with `EOVERRIDE` before eng starts, so every commit failed unless people remembered to set `ENG`, and that invites `--no-verify`.
+
+- **The hook runs the installed eng with node.** When `node_modules/@slayteksystems/eng-standard/bin/eng.mjs` exists, the hook runs it with `node`, so npm never reads the project. It runs `npx --no-install eng` only when that file is missing. `ENG` still overrides both. The path comes from eng's own package.json (name and `bin.eng`), and the check happens each time the hook runs, so no config key is needed.
+- `test/hooks.test.mjs` renders the hook into a scratch repo with an npm-rejected override and a locally installed eng, and shows the hook reaches eng (it failed with `EOVERRIDE` before). A second test covers the npx fallback and the `ENG` override. The frozen `profile: slaytek` render is now `test/fixtures/profile/v0.20.3.json`, which differs from v0.19.2 only in `.githooks/pre-commit`.
+- **Upgrade:** zero manual edits. `eng sync --check` reports `.githooks/pre-commit` as drifted until `eng sync` rewrites it, like any generated file after a version bump.
+
 ## 0.20.2 (11 Nov 2026)
 
 **eng doctor says which agent tools can see eng's skills** (Matt, 10 Nov 2026: "There is no accepted universal standard across every different agent harness for the means of providing skill files"). Many developers link every tool's skill folder to one central folder, so eng must never create or change those links. It reports instead.
