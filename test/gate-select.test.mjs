@@ -46,7 +46,7 @@ test('flake_runs_pr: --event pr runs each check that many times; no --event and 
   let r = eng(['gate', 'checks', '--event', 'pr']);
   assert.equal(r.status, 0, out(r));
   assert.deepEqual(ran(), { a: 1, c: 1 });
-  assert.match(r.stdout, /checks: 2 of 3, those whose # covers: paths changed against main .*; each runs 1 time \(verification\.flake_runs_pr, --event pr\)/);
+  assert.match(r.stdout, /checks: 2 of 3, those whose # covers: paths changed against main, and c \(no # covers: line\) \(verification\.pr_checks: affected\); each runs 1 time \(verification\.flake_runs_pr, --event pr\)/);
   for (const args of [['gate', 'checks'], ['gate', 'checks', '--event', 'main']]) {
     r = eng(args);
     assert.equal(r.status, 1, `${args.join(' ')} runs b, which fails: ${out(r)}`);
@@ -169,7 +169,7 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
     assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
-    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Symlinks are not followed: a pull request that adds, removes or changes a symlink anywhere runs every check, a symlinked check or checks folder runs every check, and a check whose covered path is, holds or goes through a symlink \(an ignored one included\) runs on every pull request\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Only the pull request's target as the base selects checks: any other `--base` or `ENG_BASE`, such as a parent PR's branch named locally, runs every check\. A stacked PR selects in CI, where its target is the parent branch\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
+    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Symlinks are not followed: a pull request that adds, removes or changes a symlink anywhere runs every check, a symlinked check or checks folder runs every check, and a check whose covered path is, holds or goes through a symlink \(an ignored one included\) runs on every pull request\. A covers path that is not canonical \(a `\.` or `\.\.` segment, `\/\/`, a leading or trailing `\/` or a backslash\) runs its check on every pull request, and a changed path that is not canonical runs every check\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Only the pull request's target as the base selects checks: any other `--base` or `ENG_BASE`, such as a parent PR's branch named locally, runs every check\. A stacked PR selects in CI, where its target is the parent branch\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
     assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
@@ -214,13 +214,13 @@ test('false skip: every # covers: line counts, not just the first', async () => 
   });
 });
 
-test('false skip: a covers path with .. is normalised, and one that leaves the repo is a config error', async () => {
+test('false skip: a covers path with .. always runs its check (round 6), and one that leaves the repo is a config error', async () => {
   await inRepo({ a: counting('a', 'other/../src'), z: counting('z', '../outside') }, { 'src/a': '1\n', 'other/x': '1\n' }, () => {
     write('src/a', '2\n'); git('commit -qam a');
     const r = gatePr();
     assert.equal(r.status, 1, 'the out-of-repo check fails the gate');
     assert.match(out(r), /check z: "# covers:" .* outside the repo \(\.\.\/outside\)/);
-    assert.deepEqual(ran(), { a: 1 }, 'other/../src is src, so a change to src/a runs a');
+    assert.deepEqual(ran(), { a: 1 }, 'other/../src is not canonical, so a runs');
   });
 });
 
@@ -517,4 +517,75 @@ test('symlinks: a git-ignored or untracked link inside a covered folder makes th
     r = gatePr(); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { k: 1, o: 1 }, 'an untracked new link runs every check');
     allBecause(r, /because new-link is a symlink this change adds, removes or changes/);
   });
+});
+
+// Round 6 (both round-6 verifiers on f65142b): normalising link/../src to src hid the link hop, so a change under
+// the link's target skipped the check. Fail closed: a covers path or a changed path that is not canonical (a . or ..
+// segment, an empty segment, a leading /, a backslash) is never normalised for selection.
+test('round 6: a covers path with .. after a symlink (alias/../src, link/../src/a) runs the check and fails', async () => {
+  // first finding: alias -> other/deep; the check reads alias/../src/a, which is other/src/a.
+  await inRepo({ a: counting('a', 'alias/../src').replace('exit 0', 'grep -q broken alias/../src/a && exit 1; exit 0'), o: counting('o', 'docs') },
+    { 'src/a': 'healthy\n', 'other/src/a': 'healthy\n', 'other/deep/keep': 'k\n', 'docs/x': 'x\n' }, () => {
+      onMain(() => link('other/deep', 'alias'));
+      write('other/src/a', 'broken\n'); git('commit -qam broken');
+      assert.equal(git('diff --name-only main HEAD'), 'other/src/a');
+      const r = gatePr(); failsAndRan(r, { a: 1 }, 'covers alias/../src');
+      assert.match(r.stdout, /checks: 1 of 2, those whose # covers: paths changed against main, and a \(# covers: alias\/\.\.\/src is not canonical/);
+      assert.equal(eng(['gate', 'checks', '--event', 'main']).status, 1, 'main runs it and fails too'); ran();
+    });
+  // second finding: link -> other/nested; covers link/../src/a, and link/../src/d/b.js.
+  for (const [cover, changed] of [['link/../src/a', 'other/src/a'], ['link/../src/d/b.js', 'other/src/d/b.js']]) {
+    await inRepo({ a: counting('a', cover).replace('exit 0', `grep -q broken ${cover} && exit 1; exit 0`), o: counting('o', 'docs') },
+      { 'src/a': 'ok\n', 'src/d/b.js': 'ok\n', 'other/src/a': 'ok\n', 'other/src/d/b.js': 'ok\n', 'other/nested/keep': 'k\n', 'docs/x': 'x\n' }, () => {
+        onMain(() => link('other/nested', 'link'));
+        write(changed, 'broken\n'); git('commit -qam broken');
+        failsAndRan(gatePr(), { a: 1 }, `covers ${cover}, ${changed} changed`);
+      });
+  }
+});
+
+test('round 6: a non-canonical covers path always runs its check; a canonical one still selects (controls)', async () => {
+  const forms = ['other/../src/a', './src/a', 'src/./a', 'src//a', 'src/a/', 'src\\a'];
+  await inRepo(Object.fromEntries(forms.map((c, i) => [`n${i}`, counting(`n${i}`, c)]).concat([['k', counting('k', 'src/a')], ['o', counting('o', 'other/src/a')]])),
+    { 'src/a': 'ok\n', 'src\\a': 'b\n', 'other/src/a': 'ok\n', 'docs/x': 'x\n' }, () => {
+      write('docs/x', 'y\n'); git('commit -qam docs');
+      const r = gatePr(); assert.equal(r.status, 0, out(r));
+      assert.deepEqual(ran(), Object.fromEntries(forms.map((_, i) => [`n${i}`, 1])), 'every non-canonical covers path runs; k and o (canonical) are unaffected');
+      git('checkout -q main'); git('checkout -q -B pr'); write('src/a', 'v2\n'); git('commit -qam a');
+      assert.equal(gatePr().status, 0); assert.deepEqual(ran(), { ...Object.fromEntries(forms.map((_, i) => [`n${i}`, 1])), k: 1 }, 'a change to src/a selects k, not o');
+    });
+  const runs = (covers, files) => affectedBy(files, '.eng/checks').runs({ covers });
+  for (const c of ['other/../src', './src', 'src/', 'a//b', 'a\\b', '.', 'a/.', 'a/..']) assert.equal(runs([c], ['docs/x']), true, `${c} always runs`);
+  assert.equal(runs(['src'], ['docs/x']), false, 'a canonical path that did not change does not run');
+});
+
+test('round 6: a changed path that is not canonical (a backslash) runs every check', async () => {
+  await inRepo({ k: counting('k', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n', 'docs/x': 'x\n' }, () => {
+    write('docs/a\\b', 'x\n'); git('add -A'); git('commit -qm backslash');
+    const r = gatePr(); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { k: 1, o: 1 });
+    assert.match(r.stdout, /checks: all 2, because docs\/a\\b is not a canonical path/);
+  });
+  assert.match(affectedBy(['x/../y'], '.eng/checks').all, /x\/\.\.\/y is not a canonical path/);
+});
+
+test('round 6: the selection line names each check that runs under a rule other than a changed covered path', async () => {
+  await inRepo({ k: counting('k', 'pkg'), n: counting('n', './src'), c: counting('c', null), d: counting('d', 'src'), o: counting('o', 'other') },
+    { 'pkg/real': 'r\n', 'src/a': '1\n', 'other/b': '1\n' }, () => {
+      onMain(() => link('../src/a', 'pkg/a'));
+      write('src/a', '2\n'); git('commit -qam a');
+      const r = gatePr(); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { c: 1, d: 1, k: 1, n: 1 });
+      assert.match(r.stdout, /checks: 4 of 5, those whose # covers: paths changed against main, and c \(no # covers: line\), k \(# covers: pkg holds a symlink\), n \(# covers: \.\/src is not canonical: [^)]*\) \(verification\.pr_checks: affected\)/);
+    });
+});
+
+test('round 6: SHIPPING.md claims a revert on red main only when the repo has one (merge.auto)', () => {
+  const cwd = process.cwd(); process.chdir(dir);
+  try {
+    const plain = shippingMd(config({ flake_runs_pr: 1, pr_checks: 'affected' }));
+    assert.doesNotMatch(plain, /reverted like any red main/);
+    assert.doesNotMatch(plain, /exact-inverse revert|exact inverse as a revert/);
+    assert.match(plain, /runs every check 3 times after every merge, and a failing or flaky check there turns main red\./);
+    const auto = config({ flake_runs_pr: 1 }); auto.merge = { ...auto.merge, auto: { high_risk_paths: ['x'], post_merge: { check: 'eng gate' } } };
+    assert.match(shippingMd(auto), /runs every check 3 times after every merge, and a failing or flaky check there turns main red\. When main's post-merge check \(`eng gate`, `merge\.auto\.post_merge\.check`\) fails, `eng merge post` opens the merge's exact inverse as a revert PR\./);
+  } finally { process.chdir(cwd); }
 });

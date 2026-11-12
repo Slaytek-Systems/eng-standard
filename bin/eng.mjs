@@ -556,8 +556,10 @@ function e2eFiles(cfg) {
   const committed = sh(`git diff --name-only ${mb} HEAD`).split('\n');
   const local = sh('git status --porcelain --untracked-files=all -- . ":(exclude).eng/mistakes.jsonl"').split('\n').map(x => x.slice(3).split(' -> ').at(-1));
   const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
-  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a link on disk now
-  // (an untracked one included). Any such path runs every check under pr_checks: affected (affectedBy).
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a changed path
+  // (committed, staged, unstaged or untracked) that is a link on disk now. A git-ignored path is never a changed path, so a
+  // git-ignored link is not seen here; linker() below finds one inside a covered path or the checks dir. Any such path runs
+  // every check under pr_checks: affected (affectedBy).
   const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
   const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
   const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
@@ -591,8 +593,10 @@ function changedFiles(cfg) {
   // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
   const local = gitZ(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ':(exclude).eng/mistakes.jsonl']).map(x => x.slice(3));
   const files = [...new Set([...committed, ...local].filter(Boolean))].sort();
-  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a link on disk now
-  // (an untracked one included). Any such path runs every check under pr_checks: affected (affectedBy).
+  // A symlink on either side: mode 120000 at the merge base, at HEAD, in the index or in the worktree, or a changed path
+  // (committed, staged, unstaged or untracked) that is a link on disk now. A git-ignored path is never a changed path, so a
+  // git-ignored link is not seen here; linker() below finds one inside a covered path or the checks dir. Any such path runs
+  // every check under pr_checks: affected (affectedBy).
   const raw = args => { const z = gitZ(['diff', '--raw', '-z', '--no-renames', ...args]), hits = []; for (let i = 0; i + 1 < z.length; i += 2) if (z[i].split(' ').slice(0, 2).some(m => m.replace(/^:/, '') === '120000')) hits.push(z[i + 1]); return hits; };
   const isLink = f => { try { return fs.lstatSync(path.join(ROOT, f)).isSymbolicLink(); } catch { return false; } };
   const links = [...new Set([...raw([mb, 'HEAD']), ...raw(['--cached', 'HEAD']), ...raw([]), ...files.filter(isLink)])].sort();
@@ -878,12 +882,14 @@ function gateSelection(cfg, event, dir, steps, only) {
   const pick = affectedBy(files, dir, why, files ? { links: files.links, linked: linker() } : undefined);
   if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
   const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));
-  return { skip, files, text: `${all.length - skip.size} of ${all.length}, those whose # covers: paths changed against ${prBase(cfg)} (verification.pr_checks: affected)` };
+  // Each check that runs for a reason other than a changed covered path is named with that reason.
+  const other = all.filter(s => !skip.has(s)).map(s => [s.check.id, only.includes(s.name) && !pick.runs(s.check) ? 'named on the command line' : pick.why(s.check)]).filter(([, w]) => w !== 'changed');
+  return { skip, files, text: `${all.length - skip.size} of ${all.length}, those whose # covers: paths changed against ${prBase(cfg)}${other.length ? `, and ${other.map(([id, w]) => `${id} (${w})`).join(', ')}` : ''} (verification.pr_checks: affected)` };
 }
-// linked(p) for affectedBy: whether the repo-relative path p goes through a symlink on disk. True when p or a folder on its
-// way is a symlink, or p is a folder with a symlink anywhere below it. It reads the filesystem with lstat and never follows a
-// link, so ignored and untracked links count and nothing loops. Fails closed: an error other than a missing path, or a
-// folder with more than LINK_SCAN_LIMIT entries below it, counts as linked, so the check runs.
+// linked(p) for affectedBy: false, or why the repo-relative path p counts as going through a symlink on disk. p is
+// canonical (affectedBy asks about no other), so each segment is read as written. It reads the filesystem with lstat and
+// never follows a link, so ignored and untracked links count and nothing loops. Fails closed: a folder with more than
+// LINK_SCAN_LIMIT entries below it, or an error other than a missing path, counts too, so the check runs.
 const LINK_SCAN_LIMIT = 200000;
 function linker() {
   const memo = new Map();
@@ -892,7 +898,8 @@ function linker() {
     while (todo.length) {
       const d = todo.pop();
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        if (e.isSymbolicLink() || ++n > LINK_SCAN_LIMIT) return true;
+        if (e.isSymbolicLink()) return 'holds a symlink';
+        if (++n > LINK_SCAN_LIMIT) return `holds more than ${LINK_SCAN_LIMIT} entries, so eng did not scan it for symlinks`;
         if (e.isDirectory() && !(d === ROOT && e.name === '.git')) todo.push(path.join(d, e.name));
       }
     }
@@ -900,14 +907,15 @@ function linker() {
   };
   const scan = p => {
     let at = ROOT, st = fs.lstatSync(ROOT);
-    for (const part of p === '.' || p === '' ? [] : p.split('/')) {
+    const parts = p.split('/');
+    for (const [i, part] of parts.entries()) {
       at = path.join(at, part);
       try { st = fs.lstatSync(at); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false; throw e; }
-      if (st.isSymbolicLink()) return true;
+      if (st.isSymbolicLink()) return i === parts.length - 1 ? 'is a symlink' : `goes through the symlink ${parts.slice(0, i + 1).join('/')}`;
     }
     return st.isDirectory() && holds(at);
   };
-  return p => { if (!memo.has(p)) { let v; try { v = scan(p); } catch { v = true; } memo.set(p, v); } return memo.get(p); };
+  return p => { if (!memo.has(p)) { let v; try { v = scan(p); } catch (e) { v = `cannot be read (${e.code || e.message})`; } memo.set(p, v); } return memo.get(p); };
 }
 // A step's row: [name, status, the line that says why, more lines, the end of its output if it failed]. Removes the step's
 // private TMPDIR and reports what it left; a step that passed but left something fails here, so its tail is decided last.
