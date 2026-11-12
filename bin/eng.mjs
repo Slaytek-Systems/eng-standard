@@ -559,10 +559,10 @@ function e2eFiles(cfg) {
 }
 // Gate selection (verification.pr_checks: affected) only. e2eFiles above keeps its 0.21.1 base handling, so a repo with none
 // of the new keys decides e2e exactly as before, stacked bases (--base, ENG_BASE) included.
-// The PR's base: --base, else the CI's PR base branch, else the default branch (ENG_BASE through baseRef).
+// The PR's base: --base (or --base=), else the CI's PR base branch, else the default branch (ENG_BASE through baseRef).
 function prBase(cfg) {
-  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF;
-  return arg('--base') || (pb ? `origin/${pb}` : baseRef(cfg));
+  const pb = process.env.BUILDKITE_PULL_REQUEST_BASE_BRANCH || process.env.GITHUB_BASE_REF, eq = process.argv.find(x => x.startsWith('--base='));
+  return (eq ? eq.slice(7) : arg('--base')) || (pb ? `origin/${pb}` : baseRef(cfg));
 }
 // The PR's target without any --base or ENG_BASE override: the CI's PR base branch, else the default branch.
 function trustedBase(cfg) {
@@ -571,21 +571,15 @@ function trustedBase(cfg) {
 }
 // git with NUL-delimited output (-z): without it git C-quotes non-ASCII, tab and newline names, and nothing would match them.
 const gitZ = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).split('\0');
-const gitOk = args => spawnSync('git', args, { cwd: ROOT, stdio: 'ignore' }).status === 0;
-// Every path this change touches against the merge base with the PR's base, committed or not. A rename lists both of its
-// paths. The base is the PR's target, or a stack base: an ancestor of HEAD that contains the target's merge base with HEAD
-// (the parent PR's branch), whose diff is this PR's own change. Throws when the merge base is unknown (a shallow clone, a
-// missing base); throws with .notStack when the base is neither, since its diff could hide changes. Callers then act as if
-// everything changed.
+// Every path this change touches against the merge base with the PR's target, committed or not. A rename lists both of its
+// paths. Throws when the merge base is unknown (a shallow clone, a missing base), and with .notTarget when the base is not
+// the PR's target commit: no local base can be proven to be a stacked PR's fork point, so its diff could hide this PR's
+// changes. A stacked PR selects in CI, where its target is the parent branch. Callers then act as if everything changed.
 function changedFiles(cfg) {
   const base = prBase(cfg), want = trustedBase(cfg);
   const rev = r => gitZ(['rev-parse', '--verify', '--end-of-options', `${r}^{commit}`])[0].trim();
   const b = rev(base);
-  if (base !== want && b !== rev(want)) {
-    const target = gitZ(['merge-base', want, 'HEAD'])[0].trim();
-    if (!gitOk(['merge-base', '--is-ancestor', b, 'HEAD']) || !gitOk(['merge-base', '--is-ancestor', target, b]))
-      throw Object.assign(new Error(`${base} is neither the pull request's target ${want} nor a stack base (an ancestor of HEAD that contains HEAD's merge base with ${want}), so its diff could hide changes`), { notStack: true });
-  }
+  if (b !== rev(want)) throw Object.assign(new Error(`${base} is not the pull request's target ${want}; selection needs the PR target, since another base's diff could hide this PR's changes`), { notTarget: true });
   const mb = gitZ(['merge-base', b, 'HEAD'])[0].trim();
   const committed = gitZ(['diff', '--no-renames', '--name-only', '-z', mb, 'HEAD']);
   // Porcelain v1 -z entries are "XY path": drop the two status columns and the space, and trim nothing.
@@ -868,7 +862,7 @@ function gateSelection(cfg, event, dir, steps, only) {
   if (event !== 'pr') return { ...none, text: `all ${all.length} (${event ? '--event main' : 'no --event'})` };
   if (prChecksOf(cfg) !== 'affected') return { ...none, text: `all ${all.length} (verification.pr_checks: all)` };
   let files = null, why;
-  try { files = changedFiles(cfg); } catch (e) { why = e.notStack ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
+  try { files = changedFiles(cfg); } catch (e) { why = e.notTarget ? `the base ${e.message}` : `the diff against ${prBase(cfg)} cannot be computed (${String(e.stderr || e.message).trim().split('\n')[0]})`; }
   const pick = affectedBy(files, dir, why);
   if (pick.all) return { ...none, text: `all ${all.length}, because ${pick.all}` };
   const skip = new Set(all.filter(s => !only.includes(s.name) && !pick.runs(s.check)));

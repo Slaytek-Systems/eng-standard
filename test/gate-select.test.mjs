@@ -169,7 +169,7 @@ test('SHIPPING.md describes the PR gate and the cap only when the repo sets them
     assert.doesNotMatch(shippingMd(plain), /--event pr/);
     assert.match(shippingMd(plain), /Checks run one after another; with `verification\.parallel: true`, side by side/);
     const sh = shippingMd(set);
-    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
+    assert.match(sh, /Pull requests \(`eng gate --event pr`\) run only the checks whose `# covers:` paths changed against the merge base, 1 time each \(`flake_runs_pr`\)\. A check with no `# covers:` line runs on every pull request, and a change to `eng\.config\.yml`, `\.eng\/lock\.json`, `\.eng\/checks` or a diff eng cannot compute runs every check\. `# covers:` must name every path the check reads, its own helper scripts and fixtures included: a changed path it does not name skips the check\. Covers paths are split on whitespace, so none can contain a space, and globs are not expanded \(name files or folders\)\. Only the pull request's target as the base selects checks: any other `--base` or `ENG_BASE`, such as a parent PR's branch named locally, runs every check\. A stacked PR selects in CI, where its target is the parent branch\. Main \(`eng gate --event main`, or no `--event`\) runs every check 3 times after every merge/);
     assert.match(shippingMd(config({ flake_runs_pr: 1 })), /Pull requests \(`eng gate --event pr`\) run every check, 1 time each/);
     assert.match(shippingMd(set), /Checks run side by side, at most 3 at once \(`verification\.parallel`\).*declares `# serial: <why>`/);
   } finally { process.chdir(cwd); }
@@ -224,32 +224,66 @@ test('false skip: a covers path with .. is normalised, and one that leaves the r
   });
 });
 
-test('false skip: a --base that is neither the PR target nor a stack base runs every check, and says why', async () => {
+test('false skip: a --base that is not the PR target runs every check, and says why', async () => {
   await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n' }, () => {
     git('checkout -q -b sibling main'); write('docs', 'd\n'); git('add -A'); git('commit -qm sibling'); git('checkout -q pr');
     write('src/a', '2\n'); git('commit -qam src');
     write('other/b', '2\n'); git('commit -qam other');
     let r = gatePr('--base', 'sibling');
     assert.deepEqual(ran(), { s: 1, o: 1 }, out(r));
-    assert.match(r.stdout, /checks: all 2, because the base sibling is neither the pull request's target main nor a stack base \(an ancestor of HEAD that contains HEAD's merge base with main\), so its diff could hide changes/);
+    assert.match(r.stdout, /checks: all 2, because the base sibling is not the pull request's target main; selection needs the PR target/);
     assert.doesNotMatch(r.stdout, /cannot be computed/, 'the diff can be computed; the base is what is refused');
     r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1, o: 1 }, 'the real target gives the real diff: both changed');
     git('checkout -q HEAD~1'); r = gatePr('--base', 'main'); assert.deepEqual(ran(), { s: 1 }, 'a correct --base still selects');
   });
 });
 
-// Fix round 2 (both round-2 verifiers on b46d8a2): no-keys repos gate as in 0.21.1; stack bases select; checks_dir is normalised.
-test('stack base: --base or ENG_BASE naming the parent PR selects on the child PR\'s own diff', async () => {
+// Fix round 2 (both round-2 verifiers on b46d8a2): no-keys repos gate as in 0.21.1; checks_dir is normalised.
+// Fix round 3 (both round-3 verifiers on 9d6cd09): no local base can be proven to be a stacked PR's fork point, so under
+// pr_checks: affected only a base equal to the PR target selects; and with none of the new keys # covers: reads as in 0.21.1.
+const breaks = (id, covers) => counting(id, covers).replace('exit 0', `grep -q broken src/a && exit 1; exit 0`);
+test('false skip: --base or ENG_BASE naming the PR\'s own commit, own branch, HEAD or a parent PR branch runs every check', async () => {
+  await inRepo({ s: breaks('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n', 'docs/x': 'x\n' }, () => {
+    git('checkout -q -b parent'); write('other/b', '2\n'); git('commit -qam parent');
+    git('checkout -q -b child'); write('src/a', 'broken\n'); git('commit -qam hiding'); const own = git('rev-parse HEAD');
+    write('docs/x', 'y\n'); git('commit -qam docs');
+    for (const dirty of [false, true]) {
+      if (dirty) write('scratch.txt', 'one dirty path\n');
+      for (const [label, run] of [[`--base ${own}`, () => gatePr('--base', own)], ['--base child', () => gatePr('--base', 'child')], ['--base HEAD', () => gatePr('--base', 'HEAD')],
+        ['--base parent', () => gatePr('--base', 'parent')], [`ENG_BASE=${own}`, () => eng(['gate', 'checks', '--event', 'pr'], { ENG_BASE: own })]]) {
+        const r = run();
+        assert.equal(r.status, 1, `${label}${dirty ? ' + dirty' : ''}: the broken src check must run and fail: ${out(r)}`);
+        assert.deepEqual(ran(), { o: 1, s: 1 }, label);
+        assert.match(r.stdout, /checks: all 2, because the base \S+ is not the pull request's target main; selection needs the PR target/, label);
+      }
+    }
+  });
+});
+
+test('--base=<ref> is accepted like --base <ref>', async () => {
   await inRepo({ s: counting('s', 'src'), o: counting('o', 'other') }, { 'src/a': '1\n', 'other/b': '1\n' }, () => {
-    git('checkout -q -b parent'); write('src/a', '2\n'); git('commit -qam parent');
-    git('checkout -q -b child'); write('other/b', '2\n'); git('commit -qam child');
-    let r = gatePr('--base', 'parent');
-    assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { o: 1 }, 'only the child changed other/; src changed in the parent PR');
-    assert.match(r.stdout, /checks: 1 of 2, those whose # covers: paths changed against parent/);
-    r = eng(['gate', 'checks', '--event', 'pr'], { ENG_BASE: 'parent' });
-    assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { o: 1 }, 'ENG_BASE names the stack base too');
-    git('checkout -q main'); write('later', 'l\n'); git('add -A'); git('commit -qm later'); git('checkout -q child');
-    r = gatePr('--base', 'main~1'); assert.deepEqual(ran(), { s: 1, o: 1 }, `a base behind the target's merge base runs every check: ${r.stdout}`);
+    git('checkout -q -b sibling main'); write('docs', 'd\n'); git('add -A'); git('commit -qm sibling'); git('checkout -q pr');
+    write('src/a', '2\n'); git('commit -qam src');
+    let r = gatePr('--base=sibling'); assert.deepEqual(ran(), { o: 1, s: 1 }, out(r));
+    assert.match(r.stdout, /because the base sibling is not the pull request's target main/);
+    r = gatePr('--base=main'); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { s: 1 }, 'the target selects');
+  });
+});
+
+test('no new keys: # covers: reads the first line as written, as in 0.21.1 (outside path, stale second line)', async () => {
+  await inRepo({}, { 'src/a': '1\n' }, () => {
+    const shared = `${path.basename(dir)}.shared`, outside = path.join(dir, '..', shared);
+    fs.writeFileSync(outside, 's\n');
+    try {
+      write('.eng/checks/x.sh', counting('x', `../${shared}`), 0o755);
+      write('.eng/checks/y.sh', counting('y', 'src').replace('# covers: src\n', '# covers: src\n# covers: absent-second-header\n'), 0o755);
+      write('eng.config.yml', YAML.stringify(config({})));
+      let r = eng(['gate', 'checks']); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { x: 3, y: 3 });
+      r = gatePr(); assert.equal(r.status, 0, out(r)); assert.deepEqual(ran(), { x: 3, y: 3 }, '--event pr without the keys too');
+      write('eng.config.yml', YAML.stringify(config({ flake_runs_pr: 1, pr_checks: 'affected' })));
+      r = gatePr(); assert.equal(r.status, 1, out(r));
+      assert.match(r.stdout, /check x: "# covers:" .* outside the repo/); assert.match(r.stdout, /check y is stale: covers missing path\(s\) absent-second-header/);
+    } finally { fs.rmSync(outside, { force: true }); }
   });
 });
 
@@ -316,4 +350,5 @@ test('false skip: the rendered guidance says # covers: must name the check\'s he
   const sh = shippingMd(config({ flake_runs_pr: 1, pr_checks: 'affected' }));
   assert.match(sh, /`# covers:` must name every path the check reads, its own helper scripts and fixtures included/);
   assert.match(fs.readFileSync(TPL, 'utf8'), /'# covers:' must name every path the check reads, its helper scripts and fixtures too/);
+  assert.match(fs.readFileSync(TPL, 'utf8'), /none can contain a space, and globs are not expanded/, 'the template states the no-glob rule');
 });
