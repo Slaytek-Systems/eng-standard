@@ -25,5 +25,5 @@ Preconditions:
 
 ## Gotchas
 
-- On 0.22.0 (main at 60063bd) `doctor-clean` fails: `eng init` seeds the example lint rule `no-focused-tests` with `proven_by.fixture: .eng/rule-proofs/no-focused-tests`, which init does not create, so doctor prints `FAIL lint rule no-focused-tests has no proven_by.fixture on disk` and exits 1. This is a bug finding, not a journey to soften.
+- Before 0.22.1 `doctor-clean` failed: `eng init` seeded the example lint rule `no-focused-tests` with `proven_by.fixture: .eng/rule-proofs/no-focused-tests` but not the fixture, so doctor printed `FAIL lint rule no-focused-tests has no proven_by.fixture on disk` and exited 1. Init now seeds the fixture.
 - Without `ENG_STANDARD_SOURCE` doctor reads GitHub for the latest version. `verify.sh` always sets it.

@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.22.1 (13 Nov 2026)
+
+**`eng doctor` passes on a repo `eng init` just set up** (Core task p57fk8qznw0mn2zy2z533343w18j33x8). The starter config's example lint rule `no-focused-tests` names `.eng/rule-proofs/no-focused-tests` as its proof, but init never wrote it, so every new repo's first `eng doctor` printed `FAIL lint rule no-focused-tests has no proven_by.fixture on disk` and exited 1, and `eng rules prove` said the rule does not bite.
+
+- **Init seeds the fixture.** When `eng init` seeds the starter config into an empty repo, it also writes `.eng/rule-proofs/no-focused-tests/src/cart.test.ts.fixture` (from `templates/rule-proofs/`), a test file with an `it.only`. `eng rules prove` now prints `no-focused-tests: bites`. A repo that already ships gets no `constraints` block and no fixture, as before.
+- **The check is unchanged.** A rule that names a fixture missing from disk still fails `eng doctor`.
+- **Upgrade:** zero manual edits. A repo that ran `eng init` before 0.22.1 and kept the example rule can copy `templates/rule-proofs/no-focused-tests` from the package into `.eng/rule-proofs/`, or delete the rule.
+
 ## 0.22.0 (12 Nov 2026)
 
 **A pull request's gate runs less** (approved by the repo owner on 10 Nov 2026, after a 45-minute PR gate in a repo with 60 checks run one after another, 3 times each; issue #60). Every new setting is opt-in, and a repo that sets none of them runs and renders exactly as in 0.21.0.
