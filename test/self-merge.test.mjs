@@ -795,3 +795,84 @@ test('fix round 3: self-merge refuses a null status row before or after the verd
   const ok = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: [verdict, end({ state: 'success' }), live] });
   assert.ok(ok.sent.some(c => c[0] === 'PUT'), `a well-formed end still releases the run: ${ok.stdout}`);
 });
+
+// Fix round 4 (independent review FAIL, PR #80 comment 6867018457). A blank context, and a context under eng-run/ that the run
+// rule could not parse, were skipped as unrelated statuses. With the row on page two after 100 statuses, self-merge read WOULD
+// MERGE. A status row is now well-formed or the merge is refused: a context that looks like a run's must parse in full.
+const pagedGate = row => gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [
+  [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' }, ...Array.from({ length: 99 }, (_, i) => ({ context: `ci/other-${i}`, state: 'success' }))], [row]] } });
+const pendingRun = { id: 10, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', creator: { login: 'lane-a' }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') };
+for (const [name, row] of [
+  ['an empty context', { ...pendingRun, context: '' }],
+  ['a whitespace-only context', { ...pendingRun, context: ' ' }],
+  ['eng-run/ with no verifier', { ...pendingRun, context: 'eng-run/', state: 'garbled', updated_at: 'bad', created_at: 'bad' }],
+  ['eng-run/<verifier> with no suffix, state or readable time', { ...pendingRun, context: 'eng-run/checker-a', state: undefined, updated_at: 'bad', created_at: 'bad' }],
+]) test(`fix round 4: a status row on page two with ${name} refuses the merge`, () => {
+  const r = pagedGate(row);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.sent.length, 0, `nothing merges: ${r.stdout}`);
+  assert.match(r.stdout, /the statuses on head aaaaaaaa cannot be read \(row 100 /);
+});
+
+test('fix round 4: every single mutation of a run row refuses the merge, on page one and page two; well-formed rows behave as before', () => {
+  const ended = { id: 11, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'success', created_at: at(1), updated_at: at(1), creator: { login: 'lane-a' }, description: runStatusText('checker-a', { exit: 0 }, 'npm test') };
+  const ctx = ended.context, [, by, tail] = ctx.split('/'), [hash, id] = tail.split('-');
+  const contexts = [
+    '', ' ', '\t', '\n', ` ${ctx}`, `${ctx} `, ctx.replace('/', ' /'), ctx.replace('-r1', ' -r1'),
+    ctx.toUpperCase(), ctx.replace('eng-run', 'Eng-Run'), ctx.replace('eng-run', 'ENG-RUN'), ctx.replace(hash, hash.toUpperCase()),
+    'eng-run', 'eng-run/', `eng-run/${by}`, `eng-run/${by}/`, `eng-run/${tail}`, `eng-run//${tail}`, `eng-run/${by}/${hash}`, `eng-run/${by}/${hash}-`,
+    `eng-run/${by}/-${id}`, `eng-run/${by}/${id}`, `eng-run/${by}/${hash.slice(1)}-${id}`, `eng-run/x/${by}/${tail}`, `eng-run/${by}/x/${tail}`, `${ctx}/x`, `${ctx}-x`,
+    ctx.replace('eng-run', 'eng_run'), ctx.replace('eng-run', 'eng run'), ctx.replace('eng-run', 'engrun'), ctx.replace('eng-run/', 'eng-run:'), ctx.replace('eng-run', 'ｅｎｇ-run'),
+  ];
+  const mutations = [
+    ...contexts.map(context => [`context ${JSON.stringify(context)}`, { ...ended, context }]),
+    ...[undefined, null, 5, {}, []].map(context => [`context ${JSON.stringify(context)}`, { ...ended, context }]),
+    ...[undefined, null, '', 'garbled', 'SUCCESS', 7].map(state => [`state ${JSON.stringify(state)}`, { ...ended, state }]),
+    ...['11', 1.5, null, NaN, 2 ** 60].map(i => [`id ${JSON.stringify(i)}`, { ...ended, id: i }]),
+    ...[['bad', 'bad'], [undefined, undefined], [null, 'bad'], ['', ''], ['bad', at(1)]].map(([u, c]) => [`time ${u}/${c}`, { ...ended, updated_at: u, created_at: c }]),
+    ...[null, ctx, 42, true, [ended]].map(row => [`row ${JSON.stringify(row)}`, row]),
+  ];
+  const filler = Array.from({ length: 100 }, (_, i) => ({ context: `ci/other-${i}`, state: 'success', creator: { login: 'bot' } }));
+  const verdict = { context: 'verdict', state: 'success', created_at: at(-30) };
+  const placed = row => ({ 'page 1': [row, verdict], 'page 2': [verdict, ...filler.slice(1), row] });
+  let refused = 0;
+  for (const [name, row] of mutations) for (const [page, statuses] of Object.entries(placed(row))) for (const c of [C, CN]) {
+    const d = passAt0(statuses, 2, c);
+    assert.equal(d.merge, false, `${name} on ${page}: ${d.reason}`);
+    assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(row \d+ /, `${name} on ${page}`);
+    refused++;
+  }
+  assert.ok(mutations.length >= 50 && refused === mutations.length * 4, `${mutations.length} mutations, each refused in 4 placements`);
+  const wellFormed = [
+    ['the unmutated run row', ended, true],
+    ['another run id', { ...ended, context: runStatusContext('checker-a', 'npm test', '89abcdef') }, true],
+    ['a 200-character verifier', { ...ended, context: runStatusContext('v'.repeat(200), 'npm test', 'r1') }, true],
+    ['the run\'s pending start alone', { ...ended, state: 'pending', description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') }, false],
+    ['a real GitHub run row', { context: 'eng-run/codex-sol-80r2/7f2c13f3-c0befd4d', created_at: at(0), creator: { login: 'Mattslayga' }, description: 'timeout 1800s; eng run x: running; not a merge check: npm test', id: 58888968506, state: 'pending', target_url: null, updated_at: at(0) }, true],
+    ['a CI row with null fields', { context: 'ci/build', state: 'success', description: null, target_url: null, creator: null, id: null }, true],
+    ['a CI row with an unknown state and no time', { context: 'ci/other', state: 'garbled' }, true],
+    ['a CI context with surrounding spaces', { context: ' ci/build ', state: 'success' }, true],
+    ['a label-like context', { context: 'label', state: 'pending', description: null }, true],
+  ];
+  for (const [name, row, merge] of wellFormed) for (const [page, statuses] of Object.entries(placed(row))) for (const c of [C, CN])
+    assert.equal(passAt0(statuses, 2, c).merge, merge, `${name} on ${page}`);
+});
+
+test('fix round 4: eng run refuses a --by its run status could not carry, before it runs anything', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runby-')), repo = path.join(root, 'repo');
+  try {
+    fs.mkdirSync(repo);
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe' });
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a');
+    const run = (by, mark) => spawnSync(process.execPath, [ENG, 'run', '--by', by, '--', 'touch', mark], { cwd: repo, encoding: 'utf8' });
+    for (const [i, by] of ['a/b', 'two words', ' lead', 'tab\there', ''].entries()) {
+      const mark = path.join(root, `ran-${i}`), r = run(by, mark);
+      assert.notEqual(r.status, 0, JSON.stringify(by));
+      assert.equal(fs.existsSync(mark), false, `${JSON.stringify(by)}: the command never ran`);
+      if (by) assert.match(r.stderr, /--by .*eng-run\/<verifier>\/<8 hex>-<run id>/, JSON.stringify(by));
+    }
+    const ok = run('lane-a', path.join(root, 'ran-ok'));
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(fs.existsSync(path.join(root, 'ran-ok')), 'a --by the run status can carry runs');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
