@@ -227,7 +227,11 @@ function sync() {
 function init() {
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    if (!shipping) { fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml')); console.log('  seeded eng.config.yml (edit it, then run eng sync)'); }
+    if (!shipping) {
+      fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml')); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
+      // The starter config's example lint rule names this fixture as its proof; eng doctor and eng rules prove need it on disk.
+      fs.cpSync(path.join(PKG, 'templates/rule-proofs'), path.join(ROOT, '.eng/rule-proofs'), { recursive: true }); console.log('  seeded .eng/rule-proofs/no-focused-tests (the example rule\'s proof)');
+    }
     else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
   const cfg = loadConfig();
