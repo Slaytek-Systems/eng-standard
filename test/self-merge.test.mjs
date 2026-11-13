@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { methodOf, runStatusContext } from '../lib/verification.mjs';
+import { methodOf, runStatusContext, runStatusText } from '../lib/verification.mjs';
 import { selfMergeConfig, decide, eventTarget, verdictBody, parseVerdicts, isAutoRevert, trusted, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -503,7 +503,7 @@ test('settle: eng run --by marks its run in progress on GitHub, then its result;
     assert.equal(posted.length, want.length, calls().join('\n'));
     posted.forEach(([sha, state, context], i) => { assert.equal(sha, H); assert.equal(state, want[i][0]); assert.match(context, new RegExp(`^${ctx(want[i][1])}$`)); });
     assert.equal(posted[0][2], posted[1][2], 'a run ends on the context it started'); assert.equal(posted[2][2], posted[3][2]);
-    assert.equal(posted[0][3], 'eng run checker-a: running, timeout 1800s; not a merge check: true', 'a run says it is a verifier run, not a required check');
+    assert.equal(posted[0][3], 'timeout 1800s; eng run checker-a: running; not a merge check: true', 'a run says it is a verifier run, not a required check');
     assert.equal(posted[3][3], "eng run checker-a: finished, exit 3; not a merge check: sh -c 'exit 3'", 'its end keeps the honest state and says it is no merge check');
     r = run('true'); assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.notEqual(calls().at(-1).match(/context=(\S+)/)[1], posted[0][2], 'each run of one command has its own context');
@@ -666,8 +666,8 @@ test('fix round 1, item 1: a pending run stops holding its PASS at its deadline:
   assert.equal(d.merge, false); assert.match(d.reason, /still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:15:00\.000Z unless it ends first\)/);
   assert.equal(passAt0(short, 15).merge, true, 'a run past its deadline (600 s + 300 s) holds nothing back: its eng run died without posting an end');
   const plain = [runAt('r1', 'pending', 0, { description: 'npm test' })];
-  assert.equal(passAt0(plain, 34.9).merge, false, 'no stated timeout: the default budget timeout (1800 s) plus 5 minutes');
-  assert.equal(passAt0(plain, 35).merge, true);
+  assert.equal(passAt0(plain, 35).merge, false, 'no stated timeout: no default stands in for the run\'s real budget, so it never expires by time');
+  assert.equal(passAt0(plain, 60 * 24 * 30).merge, false, 'it holds until its own account ends it');
   assert.equal(passAt0([runAt('r2', 'success', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'a later run of the same command that ended does not clear an earlier one still running');
   assert.equal(passAt0([runAt('r1', 'error', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'ending one run leaves the other running');
   assert.equal(passAt0([runAt('r1', 'error', 2, { description: 'cleared by hand' }), ...plain], 3).merge, true, 'the verifier clears a dead run by posting its end on that context');
@@ -680,7 +680,7 @@ test('fix round 1, item 3: only the run\'s own account, or a verifier_logins log
   assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'Mattslayga' } }), pending], 2).merge, true, 'a listed verifier_logins login may end it');
   const CN = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, verifier_logins: undefined } } });
   assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), pending], 2, CN).merge, false, 'with no verifier_logins only the run\'s own account');
-  const anon = runAt('r1', 'pending', 0, { creator: null });
+  const anon = runAt('r1', 'pending', 0, { creator: null, description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') });
   assert.equal(passAt0([runAt('r1', 'success', 1, { creator: null }), anon], 2, CN).merge, false, 'a status with no creator ends nothing (fail closed)');
   assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), anon], 2, CN).merge, false);
   assert.equal(passAt0([anon], 36, CN).merge, true, 'its deadline still applies');
@@ -726,4 +726,73 @@ test('fix round 1, item 4: red main\'s auto-revert skips the settle window, but 
   assert.equal(r.sent.some(c => c[1].includes('self-merge-settle')), false);
   r = red([{ context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-b' } }]);
   assert.equal(r.sent.length, 0, r.stdout); assert.match(r.stdout, /checker-b does not count: a run by checker-b is still in progress/);
+});
+
+// Fix round 2 (verify r2, both lanes). A run's hold must survive GitHub's 140-character description limit, and only the run's
+// owner (the creator of its context's first pending status) or a verifier_logins login can change it.
+const own = (id, state, min, o = {}) => runAt(id, state, min, { description: state === 'pending' ? runStatusText('checker-a', { timeoutS: 3600 }, 'npm test') : runStatusText('checker-a', { exit: 0 }, 'npm test'), ...o });
+const CN = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, verifier_logins: undefined } } });
+
+test('fix round 2, item 1: the timeout survives truncation; a 200-character --by and a long command keep a 7200 s run\'s hold', () => {
+  const by = 'v'.repeat(200), cmd = `sh -c '${'x'.repeat(300)}'`, text = runStatusText(by, { timeoutS: 7200 }, cmd);
+  assert.ok(text.length <= 140, `GitHub keeps 140 characters (${text.length})`);
+  assert.match(text, /^timeout 7200s; eng run v+/, 'the timeout comes first; only the tail is cut');
+  const run = [{ context: runStatusContext(by, cmd, 'r1'), state: 'pending', created_at: at(0), updated_at: at(0), description: text, creator: { login: 'lane-a' } }];
+  const at0 = (statuses, min) => decide(pr(), st({ verdicts: [V({ by, comment_at: at(-60) })], statuses, now: T0 + min * 60e3 }), C);
+  for (const min of [36.6, 60, 124.9]) assert.equal(at0(run, min).merge, false, `still held at ${min} min: its budget is 7200 s plus 5 minutes`);
+  assert.equal(at0(run, 125).merge, true, 'released at its own deadline, never at a shorter default');
+  assert.equal(at0([{ ...run[0], state: 'success', id: 2, description: runStatusText(by, { exit: 0 }, cmd), created_at: at(1), updated_at: at(1) }, { ...run[0], id: 1 }], 2).merge, true, 'its end releases it');
+  const cut = [{ ...run[0], description: `eng run ${by}`.slice(0, 140) }];
+  assert.equal(at0(cut, 60 * 24 * 30).merge, false, 'a pending status whose timeout cannot be read never expires by time');
+  assert.equal(at0([{ ...run[0], id: 2, state: 'error', description: 'ended by hand', created_at: at(200), updated_at: at(200) }, { ...cut[0], id: 1 }], 201).merge, true, 'its own account ends it');
+});
+
+test('fix round 2, item 1: eng run states a long --by run\'s timeout first, inside 140 characters', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runlong-')), log = path.join(root, 'gh.log'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo');
+  try {
+    fs.mkdirSync(bin); fs.mkdirSync(repo);
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\necho '{}'\n`, { mode: 0o755 });
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a'); g('remote add origin git@github.com:o/r.git');
+    const by = 'v'.repeat(200), r = spawnSync(process.execPath, [ENG, 'run', '--by', by, '--budget', 'timeout=7200s', '--', 'true', 'y'.repeat(200)], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const desc = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => l.match(/ -f state=(\w+) .* -f description=(.*)$/).slice(1));
+    assert.equal(desc[0][0], 'pending'); assert.ok(desc[0][1].length <= 140);
+    assert.match(desc[0][1], new RegExp(`^timeout 7200s; eng run ${by.slice(0, 20)}`));
+    assert.equal(desc[1][0], 'success');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('fix round 2, item 2: a foreign pending and a foreign end on a live run\'s context change nothing', () => {
+  const live = own('r1', 'pending', 0, { id: 1 }), foe = { login: 'other-writer' };
+  const attack = [own('r1', 'success', 2, { id: 3, creator: foe }), own('r1', 'pending', 1, { id: 2, creator: foe }), live];
+  for (const c of [C, CN]) {
+    assert.equal(passAt0(attack, 3, c).merge, false, 'the foreign pending does not take ownership; its end ends nothing');
+    assert.match(passAt0(attack, 3, c).reason, /a run by checker-a is still in progress .*pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T23:05:00\.000Z/);
+    const short = [own('r1', 'pending', 1, { id: 2, creator: foe, description: runStatusText('checker-a', { timeoutS: 1 }, 'npm test') }), live];
+    assert.equal(passAt0(short, 10, c).merge, false, 'a foreign `timeout 1s` pending does not shorten the deadline');
+    assert.equal(passAt0(short, 64.9, c).merge, false); assert.equal(passAt0(short, 65, c).merge, true, 'the owner\'s first pending sets the deadline');
+    assert.equal(passAt0([own('r1', 'success', 4, { id: 4 }), ...attack], 5, c).merge, true, 'the owner still ends it');
+  }
+  const later = [own('r1', 'pending', 1, { id: 2, description: runStatusText('checker-a', { timeoutS: 1 }, 'npm test') }), live];
+  assert.equal(passAt0(later, 10).merge, false, 'only the owner\'s first pending sets the deadline, not a later one');
+  assert.equal(passAt0([own('r1', 'success', 2, { id: 3, creator: { login: 'Mattslayga' } }), ...attack], 3).merge, true, 'a verifier_logins login may end it');
+});
+
+test('fix round 2, item 2: same-second statuses from two accounts: the first pending by id owns the run', () => {
+  const foe = { login: 'other-writer' }, same = (id, state, o = {}) => own('r1', state, 0, { id, ...o });
+  const held = [same(3, 'success', { creator: foe }), same(2, 'pending', { creator: foe }), same(1, 'pending')];
+  for (const c of [C, CN]) {
+    assert.equal(passAt0(held, 1, c).merge, false, 'the foreign pending posted in the same second, after the owner\'s, owns nothing');
+    assert.equal(passAt0([same(4, 'success'), ...held], 1, c).merge, true, 'the owner\'s end in that second ends it');
+    assert.equal(passAt0([same(0, 'success'), ...held], 1, c).merge, false, 'an end posted before the run started ends nothing');
+  }
+});
+
+test('fix round 2, item 2: a run whose first pending has no creator holds until a verifier_logins login ends it', () => {
+  const anon = own('r1', 'pending', 0, { id: 1, creator: null });
+  assert.equal(passAt0([own('r1', 'success', 1, { id: 2 }), anon], 2).merge, false, 'no owner: its run\'s account cannot be known, so an ordinary end ends nothing');
+  assert.equal(passAt0([own('r1', 'success', 1, { id: 2, creator: { login: 'Mattslayga' } }), anon], 2).merge, true, 'a listed login ends it');
+  assert.equal(passAt0([own('r1', 'success', 1, { id: 2 }), anon], 2, CN).merge, false, 'with no list nobody ends it (fail closed)');
+  assert.equal(passAt0([anon], 65, CN).merge, true, 'its own stated deadline still releases it');
 });
