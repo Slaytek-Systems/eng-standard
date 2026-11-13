@@ -87,6 +87,18 @@ Matt accepted that gap knowingly, and the post-merge check and auto-revert stay 
   by hand: the run died'`. A finished `eng-run/...` status, that one included, runs self-merge for its head. A dead run
   that reaches its deadline posts nothing, so then run `gh workflow run self-merge.yml -f pr=<n>`, or wait for the PR's
   next event. Re-running the command does not clear it: the new run has its own context.
+- **A status row is well-formed, or self-merge refuses the merge.** It checks every row on every page before it skips any
+  row as unrelated (`statusesProblem()`), and names the first bad row in the skip reason. A row refuses when it is null or
+  not an object, when its context is missing or blank, or when its context looks like a run's but does not parse in full.
+  A context looks like a run's when, folded to NFKC lower case with everything but letters and digits removed, it starts
+  with `engrun`. That covers `eng-run/` with surrounding space, another case, another separator (`eng_run`, `eng run`,
+  `eng-run:`) and a missing or extra segment. It parses in full only as `eng-run/<id>/<8 lowercase hex>-<run id>`, where
+  `<id>` is one segment with no space and the run id is letters and digits. A run row also refuses with a missing or
+  unknown state, an id that is not a whole number, or a time that does not parse. Rows on any other context (`test`,
+  `verdict`, other CI) are not runs; their other fields are not read, and null ones are fine. The rule is wide on purpose:
+  a CI context that happens to start with `engrun` (say `engrunner/ci`) refuses too, and needs a rename. A false refusal
+  costs a rename or a new commit (a status cannot be deleted); a skipped run row could merge. `eng run` refuses a `--by`
+  that cannot fill `<id>` (a `/` or a space in it) before it runs anything, so eng never posts a row its own gate refuses.
 
 A PR held back by a run in progress needs no dispatch: when the run ends, its `eng-run/...` status (posted with the
 verifier's own token, so it starts workflows) runs self-merge for that head.
