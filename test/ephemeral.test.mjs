@@ -233,11 +233,12 @@ test('a run whose docker socket dies part way fails as not fully watched', { ski
   assert.match(r.stderr, /run command was not fully watched: docker: the run's labelling socket died during the run/);
 });
 
-test('a network replaced by another owner under the same name while the run shuts down is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
-  const swap = `DOCKER_HOST=${outside} docker network rm ${tag}-rn; DOCKER_HOST=${outside} docker network create --label owner=outside ${tag}-rn; touch ${marks}/swapped`;
-  const r = eng('run', '--here', '--', `docker network create ${tag}-rn >/dev/null; env -u ENG_EPHEMERAL_RUN bash -c 'trap "${swap} >/dev/null 2>&1; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
+test('a network replaced by another owner under the same name before the run shuts down is kept', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
+  // The swap runs before shutdown, not in a TERM trap: the reaper TERMs a trap's docker calls every 100 ms and kills it at 3 s, so a busy host never finished it.
+  const swap = `DOCKER_HOST=${outside} docker network rm ${tag}-rn >/dev/null; DOCKER_HOST=${outside} docker network create --label owner=outside ${tag}-rn >/dev/null`;
+  const r = eng('run', '--here', '--', `docker network create ${tag}-rn >/dev/null; ${swap}; env -u ENG_EPHEMERAL_RUN bash -c 'trap ": > ${marks}/termed; exit 0" TERM; while :; do sleep 0.1; done' >/dev/null 2>&1 &`);
   assert.equal(r.status, 1, out(r));
-  assert.ok(fs.existsSync(path.join(marks, 'swapped')), 'the swap finished inside the reaper\'s TERM grace');
+  assert.ok(fs.existsSync(path.join(marks, 'termed')), 'the run shut down after the swap: the reaper stopped its leftover process');
   assert.equal(dk('network', 'inspect', '-f', '{{index .Labels "owner"}}', `${tag}-rn`).stdout.trim(), 'outside', 'the replacement network is untouched');
   dk('network', 'rm', `${tag}-rn`);
 });
