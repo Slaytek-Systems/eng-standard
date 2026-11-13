@@ -67,14 +67,14 @@ Matt accepted that gap knowingly, and the post-merge check and auto-revert stay 
   on the PR: that is the honest state of that run. It is a verifier's run, not a required check; the verdict, not the run
   status, says what the runs proved.
 - **Who owns a run, and who can end it.** A run's owner is the GitHub account that posted the first `pending` status on
-  its context (the oldest, by GitHub's status id). The run is in progress until a later end (`success`, `failure` or
-  `error`) on that context posted by its owner, or by a login in `ship.self_merge.verifier_logins`; a listed login can end
-  any run, whoever owns it. A status on that context from any other account changes nothing: it does not start, end,
+  its context (the lowest GitHub status id). The run is in progress until an end (`success`, `failure` or `error`) on that
+  context with a higher status id, posted by its owner or by a login in `ship.self_merge.verifier_logins`; a listed login
+  can end any run, whoever owns it. Times never order rows: GitHub stamps them to the second, so two rows in one second
+  would tie. A status on that context from any other account changes nothing: it does not start, end,
   extend or shorten the run, and its description is not read. So a collaborator cannot release a verifier's PASS by
-  posting `success`, or a `pending` with a short timeout and then `success`, on its context. A run whose first `pending`
-  has no creator (GitHub shows none, for example for a deleted account) has no owner: only a listed login ends it, and
-  with no `verifier_logins` only its deadline releases it. If that status states no timeout either, it holds until
-  `verifier_logins` is set on main and a listed login posts its end. What this does not protect: anyone with push access
+  posting `success`, or a `pending` with a short timeout and then `success`, on its context. A run row with no creator
+  (GitHub shows none for a deleted account) has no owner, so it does not parse and refuses every merge on that head. What
+  this does not protect: anyone with push access
   can post a `pending` status on a new `eng-run/<id>/...` context and hold `<id>`'s PASS back until its deadline, as anyone
   with push access can add the `hold` label. A status can hold a PASS back; it never makes one count.
 - **A run whose `eng` died stops counting at its deadline.** The deadline is the time GitHub recorded the owner's first
@@ -87,15 +87,31 @@ Matt accepted that gap knowingly, and the post-merge check and auto-revert stay 
   by hand: the run died'`. A finished `eng-run/...` status, that one included, runs self-merge for its head. A dead run
   that reaches its deadline posts nothing, so then run `gh workflow run self-merge.yml -f pr=<n>`, or wait for the PR's
   next event. Re-running the command does not clear it: the new run has its own context.
-- **A status row is well-formed, or self-merge refuses the merge.** It checks every row on every page before it skips any
-  row as unrelated (`statusesProblem()`), and names the first bad row in the skip reason. A row refuses when it is null or
-  not an object, when its context is missing or blank, or when its context looks like a run's but does not parse in full.
+- **A status row is well-formed, or self-merge refuses the merge** (decision nd71xqrdrqemzemfahkpcyvyz18j5gp8, 14 Nov
+  2026). `decide()` parses every row on every page once, up front (`parseStatuses()`), before any rule reads one, and
+  names the first bad row in the skip reason. No row is skipped: a skipped row could be a run's pending start. Every row,
+  on any context, needs all of these, or the merge is refused:
+
+  | Field | Required shape |
+  | --- | --- |
+  | the row | a JSON object |
+  | `id` | a positive whole number (GitHub's status id), unique in the list |
+  | `state` | `pending`, `success`, `failure` or `error` |
+  | `context` | a string with something besides space in it (the run rule below) |
+  | `created_at`, `updated_at` | ISO 8601 times, such as `2026-11-13T20:33:08Z` |
+  | `creator` | an object with a non-blank `login`. On a context that is not a run it may be `null`, which is how GitHub shows a deleted account. A run row needs the login: the run rule reads it |
+  | `description` | a string or `null` |
+
+  Other fields (`target_url`, `url`, `node_id`, `avatar_url`) are not read, and `null` is fine. The `null` creator call
+  rests on real rows: the 75 statuses on the heads of the last 40 merged PRs here are all `verdict` rows with a
+  creator, and GitHub documents `null` for an account that no longer exists. Refusing a `null` creator off a run would
+  block a head over a field no rule reads. Rows are ordered by status id only, and the `verdict` status is the row
+  with the highest id on that context. A row's time is read only for a run's deadline against now.
+
   A context looks like a run's when, folded to NFKC lower case with everything but letters and digits removed, it starts
   with `engrun`. That covers `eng-run/` with surrounding space, another case, another separator (`eng_run`, `eng run`,
   `eng-run:`) and a missing or extra segment. It parses in full only as `eng-run/<id>/<8 lowercase hex>-<run id>`, where
-  `<id>` is one segment with no space and the run id is letters and digits. A run row also refuses with a missing or
-  unknown state, an id that is not a whole number, or a time that does not parse. Rows on any other context (`test`,
-  `verdict`, other CI) are not runs; their other fields are not read, and null ones are fine. The rule is wide on purpose:
+  `<id>` is one segment with no space and the run id is letters and digits. The rule is wide on purpose:
   a CI context that happens to start with `engrun` (say `engrunner/ci`) refuses too, and needs a rename. A false refusal
   costs a rename or a new commit (a status cannot be deleted); a skipped run row could merge. `eng run` refuses a `--by`
   that cannot fill `<id>` (a `/` or a space in it) before it runs anything, so eng never posts a row its own gate refuses.

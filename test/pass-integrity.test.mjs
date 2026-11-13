@@ -59,7 +59,7 @@ const record = (r, cmd) => ({ ...(r.v === 'current' ? { v: RUN_KEY_VERSION } : {
 const verdict = runs => ({ sha: HEAD, patch_id: 'p1', result: 'PASS', by: ME, method: 'verification', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-11-09T00:00:01Z', at: '2026-11-09T00:00:01Z', ...(runs.length ? { runs: runs.map(({ cmd, exit, output, sha, at }) => ({ cmd, exit, output, sha, at })) } : {}) });
 const judges = v => {
   const p = passProblem(v, FILES);
-  const sm = decide({ number: 1, base: 'main', draft: false, sameRepo: true, headSha: HEAD, labels: ['risk:low'] }, { risk: 'low', containsBase: true, check: { head_sha: HEAD, status: 'completed', conclusion: 'success' }, status: { state: 'success' }, verdicts: [v], files: FILES }, C);
+  const sm = decide({ number: 1, base: 'main', draft: false, sameRepo: true, headSha: HEAD, labels: ['risk:low'] }, { risk: 'low', containsBase: true, check: { head_sha: HEAD, status: 'completed', conclusion: 'success' }, statuses: [{ id: 1, state: 'success', context: 'verdict', created_at: '2026-11-09T00:00:02Z', updated_at: '2026-11-09T00:00:02Z', creator: { login: 'Mattslayga' }, description: null, target_url: null }], verdicts: [v], files: FILES }, C);
   const mg = gateDecision({ bind: { kind: 'head', sha: HEAD, upToDate: true }, files: FILES, verdicts: [v], q: Q });
   return { passProblem: p, 'self-merge': sm.merge ? null : sm.reason, 'eng merge gate': mg.pass ? null : mg.reasons.join('; ') };
 };

@@ -34,8 +34,10 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     pending status on its context; only the owner or a `verifier_logins` login can end it, and any other account's
     status on that context changes nothing. A run whose `eng` died stops counting at its deadline: the budget timeout
     its first pending status starts with, plus 5 minutes (30 + 5 minutes by default); a status that states no timeout
-    holds until it is ended. A PASS followed by a newly started probe's FAIL can still merge (Matt, 14 Nov 2026). How
-    to clear a dead run by hand: [docs/self-merge.md](docs/self-merge.md).
+    holds until it is ended. A PASS followed by a newly started probe's FAIL can still merge (Matt, 14 Nov 2026). Every
+    commit status row must parse in one strict shape (an id, a known state, a context, two ISO times, a creator), or
+    the merge is refused, and rows are ordered by GitHub's status id only. How to clear a dead run by hand, and the row
+    shape: [docs/self-merge.md](docs/self-merge.md).
   - No `hold` label and not draft.
 - **Post-merge check.** After each merge self-merge runs `ci.yml` on `main`. When it finishes, `ci.yml` starts
   self-merge again. If it failed, that run opens the merged

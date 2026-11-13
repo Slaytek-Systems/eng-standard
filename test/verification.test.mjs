@@ -26,7 +26,7 @@ const reviewed = (o = {}) => verified({ method: 'review', runs: undefined, ...o 
 // The same verdicts through both PR gates: self-merge (eng-standard) and eng merge gate (merge.auto repos).
 const selfMerge = (verdicts, files, risk = 'low') => {
   const pr = { number: 1, base: 'main', draft: false, sameRepo: true, headSha: H, labels: [risk === 'high' ? 'risk:high' : 'risk:low'] };
-  return decide(pr, { risk, containsBase: true, check: { head_sha: H, status: 'completed', conclusion: 'success' }, status: { state: 'success' }, verdicts, files }, C);
+  return decide(pr, { risk, containsBase: true, check: { head_sha: H, status: 'completed', conclusion: 'success' }, statuses: [{ id: 1, state: 'success', context: 'verdict', created_at: '2026-11-09T00:00:02Z', updated_at: '2026-11-09T00:00:02Z', creator: { login: 'Mattslayga' }, description: null, target_url: null }], verdicts, files }, C);
 };
 const mergeGate = (verdicts, files) => gateDecision({ bind: { kind: 'head', sha: H, upToDate: true }, files, verdicts, q });
 const gates = [['self-merge', (v, f) => { const d = selfMerge(v, f); return { pass: d.merge, why: d.reason }; }],
