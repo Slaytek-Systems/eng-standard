@@ -750,7 +750,7 @@ test('fix round 2, item 2: a run whose first pending has no creator holds until 
   assert.equal(passAt0([anon], 65, CN).merge, true, 'its own stated deadline still releases it');
 });
 
-// Fix round 3 (codex-sol-80 FAIL, comment 6866341118). A later row on a live run's context whose state is missing, null or
+// Fix round 3 (independent review FAIL, PR #80 comment 6866341118). A later row on a live run's context whose state is missing, null or
 // garbled passed for the run's end, and a null row in the list was skipped. Self-merge read WOULD MERGE for both. A status row
 // the run rule cannot read now refuses the merge, with the row in the reason.
 test('fix round 3: a malformed status row cannot end a live run or hide one; the merge is refused and the row named', () => {
