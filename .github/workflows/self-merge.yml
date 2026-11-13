@@ -1,13 +1,13 @@
 # Squash-merges at most ONE PR into main per run, only when every rule in lib/self-merge.mjs holds on the current head
 # SHA (head contains main's tip, test green, verdict success, verdict comments for that head: one counted PASS for
 # risk:low, counted PASSes from N distinct verifiers for risk:high, none from a verifier whose eng run is still in
-# progress on the head; no hold label, not draft). It merges once ship.self_merge.settle_minutes have passed since the
-# newest verdict on the head, and reads every rule again just before the merge call. Then dispatches ci.yml on main (a
+# progress on the head; no hold label, not draft). There is no wait: it merges as soon as the rules hold, and reads them
+# all again just before the merge call. Then dispatches ci.yml on main (a
 # GITHUB_TOKEN merge fires no push workflow); when that post-merge check fails, the next run opens the tip's exact
 # inverse as an auto-revert PR. Rules: AGENTS.md.
 # Events only, no schedule. Each event names one PR (scripts/pr-gate.mjs eventTarget): ci finished on it, a verdict
 # comment or verdict status on it, an eng-run/<verifier>/... status that ended on its head, a label added or removed, ready
-# for review, retargeted, or self-merge-settle.yml once its settle window has passed. ci finished on main (the post-merge check)
+# for review, retargeted. ci finished on main (the post-merge check)
 # and a dispatch without a PR look at every open PR. A ci run dispatched with GITHUB_TOKEN fires no workflow_run, so
 # ci.yml dispatches this workflow itself when such a run finishes.
 # pull_request_target, issue_comment, status and workflow_run all run main's copy of this file and main's code with the
@@ -56,7 +56,7 @@ jobs:
       pull-requests: write          # open the auto-revert PR and set its risk label (risk-label.yml skips bot PRs)
       checks: read                  # the test check run on the head SHA
       statuses: read                # the verdict commit status on the head SHA
-      actions: write                # dispatch ci.yml on main after the merge and on an auto-revert branch; self-merge-settle.yml
+      actions: write                # dispatch ci.yml on main after the merge, and on an auto-revert branch
     steps:
       - uses: actions/checkout@v4
         with:

@@ -64,44 +64,22 @@ const V2 = V({ by: 'checker-b' });
 const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, status: { state: 'success', created_at: '2026-10-19T04:30:00Z' }, verdicts: [V()], ...o });
 const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
 
-// The settle guard (decision 13 Nov 2026): opencode-deepseek posted PASS, then its own FAIL on the same head, 1, 1 and 5.5
-// minutes later; self-merge fired 33 s after a deciding PASS. A PASS waits ship.self_merge.settle_minutes after the newest
-// verdict on the head, and does not count while its verifier still has an eng run in progress on that head.
+// The run guard (Matt, 14 Nov 2026, decision nd7ebz69qb0c39691a3ab586t58j4qwc): opencode-deepseek posted PASS, then its own
+// FAIL on the same head, 1, 1 and 5.5 minutes later; self-merge fired 33 s after a deciding PASS. A PASS does not count while
+// its verifier still has an eng run in progress on that head. There is no wait otherwise.
 const T0 = Date.parse('2026-11-12T22:00:00Z'), at = min => new Date(T0 + min * 60e3).toISOString();
 const busy = (by, state = 'pending', sha = SHA) => ({ context: runStatusContext(by, 'npm test', 'r1'), state, sha, updated_at: at(0), description: runStatusText(by, { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-a' } });
-test('settle: a PASS followed by the same verifier\'s FAIL inside the window never merges', () => {
-  assert.equal(C.settle_minutes, 10, 'the default window is 10 minutes');
-  const pass = V({ comment_at: at(0) }), fail = V({ result: 'FAIL', comment_at: at(5.5) });
-  for (const now of [0.55, 1, 5.4]) {
-    const d = decide(pr(), st({ verdicts: [pass], now: T0 + now * 60e3 }), C);
-    assert.equal(d.merge, false, `${now} min after the PASS`); assert.match(d.reason, /settling: newest verdict on head aaaaaaaa at 2026-11-12T22:00:00.000Z; merges from 2026-11-12T22:10:00.000Z/);
-    assert.equal(d.settle_until, at(10));
-  }
-  for (const now of [5.6, 10, 15.5, 60]) {
-    const d = decide(pr(), st({ verdicts: [pass, fail], now: T0 + now * 60e3 }), C);
-    assert.equal(d.merge, false, `${now} min: the FAIL replaced the PASS`); assert.equal(d.settle_until, undefined);
-  }
-  const d = decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [pass, V({ by: 'checker-b', comment_at: at(4) })], now: T0 + 12 * 60e3 }), C);
-  assert.equal(d.merge, false, 'the window runs from the newest verdict of any verifier'); assert.equal(d.settle_until, at(14));
-});
-test('settle: a clean PASS merges once the window has passed; the window is ship.self_merge.settle_minutes', () => {
-  const s = now => st({ verdicts: [V({ comment_at: at(0) })], now: T0 + now * 60e3 });
-  assert.equal(decide(pr(), s(9.9), C).merge, false);
-  assert.equal(decide(pr(), s(10), C).merge, true, 'merges at the end of the window');
-  assert.equal(decide(pr(), s(30), C).merge, true);
-  const C0 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, settle_minutes: 0 } } });
-  assert.equal(decide(pr(), s(0), C0).merge, true, 'settle_minutes 0 turns the window off');
-  const C3 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, settle_minutes: 3 } } });
-  assert.equal(decide(pr(), s(2.9), C3).merge, false); assert.equal(decide(pr(), s(3), C3).merge, true);
-  for (const bad of [-1, '10', null, 61, NaN]) assert.throws(() => selfMergeConfig({ ship: { self_merge: { settle_minutes: bad } } }), /ship\.self_merge\.settle_minutes must be a number of minutes from 0 to 60/, String(bad));
+test('self-merge: no wait; it merges as soon as every rule holds, and hold_minutes is refused', () => {
+  assert.equal('hold_minutes' in C, false);
+  const now = new Date().toISOString(), fresh = st({ check: { ...st().check, completed_at: now }, status: { state: 'success', created_at: now }, verdicts: [V({ comment_at: now })] });
+  assert.equal(decide(pr(), fresh, C).merge, true, 'a verdict posted this second merges');
   for (const hold_minutes of [120, 0, null, '30'])
-    assert.throws(() => selfMergeConfig({ ship: { self_merge: { hold_minutes } } }), /ship\.self_merge\.hold_minutes was removed .* use ship\.self_merge\.settle_minutes/, String(hold_minutes));
+    assert.throws(() => selfMergeConfig({ ship: { self_merge: { hold_minutes } } }), /ship\.self_merge\.hold_minutes was removed .* Delete it from eng\.config\.yml; add the hold label to stop a PR/, String(hold_minutes));
 });
-test('settle: a PASS does not count while that same verifier still has an eng run in progress on the head', () => {
+test('run guard: a PASS does not count while that same verifier still has an eng run in progress on the head', () => {
   const s = (statuses, o = {}) => st({ verdicts: [V({ comment_at: at(0) })], statuses, now: T0 + 30 * 60e3, ...o });
   let d = decide(pr(), s([busy('checker-a')]), C);
   assert.equal(d.merge, false); assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:35:00\.000Z unless it ends first\)/);
-  assert.equal(d.settle_until, undefined, 'a run in progress is not the window: its own status event runs self-merge again');
   assert.equal(decide(pr(), s([busy('checker-a', 'success')]), C).merge, true, 'a finished run does not hold the PASS back');
   assert.equal(decide(pr(), s([busy('checker-a', 'failure')]), C).merge, true, 'the verdict, not the run status, says what a run proved');
   assert.equal(decide(pr(), s([busy('checker-b')]), C).merge, true, 'another verifier\'s run does not hold this PASS back');
@@ -484,7 +462,7 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
   }
 });
 
-test('settle: eng run --by marks its run in progress on GitHub, then its result; a clone with no GitHub origin marks nothing', () => {
+test('run guard: eng run --by marks its run in progress on GitHub, then its result; a clone with no GitHub origin marks nothing', () => {
   const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runstatus-')), log = path.join(root, 'gh.log'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo');
   try {
     fs.mkdirSync(bin); fs.mkdirSync(repo);
@@ -509,35 +487,17 @@ test('settle: eng run --by marks its run in progress on GitHub, then its result;
     assert.notEqual(calls().at(-1).match(/context=(\S+)/)[1], posted[0][2], 'each run of one command has its own context');
     fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\necho "HTTP 422: No commit found for SHA" >&2\nexit 1\n', { mode: 0o755 });
     r = run('true'); assert.equal(r.status, 0, 'a run GitHub cannot mark still runs and records');
-    assert.match(r.stderr, /eng run: could not mark this run in progress on GitHub \(HTTP 422: No commit found for SHA\); self-merge still waits ship\.self_merge\.settle_minutes after the newest verdict/);
+    assert.match(r.stderr, /eng run: could not mark this run in progress on GitHub \(HTTP 422: No commit found for SHA\); self-merge cannot see this run, so it will not hold back checker-a's PASS/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('settle: a PR that waits only for the window gets self-merge run again once it has passed; a run in progress does not', () => {
-  const fresh = [V({ comment_at: new Date(Date.now() - 2 * 60e3).toISOString() }), V2].map(asComment);
-  const settle = r => r.sent.filter(c => c[1] === `${R}/actions/workflows/self-merge-settle.yml/dispatches`);
-  let r = gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: fresh, [`POST ${R}/actions/workflows/self-merge-settle.yml/dispatches`]: {} });
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /#3 aaaaaaaa: skip: settling: newest verdict on head aaaaaaaa/);
-  assert.equal(r.sent.some(c => c[0] === 'PUT'), false, 'nothing merges inside the window');
-  assert.equal(settle(r).length, 1, r.stdout);
-  const { ref, inputs } = settle(r)[0][2], wait = Number(inputs.seconds);
-  assert.deepEqual([ref, inputs.pr], ['main', '3']);
-  assert.ok(wait >= 8 * 60 && wait <= 9 * 60, `waits out the rest of the 10 minutes, plus a margin (${wait} s)`);
-  assert.match(r.stdout, /dispatched self-merge-settle\.yml: self-merge runs again for #3 in \d+ s/);
-  assert.equal(settle(gate({ ...routes, [`GET ${R}/issues/3/comments?per_page=100`]: fresh }, null, ['merge', '--dry-run'])).length, 0, 'a dry run dispatches nothing');
+test('run guard: a run in progress holds a PASS back, and its own status event runs self-merge again when it ends', () => {
   const running = [{ context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-b' } }, { context: 'verdict', state: 'success' }];
-  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: running });
+  let r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: running });
   assert.match(r.stdout, /skip: risk:high needs counted PASSes .* have 1 \(checker-a\); checker-b does not count: a run by checker-b is still in progress/);
   assert.equal(r.sent.length, 0, 'the run\'s own status event, when it ends, runs self-merge again');
   r = gate({ ...routes, [`GET ${R}/commits/${SHA}/pulls`]: [p3] }, { name: 'status', payload: { context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'success', sha: SHA } });
   assert.ok(r.sent.some(c => c[0] === 'PUT'), `a finished run's status runs self-merge for its head: ${r.stdout}`);
-  const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge-settle.yml', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(wf.on), ['workflow_dispatch'], 'events only: no schedule');
-  assert.deepEqual(wf.concurrency, { group: 'self-merge-settle-${{ inputs.pr }}', 'cancel-in-progress': true }, 'a newer wait for the same PR replaces the older one');
-  const step = wf.jobs.settle.steps.at(-1);
-  assert.match(step.run, /sleep "\$WAIT"/); assert.match(step.run, /gh workflow run self-merge\.yml .*--ref main -f pr="\$PR"/);
-  assert.deepEqual(wf.jobs.settle.permissions, { actions: 'write' });
 });
 
 test('self-merge.yml has no schedule; one queued concurrency group; retargets and verdict events only', () => {
@@ -646,8 +606,7 @@ console.log('{}');
     assert.ok(fs.existsSync(lock), 'run A started and waits');
     const b = spawnSync(process.execPath, args, { cwd: repo, env, encoding: 'utf8' });
     assert.equal(b.status, 0, b.stdout + b.stderr);
-    const C0 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, settle_minutes: 0 } } });
-    const now = () => decide(pr(), st({ verdicts: [V({ comment_at: new Date(Date.now() - 60e3).toISOString() })], statuses: statuses(), now: Date.now() }), C0);
+    const now = () => decide(pr(), st({ verdicts: [V({ comment_at: new Date(Date.now() - 60e3).toISOString() })], statuses: statuses(), now: Date.now() }), C);
     const pendings = statuses().filter(s => s.state === 'pending').map(s => s.context);
     assert.equal(new Set(pendings).size, 2, `each run has its own context: ${pendings}`);
     let d = now();
@@ -699,12 +658,7 @@ test('fix round 1, item 2: self-merge reads every page of the head\'s statuses; 
   assert.ok(ok.sent.some(c => c[0] === 'PUT'), `with no run past page 1 it merges: ${ok.stdout}`);
 });
 
-test('fix round 1, item 4: red main\'s auto-revert skips the settle window, but a run in progress still holds its PASS', () => {
-  const fresh = (o = {}) => V({ comment_at: at(0), ...o }), now = T0 + 60e3;
-  assert.equal(decide(pr({ autoRevert: true }), st({ verdicts: [fresh()], now }), C).merge, true, 'the auto-revert merges a minute after its verdict');
-  assert.equal(decide(pr(), st({ verdicts: [fresh()], now }), C).merge, false, 'any other PR waits out the window');
-  assert.match(decide(pr({ autoRevert: true }), st({ verdicts: [fresh()], statuses: [busy('checker-a')], now }), C).reason, /a run by checker-a is still in progress/);
-  assert.match(decide(pr({ autoRevert: true }), st({ verdicts: [fresh(), fresh({ result: 'FAIL', comment_at: at(0.5) })], now }), C).reason, /verdict FAIL by checker-a/);
+test('fix round 1, item 4: red main\'s auto-revert merges at once, but a run in progress still holds its PASS', () => {
   const branch = `auto-revert/${TIP.slice(0, 12)}`, recent = new Date(Date.now() - 60e3).toISOString();
   const rv = { number: 9, state: 'open', title: 'Revert #5', draft: false, created_at: '2026-10-19T03:00:00Z', labels: [{ name: 'risk:high' }], user: { login: BOT }, body: `<!-- eng-auto-revert of=${TIP} -->`, base: { ref: 'main', sha: TIP }, head: { sha: HEAD, ref: branch, repo: { full_name: 'o/r' } }, changed_files: 1, commits: 1 };
   const red = statuses => gate({
@@ -722,8 +676,7 @@ test('fix round 1, item 4: red main\'s auto-revert skips the settle window, but 
   });
   let r = red([]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.deepEqual(r.sent[0], ['PUT', `${R}/pulls/9/merge`, { merge_method: 'squash', sha: HEAD, commit_title: 'Revert #5 (#9)' }], `red main is reverted without waiting out the window: ${r.stdout}`);
-  assert.equal(r.sent.some(c => c[1].includes('self-merge-settle')), false);
+  assert.deepEqual(r.sent[0], ['PUT', `${R}/pulls/9/merge`, { merge_method: 'squash', sha: HEAD, commit_title: 'Revert #5 (#9)' }], `red main is reverted at once: ${r.stdout}`);
   r = red([{ context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', updated_at: new Date().toISOString(), creator: { login: 'lane-b' } }]);
   assert.equal(r.sent.length, 0, r.stdout); assert.match(r.stdout, /checker-b does not count: a run by checker-b is still in progress/);
 });

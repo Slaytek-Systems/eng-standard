@@ -5,9 +5,7 @@
 //   node scripts/pr-gate.mjs label <n> [--dry-run]     set risk:high or risk:low from the PR's changed paths
 //   node scripts/pr-gate.mjs merge [--pr <n>] [--dry-run]   squash-merge at most ONE eligible PR (the event's PR, --pr, or
 //                                                            every open PR), then run ci.yml on main; on a red main, open
-//                                                            the tip's auto-revert instead. A PR that waits only for the
-//                                                            settle window gets self-merge-settle.yml, which runs this again
-//                                                            for it once the window has passed
+//                                                            the tip's auto-revert instead
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -129,9 +127,8 @@ function prsFor(t) {
   return prs;
 }
 
-// revert: p is red main's exact inverse from autoRevert(), which skips the settle window (lib/self-merge.mjs decide()).
-function evaluate(p, tip, revert = false) {
-  const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name), autoRevert: revert };
+function evaluate(p, tip) {
+  const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name) };
   try { return pr.base === C.base && pr.sameRepo ? decide(pr, prState(p, tip), C) : decide(pr, {}, C); }
   catch (e) { return { merge: false, reason: `could not read state: ${e.message.split('\n')[0]}` }; }
 }
@@ -139,16 +136,6 @@ function evaluate(p, tip, revert = false) {
 function mainTip() {
   const tip = get(`repos/${R}/commits/${C.base}`).sha;
   return { tip, test: testRun(tip) };
-}
-
-// Self-merge runs on events only, and the end of a settle window is no event. self-merge-settle.yml waits out the rest of
-// the window (plus 30 s for clock skew) on its own runner, outside self-merge's queue, then dispatches self-merge for the
-// PR. A newer dispatch for the same PR replaces a waiting one (its concurrency group), so the latest window wins.
-function settle(n, until) {
-  const seconds = Math.max(30, Math.ceil((Date.parse(until) - Date.now()) / 1000) + 30);
-  try { send('POST', `repos/${R}/actions/workflows/self-merge-settle.yml/dispatches`, { ref: C.base, inputs: { pr: String(n), seconds: String(seconds) } }); }
-  catch (e) { console.log(`  could not dispatch self-merge-settle.yml (${e.message.split('\n')[0]}); after ${until} run gh workflow run self-merge.yml -f pr=${n}`); process.exitCode = 1; return; }
-  console.log(`  dispatched self-merge-settle.yml: self-merge runs again for #${n} in ${seconds} s`);
 }
 
 function merge() {
@@ -160,19 +147,17 @@ function merge() {
   if (!t) { console.log(`main ${tip.slice(0, 8)}: no ${C.check} run yet; ${dry ? 'would dispatch' : 'dispatching'} ci.yml, merging nothing this run`); if (!dry) send('POST', `repos/${R}/actions/workflows/ci.yml/dispatches`, { ref: C.base }); return; }
   if (t.status !== 'completed') return console.log(`main ${tip.slice(0, 8)}: ${C.check} still running; merging nothing this run (its completion runs this again)`);
   let prs;
-  const revert = t.conclusion !== 'success';
-  if (revert) { const rv = autoRevert(tip); if (!rv) return; prs = [rv]; }
+  if (t.conclusion !== 'success') { const rv = autoRevert(tip); if (!rv) return; prs = [rv]; }
   else prs = prsFor(want).filter(p => p.state === 'open').sort((x, y) => x.created_at.localeCompare(y.created_at));
   for (const p of prs) {
-    const d = evaluate(p, tip, revert);
+    const d = evaluate(p, tip);
     console.log(`#${p.number} ${p.head.sha.slice(0, 8)}: ${d.merge ? (dry ? 'WOULD MERGE' : 'MERGE') : 'skip'}: ${d.reason}`);
-    if (d.settle_until && !dry) settle(p.number, d.settle_until);
     if (!d.merge || dry) continue;
     // Read everything again just before the merge call: the PR, main's tip and its test, and every rule in decide(). The
     // merge then pins the head SHA, so a push after this read makes GitHub refuse it.
     const again = get(`repos/${R}/pulls/${p.number}`), now = mainTip();
     if (again.state !== 'open' || again.head.sha !== p.head.sha || now.tip !== tip || now.test?.conclusion !== t.conclusion) { console.log(`#${p.number}: the PR, its head or ${C.base} changed during this run; skip (that change's own event runs self-merge again)`); continue; }
-    const d2 = evaluate(again, tip, revert);
+    const d2 = evaluate(again, tip);
     if (!d2.merge) { console.log(`#${p.number}: refused on re-check: ${d2.reason}`); continue; }
     try {
       send('PUT', `repos/${R}/pulls/${p.number}/merge`, { merge_method: 'squash', sha: p.head.sha, commit_title: `${p.title} (#${p.number})` });

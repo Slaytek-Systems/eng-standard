@@ -14,7 +14,6 @@ Rule summary: [AGENTS.md](../AGENTS.md).
 | Verdict comment | `eng verdict ... --pr <n>` (`bin/eng.mjs`) | Posts an `eng-verdict/v1` PR comment with the record as JSON: head SHA, patch-id, result, by. Self-merge reads verdicts from these comments |
 | Verdict status | `eng verdict ... --pr <n>` / `eng verdict status --pr <n>` (`bin/eng.mjs`) | Posts commit status `verdict` (success/failure) on the PR's exact head SHA from `eng verdict check --pr <n>`, which counts this clone's records and the PR's trusted `eng-verdict/v1` comments for that head (self-merge's parse and `verifier_logins` rules). The ruleset requires it |
 | Run in progress | `eng run --by <id> -- <cmd>` (`lib/run.mjs`) | Sets commit status `eng-run/<id>/<command hash>-<run id>` pending on the run's commit, then success or failure when it ends; each run has its own context. The description says `eng run <id>: running` or `finished, exit N; not a merge check`. Self-merge does not count `<id>`'s PASS while one is pending |
-| Settle wait | `.github/workflows/self-merge-settle.yml` | Dispatched by self-merge for a PR that waits only for its settle window: sleeps the rest of it, then dispatches self-merge for that PR |
 | Self-merge | `.github/workflows/self-merge.yml` → `scripts/pr-gate.mjs merge` → `lib/self-merge.mjs` | On events only (below) and on dispatch. Skips everything if main's `test` is running (no run yet: dispatches `ci.yml`). Then checks the event's PR, reads every rule again, squash-merges it with `sha=<head>`, deletes its branch and dispatches `ci.yml` on main (the post-merge check) |
 | Auto-revert | `scripts/pr-gate.mjs merge` on a red main | Opens `auto-revert/<sha12>` from `github-actions[bot]`: one commit on top of the red tip with the tip's parent tree, so it is the exact inverse. While main is red only that PR is considered, and only while it is still that exact inverse |
 | Undo | `gh pr revert <n>` | Opens a revert PR |
@@ -35,25 +34,24 @@ Self-merge merges a PR only when **all** hold:
     `ship.high_risk.paths` say so. Path patterns match raw names, newlines included (`glob2re` uses dotAll), for both
     a file's name and a rename's old name.
 - A comment's time is its last edit (`max(created_at, updated_at)`) when deciding which verdict is a verifier's latest.
-- No PASS counts from a verifier with an `eng-run/<id>/...` status pending on the head, and
-  `ship.self_merge.settle_minutes` (default 10) have passed since the newest verdict on the head (Settle guard, below).
+- No PASS counts from a verifier with an `eng-run/<id>/...` status pending on the head (Run guard, below).
 
 GitHub lists at most 3,000 files for a PR. When the listed files fall short of the PR's `changed_files`, the PR is
 risk:high and every file counts as testable. An incomplete list is never evidence.
 
-A PR merges in the first run after its last rule goes green and its settle window (below) has passed. A new push
-gives a new head SHA, so everything must go green again for it. Just before the merge call the run reads the PR, main's
-tip and its `test` run, and every rule again. If the head or main moved, or any rule now fails (a `hold` label, a FAIL
-verdict, a run in progress), it merges nothing. The merge call pins the head SHA. `ship.self_merge.hold_minutes` no
+There is no wait (Matt, 26 Oct 2026: "Merge as soon as it's verified; post-merge checks roll back breakage"). A PR
+merges in the first run after its last rule goes green. A new push gives a new head SHA, so everything must go green
+again for it. Just before the merge call the run reads the PR, main's tip and its `test` run, and every rule again. If
+the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict, a run in progress), it merges nothing. The merge call pins the head SHA. `ship.self_merge.hold_minutes` no
 longer exists, and a config that sets it fails with a message saying so.
 
-## Settle guard (13 Nov 2026)
+## Run guard (14 Nov 2026)
 
-Decision nd7f5ykvfszpme1pq2ezwv2nyd8j3bnx (Eng Manager, 13 Nov 2026). Until then there was no wait (Matt, 26 Oct 2026:
-"Merge as soon as it's verified; post-merge checks roll back breakage"). The 12 Nov sweep found opencode-deepseek posting
-PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes apart (#73 at 1f2a2af5, and #66 twice).
-Self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs stood in the way. Two rules in
-`lib/self-merge.mjs` now hold a PASS back until its verifier has settled.
+Decision nd7ebz69qb0c39691a3ab586t58j4qwc (Matt, 14 Nov 2026): the run guard, and no wait after a verdict. The 12 Nov
+sweep found opencode-deepseek posting PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes
+apart (#73 at 1f2a2af5, and #66 twice). Self-merge fired 33 s after the deciding PASS on #73. A PASS doesn't count while
+that verifier's own run on the head is in progress. A PASS followed by a newly started probe's FAIL can still merge:
+Matt accepted that gap knowingly, and the post-merge check and auto-revert stay the backstop.
 
 - **A PASS does not count while its verifier still has a run in progress on the head.** `eng run --by <id> -- <cmd>`
   sets commit status `eng-run/<id>/<8 hex of the command>-<run id>` to `pending` on the run's commit when the command
@@ -62,7 +60,7 @@ Self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs s
   reads every status on the head, every page of GitHub's list (a head can carry more than 100 contexts), and any run of
   `<id>` still in progress stops `<id>`'s PASS from counting (`runsInProgress()`, `verdictGate()`). A FAIL from that
   verifier still blocks. Only a clone whose `origin` is on github.com posts these. If GitHub refuses the post (an
-  unpushed commit, no `gh` login), `eng run` says so on stderr and the run goes on; the settle window still applies.
+  unpushed commit, no `gh` login), `eng run` says so on stderr and the run goes on, and that run holds nothing back.
 - **The status says what it is.** The description reads `timeout 1800s; eng run <id>: running; not a merge check: <cmd>`,
   then `eng run <id>: finished, exit N; not a merge check: <cmd>`. GitHub keeps 140 characters, so the timeout comes first
   and only the tail (a long id or command) is ever cut. A failing run's status stays `failure`, so it shows red
@@ -89,23 +87,9 @@ Self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs s
   by hand: the run died'`. A finished `eng-run/...` status, that one included, runs self-merge for its head. A dead run
   that reaches its deadline posts nothing, so then run `gh workflow run self-merge.yml -f pr=<n>`, or wait for the PR's
   next event. Re-running the command does not clear it: the new run has its own context.
-- **Nothing merges until `ship.self_merge.settle_minutes` (default 10) have passed since the newest verdict on the
-  head.** The newest is the latest trusted verdict comment for the head SHA, from any verifier, by its last edit. 0 turns
-  the window off; the limit is 60. **Why 10:** the longest observed PASS-to-own-FAIL gap is 5.5 minutes, so 10 minutes
-  covers it with 4.5 minutes (about 80%) to spare, and it costs each PR 10 minutes after its last verdict. The run guard
-  covers a verifier whose second look runs longer, as long as that run started before the window ended.
-- **Red main's auto-revert skips the window.** While `main` is red, its `auto-revert/<sha12>` PR (the bot's exact
-  inverse, the only PR that may merge then) merges as soon as its other rules hold, so a red `main` is not left red for
-  another 10 minutes. The run rule and every other rule still apply to it.
 
-**How a waiting PR still merges.** Self-merge runs on events only, and the end of a window is no event. When the window
-is the only rule a PR still waits for, `decide()` returns `settle_until`, and `scripts/pr-gate.mjs` dispatches
-`.github/workflows/self-merge-settle.yml` with the PR number and the seconds left plus 30 s for clock skew. That workflow
-sleeps on its own runner, outside self-merge's queue, then dispatches self-merge for the PR, which checks every rule
-again. Its concurrency group is per PR with `cancel-in-progress: true`, so a newer verdict's wait replaces an older one.
 A PR held back by a run in progress needs no dispatch: when the run ends, its `eng-run/...` status (posted with the
-verifier's own token, so it starts workflows) runs self-merge for that head. If the dispatch fails, the run says so and
-names `gh workflow run self-merge.yml -f pr=<n>`.
+verifier's own token, so it starts workflows) runs self-merge for that head.
 
 ## Events
 
@@ -124,7 +108,6 @@ that PR again.
 | `pull_request_target` labeled, unlabeled, ready_for_review, or edited with a base change (retargeted) | that PR |
 | `workflow_dispatch` | input `pr`, or every open PR |
 | `workflow_dispatch` from `ci.yml` job `start-self-merge` | every open PR |
-| `workflow_dispatch` from `self-merge-settle.yml` once a settle window has passed | input `pr` |
 
 `eng verdict --pr` posts the comment before the status, so a run started by the comment can see no `verdict` status
 yet. The status event starts another run that sees both.
