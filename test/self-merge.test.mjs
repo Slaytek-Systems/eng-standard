@@ -68,7 +68,7 @@ const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
 // minutes later; self-merge fired 33 s after a deciding PASS. A PASS waits ship.self_merge.settle_minutes after the newest
 // verdict on the head, and does not count while its verifier still has an eng run in progress on that head.
 const T0 = Date.parse('2026-11-12T22:00:00Z'), at = min => new Date(T0 + min * 60e3).toISOString();
-const busy = (by, state = 'pending', sha = SHA) => ({ context: runStatusContext(by, 'npm test', 'r1'), state, sha, updated_at: at(0), creator: { login: 'lane-a' } });
+const busy = (by, state = 'pending', sha = SHA) => ({ context: runStatusContext(by, 'npm test', 'r1'), state, sha, updated_at: at(0), description: runStatusText(by, { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-a' } });
 test('settle: a PASS followed by the same verifier\'s FAIL inside the window never merges', () => {
   assert.equal(C.settle_minutes, 10, 'the default window is 10 minutes');
   const pass = V({ comment_at: at(0) }), fail = V({ result: 'FAIL', comment_at: at(5.5) });
@@ -661,7 +661,7 @@ console.log('{}');
 });
 
 test('fix round 1, item 1: a pending run stops holding its PASS at its deadline: its budget timeout plus 5 minutes', () => {
-  const short = [runAt('r1', 'pending', 0, { description: 'eng run checker-a: running, timeout 600s; not a merge check: npm test' })];
+  const short = [runAt('r1', 'pending', 0, { description: 'timeout 600s; eng run checker-a: running; not a merge check: npm test' })];
   let d = passAt0(short, 14.9);
   assert.equal(d.merge, false); assert.match(d.reason, /still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:15:00\.000Z unless it ends first\)/);
   assert.equal(passAt0(short, 15).merge, true, 'a run past its deadline (600 s + 300 s) holds nothing back: its eng run died without posting an end');

@@ -63,19 +63,26 @@ Self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs s
   `<id>` still in progress stops `<id>`'s PASS from counting (`runsInProgress()`, `verdictGate()`). A FAIL from that
   verifier still blocks. Only a clone whose `origin` is on github.com posts these. If GitHub refuses the post (an
   unpushed commit, no `gh` login), `eng run` says so on stderr and the run goes on; the settle window still applies.
-- **The status says what it is.** The description reads `eng run <id>: running, timeout 1800s; not a merge check: <cmd>`,
-  then `eng run <id>: finished, exit N; not a merge check: <cmd>`. A failing run's status stays `failure`, so it shows red
+- **The status says what it is.** The description reads `timeout 1800s; eng run <id>: running; not a merge check: <cmd>`,
+  then `eng run <id>: finished, exit N; not a merge check: <cmd>`. GitHub keeps 140 characters, so the timeout comes first
+  and only the tail (a long id or command) is ever cut. A failing run's status stays `failure`, so it shows red
   on the PR: that is the honest state of that run. It is a verifier's run, not a required check; the verdict, not the run
   status, says what the runs proved.
-- **Who can end a run.** A run is in progress while its newest `pending` status has no later end (`success`, `failure` or
-  `error`) posted by the same GitHub account, or by a login in `ship.self_merge.verifier_logins`. A status from any other
-  account changes nothing, so a collaborator cannot release a verifier's PASS by posting `success` on its context. What
-  this does not protect: anyone with push access can post a `pending` `eng-run/<id>/...` status and hold `<id>`'s PASS
-  back until its deadline, as anyone with push access can add the `hold` label. A status can hold a PASS back; it never
-  makes one count.
-- **A run whose `eng` died stops counting at its deadline.** The deadline is the time GitHub recorded the pending status
-  plus the run's budget timeout (stated in its description; 1800 s by default, `--budget timeout=...` sets it) plus 5
-  minutes. `eng run`'s budget stops a command at its timeout and then posts its end, so a run still alive never reaches its
+- **Who owns a run, and who can end it.** A run's owner is the GitHub account that posted the first `pending` status on
+  its context (the oldest, by GitHub's status id). The run is in progress until a later end (`success`, `failure` or
+  `error`) on that context posted by its owner, or by a login in `ship.self_merge.verifier_logins`; a listed login can end
+  any run, whoever owns it. A status on that context from any other account changes nothing: it does not start, end,
+  extend or shorten the run, and its description is not read. So a collaborator cannot release a verifier's PASS by
+  posting `success`, or a `pending` with a short timeout and then `success`, on its context. A run whose first `pending`
+  has no creator (GitHub shows none, for example for a deleted account) has no owner: only a listed login ends it, and
+  with no `verifier_logins` only its deadline releases it. If that status states no timeout either, it holds until
+  `verifier_logins` is set on main and a listed login posts its end. What this does not protect: anyone with push access
+  can post a `pending` status on a new `eng-run/<id>/...` context and hold `<id>`'s PASS back until its deadline, as anyone
+  with push access can add the `hold` label. A status can hold a PASS back; it never makes one count.
+- **A run whose `eng` died stops counting at its deadline.** The deadline is the time GitHub recorded the owner's first
+  pending status plus the budget timeout that description starts with (1800 s by default, `--budget timeout=...` sets
+  it) plus 5 minutes. A pending status whose timeout cannot be read has no deadline: no default stands in for a budget
+  that could be longer, so it holds until its owner or a listed login ends it. `eng run`'s budget stops a command at its timeout and then posts its end, so a run still alive never reaches its
   deadline; only a run whose `eng` process was killed (SIGKILL, a lost machine) is still pending then. The skip reason
   names the context and its deadline. To release it sooner, the verifier ends it knowingly with the same `gh` login that
   ran it: `gh api -X POST repos/<owner>/<repo>/statuses/<sha> -f state=error -f context=<context> -f description='cleared
@@ -172,10 +179,13 @@ Any thread may run it, the builder included: what counts is what ran on the exac
 # inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
 git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
-node bin/eng.mjs run --by <id> -- npm test                    # one run per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs run --by <id> -- sh -c 'npm ci && npm test'  # one run per check: tests, the CLI on a scratch repo, property tests
 node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
 # docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
+
+`eng run` runs in a private worktree of the exact commit that holds tracked files only, so a command that needs the
+dependencies installs them itself (`sh -c 'npm ci && npm test'`); a bare `npm test` there fails on a missing module.
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the

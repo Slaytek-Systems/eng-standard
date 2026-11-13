@@ -30,9 +30,11 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     any FAIL blocks.
   - **Settle guard** (Eng Manager decision, 13 Nov 2026). A verifier's PASS does not count while that verifier still
     has an `eng run --by` in progress on the head. Each run posts its own commit status `eng-run/<id>/<hash>-<run id>`,
-    pending until it ends, so one run's end never clears another's. Only the account that posted the pending status,
-    or a `verifier_logins` login, can end it. A run whose `eng` died stops counting at its deadline: its budget timeout
-    plus 5 minutes after it started (30 + 5 minutes by default). Nothing merges until `ship.self_merge.settle_minutes`
+    pending until it ends, so one run's end never clears another's. A run's owner is the account that posted the first
+    pending status on its context; only the owner or a `verifier_logins` login can end it, and any other account's
+    status on that context changes nothing. A run whose `eng` died stops counting at its deadline: the budget timeout
+    its first pending status starts with, plus 5 minutes (30 + 5 minutes by default); a status that states no timeout
+    holds until it is ended. Nothing merges until `ship.self_merge.settle_minutes`
     (default 10) have passed since the newest verdict on the head; `self-merge-settle.yml` runs self-merge again when
     the window ends. Red main's auto-revert skips the window, not the run rule. Why 10, and how to clear a dead run by
     hand: [docs/self-merge.md](docs/self-merge.md).
