@@ -113,6 +113,24 @@ test('eng init on an empty repo seeds the starter config and no renovation block
   assert.ok(fs.existsSync(path.join(empty, '.eng/checks/.gitkeep')), 'eng sync keeps the checks dir tracked, so eng gate can tell no checks from a moved dir');
 });
 
+test('eng doctor passes on a repo eng init just set up; a rule naming a missing fixture still fails it', () => {
+  const fresh = path.join(root, 'fresh'); fs.mkdirSync(fresh); git('init -q -b main', fresh); git('config user.email t@t', fresh); git('config user.name t', fresh);
+  const run = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: fresh, encoding: 'utf8', timeout: 120_000, env: { ...env(), ENG_STANDARD_SOURCE: path.dirname(path.dirname(ENG)) } });
+  assert.equal(run('init').status, 0);
+  git('add -A', fresh); git('commit -qm base', fresh);
+  let r = run('rules', 'prove');
+  assert.match(r.stdout, /no-focused-tests: bites/, out(r));
+  r = run('doctor');
+  assert.doesNotMatch(out(r), /no proven_by\.fixture on disk/);
+  assert.equal(r.status, 0, out(r));
+  const c = YAML.parse(fs.readFileSync(path.join(fresh, 'eng.config.yml'), 'utf8'));
+  c.constraints.rules.push({ ...c.constraints.rules[0], id: 'mine', proven_by: { incident: 'x', fixture: '.eng/rule-proofs/mine' } });
+  fs.writeFileSync(path.join(fresh, 'eng.config.yml'), YAML.stringify(c));
+  r = run('doctor');
+  assert.equal(r.status, 1, out(r));
+  assert.match(out(r), /lint rule mine has no proven_by\.fixture on disk/);
+});
+
 test('eng run --keep: private 0700 worktree and tmp under the scratch root; the shared 775 checkout is never chmodded', () => {
   assert.match(out(eng('run', '--ref', 'HEAD')), /usage: eng run \[--by <verifier-id>\] \[--ref <ref>\] -- <command>/, 'a bare run must name a command or --keep');
   let r = eng('run', '--keep', '--ref', 'HEAD');
