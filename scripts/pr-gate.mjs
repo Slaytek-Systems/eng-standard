@@ -68,7 +68,7 @@ function prState(pr, tip) {
   const statuses = pages(`repos/${R}/commits/${sha}/statuses?per_page=100`);
   const { risk, files } = riskFor(pr);
   return {
-    risk, files, check: testRun(sha), status: statuses.find(s => s.context === C.status) || null, statuses, now: Date.now(),
+    risk, files, check: testRun(sha), status: statuses.find(s => s?.context === C.status) || null, statuses, now: Date.now(),
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
   };

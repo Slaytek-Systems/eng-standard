@@ -749,3 +749,49 @@ test('fix round 2, item 2: a run whose first pending has no creator holds until 
   assert.equal(passAt0([own('r1', 'success', 1, { id: 2 }), anon], 2, CN).merge, false, 'with no list nobody ends it (fail closed)');
   assert.equal(passAt0([anon], 65, CN).merge, true, 'its own stated deadline still releases it');
 });
+
+// Fix round 3 (codex-sol-80 FAIL, comment 6866341118). A later row on a live run's context whose state is missing, null or
+// garbled passed for the run's end, and a null row in the list was skipped. Self-merge read WOULD MERGE for both. A status row
+// the run rule cannot read now refuses the merge, with the row in the reason.
+test('fix round 3: a malformed status row cannot end a live run or hide one; the merge is refused and the row named', () => {
+  const live = own('r1', 'pending', 0, { id: 10 }), later = o => own('r1', 'success', 1, { id: 11, ...o });
+  const cases = [
+    ['state missing', [later({ state: undefined }), live], /row 0 \(eng-run\/checker-a\/[0-9a-f]{8}-r1\) has no state/],
+    ['state null', [later({ state: null }), live], /row 0 \(eng-run\/checker-a\/[0-9a-f]{8}-r1\) has unknown state null/],
+    ['state garbled', [later({ state: 'garbled' }), live], /has unknown state "garbled"/],
+    ['id garbled', [later({ id: '11' }), live], /row 0 \(.*\) has id "11"/],
+    ['time garbled', [later({ updated_at: 'bad-date', created_at: 'bad-date' }), live], /row 0 \(.*\) has no readable time/],
+    ['null row', [null, live], /row 0 is null/],
+    ['null row after the run', [live, null], /row 1 is null/],
+    ['string row', ['eng-run/checker-a/x-r1', live], /row 0 is not an object \(string\)/],
+    ['array row', [[later()], live], /row 0 is not an object/],
+    ['row with no context', [{ state: 'success', creator: { login: 'lane-a' } }, live], /row 0 has no context/],
+    ['list not an array', { 0: live }, /the list is not an array/],
+  ];
+  for (const [name, statuses, why] of cases) for (const c of [C, CN]) {
+    const d = passAt0(statuses, 2, c);
+    assert.equal(d.merge, false, name);
+    assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(/, name);
+    assert.match(d.reason, why, name);
+  }
+  assert.equal(passAt0([null], 2).merge, false, 'a null row with no run beside it still refuses: it could be the run');
+  assert.equal(passAt0([later({ state: 'garbled' })], 2).merge, false, 'a garbled row alone on a run context refuses');
+  assert.equal(passAt0([own('r1', 'pending', 0, { id: 10, creator: { login: 'lane-b' } }), ...[later({ state: 'garbled' })].map(s => ({ ...s, context: runStatusContext('checker-b', 'npm test', 'r1') }))], 2).merge, false, 'another verifier\'s malformed run row refuses too');
+  for (const state of ['success', 'failure', 'error']) assert.equal(passAt0([later({ state }), live], 2).merge, true, `the owner's ${state} ends the run`);
+  assert.equal(passAt0([later({ state: 'pending' }), live], 2).merge, false, 'a second pending from the owner ends nothing');
+  assert.equal(passAt0([{ context: 'ci/other', state: 'garbled' }, { context: 'verdict', state: 'success' }], 2).merge, true, 'a row on a context that is not a run is not read by the run rule');
+});
+
+test('fix round 3: self-merge refuses a null status row before or after the verdict status, and a garbled end of a live run', () => {
+  const verdict = { context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' };
+  const live = { id: 10, context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), description: runStatusText('checker-b', { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-b' } };
+  const end = o => ({ ...live, id: 11, ...o });
+  for (const [name, statuses] of [['verdict first', [verdict, null]], ['verdict last', [null, verdict]], ['state missing', [verdict, end({ state: undefined }), live]], ['state garbled', [verdict, end({ state: 'garbled' }), live]], ['state null', [end({ state: null }), live, verdict]]]) {
+    const r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: statuses });
+    assert.equal(r.status, 0, `${name}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.sent.length, 0, `${name}: nothing merges: ${r.stdout}`);
+    assert.match(r.stdout, /the statuses on head aaaaaaaa cannot be read \(row \d+ /, name);
+  }
+  const ok = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: [verdict, end({ state: 'success' }), live] });
+  assert.ok(ok.sent.some(c => c[0] === 'PUT'), `a well-formed end still releases the run: ${ok.stdout}`);
+});
