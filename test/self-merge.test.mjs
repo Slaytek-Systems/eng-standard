@@ -848,7 +848,7 @@ test('fix round 4: every single mutation of a run row refuses the merge, on page
     ['another run id', { ...ended, context: runStatusContext('checker-a', 'npm test', '89abcdef') }, true],
     ['a 200-character verifier', { ...ended, context: runStatusContext('v'.repeat(200), 'npm test', 'r1') }, true],
     ['the run\'s pending start alone', { ...ended, state: 'pending', description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') }, false],
-    ['a real GitHub run row', { context: 'eng-run/codex-sol-80r2/7f2c13f3-c0befd4d', created_at: at(0), creator: { login: 'Mattslayga' }, description: 'timeout 1800s; eng run x: running; not a merge check: npm test', id: 58888968506, state: 'pending', target_url: null, updated_at: at(0) }, true],
+    ['a real GitHub run row', { context: 'eng-run/verifier-b/7f2c13f3-c0befd4d', created_at: at(0), creator: { login: 'Mattslayga' }, description: 'timeout 1800s; eng run x: running; not a merge check: npm test', id: 58888968506, state: 'pending', target_url: null, updated_at: at(0) }, true],
     ['a CI row with null fields', { context: 'ci/build', state: 'success', description: null, target_url: null, creator: null, id: null }, true],
     ['a CI row with an unknown state and no time', { context: 'ci/other', state: 'garbled' }, true],
     ['a CI context with surrounding spaces', { context: ' ci/build ', state: 'success' }, true],
