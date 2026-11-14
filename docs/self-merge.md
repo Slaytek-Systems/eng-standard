@@ -142,7 +142,9 @@ node bin/eng.mjs run --by isolation-<host> -- node --test --test-reporter=spec \
 node bin/eng.mjs verdict PASS --by isolation-<host> --evidence <evidence> --pr <n>
 ```
 
-`eng run --by` runs in a private worktree with no bwrap of its own, so the tests can use bwrap there. Use a `--by` name
+Use Node 22 or later. Node 20 lists every test the pattern filters out as skipped (`# test name does not match pattern`),
+which no record accepts. eng keeps only the last 2000 characters of a run's output, so run only these two tests: their
+output is about 400. `eng run --by` runs in a private worktree with no bwrap of its own, so the tests can use bwrap there. Use a `--by` name
 that ran nothing else on the head: the verdict attaches every run that name made, and the record must hold only these.
 
 **What self-merge enforces** (`ship.self_merge.isolation_record` in main's `eng.config.yml`, `lib/self-merge.mjs`). On a

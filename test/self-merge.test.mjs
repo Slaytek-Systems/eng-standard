@@ -1039,6 +1039,7 @@ test('isolation record: a skip, a failure, an extra or missing test, another hea
     [ISO({ runs: [isoRun({ output: isoOut().replace(/ℹ cancelled 0\n/, '') })] }), 'a summary line missing'],
     [ISO({ runs: [isoRun({ output: isoOut() + isoOut([a, b, 'another test']) })] }), 'a second test run in the same command'],
     [ISO({ runs: [isoRun({ output: isoOut().replaceAll('✔ ', '  ✔ ') })] }), 'the names only as subtests'],
+    [ISO({ runs: [isoRun({ output: `﹣ other (0.1ms) # test name does not match pattern\n${isoOut([a, b], { tests: 3, skipped: 1 })}` })] }), 'node 20 lists a filtered test as skipped'],
     [ISO({ runs: [isoRun(), { cmd: 'npm test', exit: 0, output: 'ok', sha: SHA }] }), 'another run in the record'],
     [ISO({ runs: [isoRun({ exit: 1 })] }), 'a failing run'],
     [ISO({ runs: [isoRun({ sha: 'b'.repeat(40) })] }), 'a run on another commit'],
