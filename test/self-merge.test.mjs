@@ -67,7 +67,7 @@ const row = (o = {}) => ({ id: 1, state: 'success', context: 'ci/build', created
 const VROW = row({ id: 1e11, context: 'verdict', description: 'verdict: PASS' });
 const withV = rows => [...rows, VROW];
 const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, statuses: [VROW], verdicts: [V()], ...o });
-const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
+const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], files: ['lib/x.mjs'], ...o });
 
 // The run guard (Matt, 14 Nov 2026, decision nd7ebz69qb0c39691a3ab586t58j4qwc): opencode-deepseek posted PASS, then its own
 // FAIL on the same head, 1, 1 and 5.5 minutes later; self-merge fired 33 s after a deciding PASS. A PASS does not count while
@@ -1002,4 +1002,64 @@ test('fix round 5: generated from the row schema, every missing, null or wrongly
     assert.equal(passAt0([r], 1, c).merge, true, name);
     assert.equal(passAt0(real.map(([, x]) => x), 1, c).merge, true, 'all of them together');
   }
+});
+
+// The isolation record (sweep F1, Eng Manager, 15 Nov 2026; Core task p571q852a6sx6e45qvav6j2n458j6t6m).
+const ISO_TESTS = C.isolation_record.tests;
+const isoOut = (tests = ISO_TESTS, n = {}) => [...tests.map(t => `✔ ${t} (5221.3ms)`), ...['tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo'].map(k => `ℹ ${k} ${n[k] ?? (k === 'tests' || k === 'pass' ? tests.length : 0)}`), 'ℹ duration_ms 10150.4'].join('\n') + '\n';
+const isoRun = (o = {}) => ({ cmd: "node --test --test-reporter=spec '--test-name-pattern=refuses writable binds|server socket outside the run' test/ephemeral.test.mjs", exit: 0, output: isoOut(), sha: SHA, ...o });
+const ISO = (o = {}) => V({ by: 'isolation-bwrap', runs: [isoRun()], ...o });
+test('isolation record: a risk:high PR changing lib/run.mjs, lib/ephemeral.mjs or test/ephemeral.test.mjs merges only with a PASS that ran exactly the two isolation tests', () => {
+  const H = pr({ labels: ['risk:high'] });
+  assert.deepEqual(C.isolation_record.paths, ['lib/run.mjs', 'lib/ephemeral.mjs', 'test/ephemeral.test.mjs']);
+  for (const f of C.isolation_record.paths) {
+    const d = decide(H, hi({ files: ['README.md', f] }), C);
+    assert.equal(d.merge, false, f);
+    assert.match(d.reason, new RegExp(`^risk:high change to ${f.replaceAll('.', '\\.')} needs an isolation record on head aaaaaaaa: .*exactly "isolation enforced: the run's docker socket refuses writable binds.*nothing skipped, run outside the heavy lane on a bwrap host`), f);
+    const ok = decide(H, hi({ files: [f], verdicts: [V(), V2, ISO()] }), C);
+    assert.equal(ok.merge, true, `${f}: ${ok.reason}`);
+    assert.match(ok.reason, /^risk:high: PASS by checker-a, checker-b; isolation record by isolation-bwrap; all green/);
+  }
+  assert.match(decide(H, hi({ files: null }), C).reason, /^risk:high change to \(files unknown\) needs an isolation record/, 'unknown files need it too');
+  assert.match(decide(H, hi({ files: ['lib/run.mjs'], verdicts: [V(), ISO()] }), C).reason, /needs counted PASSes on head aaaaaaaa from 2 distinct verifiers; have 1 \(checker-a\)/, 'the record is not one of the N verifiers');
+  assert.equal(decide(H, hi(), C).merge, true, 'a risk:high PR that changes none of the paths needs no record');
+  assert.equal(decide(pr(), st({ files: ['test/ephemeral.test.mjs'] }), C).merge, true, 'risk:low needs no record');
+  const C0 = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, isolation_record: undefined } } });
+  assert.equal(decide(H, hi({ files: ['lib/run.mjs'] }), C0).merge, true, 'no isolation_record in config, no rule');
+});
+
+test('isolation record: a skip, a failure, an extra or missing test, another head, a review or a run still going is not a record', () => {
+  const H = pr({ labels: ['risk:high'] }), [a, b] = ISO_TESTS;
+  const refused = [
+    [ISO({ runs: [isoRun({ output: isoOut([a, b], { skipped: 1, pass: 1 }).replace(`✔ ${b}`, `﹣ ${b}`) })] }), 'one test skipped (no bwrap or docker there)'],
+    [ISO({ runs: [isoRun({ output: isoOut([a]) })] }), 'only one of the two tests'],
+    [ISO({ runs: [isoRun({ output: isoOut([a, b, 'another test']) })] }), 'a third test ran'],
+    [ISO({ runs: [isoRun({ output: isoOut([a, b], { fail: 1 }) })] }), 'a failure in the summary'],
+    [ISO({ runs: [isoRun({ output: isoOut([a, a]) })] }), 'one test twice, the other never'],
+    [ISO({ runs: [isoRun({ output: isoOut().replace(/ℹ cancelled 0\n/, '') })] }), 'a summary line missing'],
+    [ISO({ runs: [isoRun({ output: isoOut() + isoOut([a, b, 'another test']) })] }), 'a second test run in the same command'],
+    [ISO({ runs: [isoRun({ output: isoOut().replaceAll('✔ ', '  ✔ ') })] }), 'the names only as subtests'],
+    [ISO({ runs: [isoRun(), { cmd: 'npm test', exit: 0, output: 'ok', sha: SHA }] }), 'another run in the record'],
+    [ISO({ runs: [isoRun({ exit: 1 })] }), 'a failing run'],
+    [ISO({ runs: [isoRun({ sha: 'b'.repeat(40) })] }), 'a run on another commit'],
+    [ISO({ sha: 'b'.repeat(40), runs: [isoRun({ sha: 'b'.repeat(40) })] }), 'a record for another head'],
+    [ISO({ method: 'review' }), 'a review'],
+    [ISO({ result: 'FAIL' }), 'a FAIL'],
+  ];
+  for (const [rec, why] of refused) {
+    const d = decide(H, hi({ files: ['lib/ephemeral.mjs'], verdicts: [V(), V2, rec] }), C);
+    assert.equal(d.merge, false, why);
+    assert.match(d.reason, rec.result === 'FAIL' ? /verdict FAIL by isolation-bwrap/ : /needs an isolation record/, why);
+  }
+  const later = ISO({ comment_at: '2026-10-19T05:00:00Z', runs: [isoRun(), { cmd: 'npm test', exit: 0, output: 'ok', sha: SHA }] });
+  assert.equal(decide(H, hi({ files: ['lib/run.mjs'], verdicts: [V(), V2, ISO(), later] }), C).merge, false, 'the verifier\'s latest verdict decides');
+  const running = busy('isolation-bwrap');
+  assert.match(decide(H, hi({ files: ['lib/run.mjs'], verdicts: [V(), V2, ISO()], statuses: withV([running]), now: T0 }), C).reason, /needs an isolation record/, 'a record whose verifier still has a run going does not count');
+});
+
+test('isolation record: the configured tests are titles in test/ephemeral.test.mjs, and a bad rule is refused', () => {
+  const src = fs.readFileSync(new URL('./ephemeral.test.mjs', import.meta.url), 'utf8').replaceAll("\\'", "'");
+  for (const t of ISO_TESTS) assert.ok(src.includes(`test('${t}'`), t);
+  for (const bad of [{}, { paths: [], tests: ['x'] }, { paths: ['lib/run.mjs'], tests: [''] }, { paths: 'lib/run.mjs', tests: ['x'] }])
+    assert.throws(() => selfMergeConfig({ ship: { self_merge: { isolation_record: bad } } }), /ship\.self_merge\.isolation_record needs paths/, JSON.stringify(bad));
 });

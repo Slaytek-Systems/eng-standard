@@ -35,6 +35,8 @@ Self-merge merges a PR only when **all** hold:
     a file's name and a rename's old name.
 - A comment's time is its last edit (`max(created_at, updated_at)`) when deciding which verdict is a verifier's latest.
 - No PASS counts from a verifier with an `eng-run/<id>/...` status pending on the head (Run guard, below).
+- A risk:high PR that changes `lib/run.mjs`, `lib/ephemeral.mjs` or `test/ephemeral.test.mjs` also needs an isolation
+  record on the head (Isolation record, below).
 
 GitHub lists at most 3,000 files for a PR. When the listed files fall short of the PR's `changed_files`, the PR is
 risk:high and every file counts as testable. An incomplete list is never evidence.
@@ -118,6 +120,53 @@ Matt accepted that gap knowingly, and the post-merge check and auto-revert stay 
 
 A PR held back by a run in progress needs no dispatch: when the run ends, its `eng-run/...` status (posted with the
 verifier's own token, so it starts workflows) runs self-merge for that head.
+
+## Isolation record (15 Nov 2026)
+
+Eng Manager's rule from sweep F1 (Core task p571q852a6sx6e45qvav6j2n458j6t6m). Two run-isolation tests in
+`test/ephemeral.test.mjs` were skipped everywhere on risk:high #86 and #88:
+
+- `isolation enforced: the run's docker socket refuses writable binds of protected home state, a parent of it, or a bind-backed volume; read-only passes`
+- `isolation enforced: a container may not mount a server socket outside the run, read-only or not; the run's own socket is allowed`
+
+CI skips them because it runs `npm test` inside `eng run test`, where nested bwrap is refused. The verifier lanes skip
+them by name because the heavy lane's docker fence refuses runtime-dir binds by design (Core task
+p57es40cpfsb41ew9edz9w0drd8j5k5s). So before a risk:high PR that changes `lib/run.mjs`, `lib/ephemeral.mjs` or
+`test/ephemeral.test.mjs` merges, someone runs those two tests on the exact head, outside the heavy lane, on a host
+where bwrap and docker work, and records them under their own `--by` name:
+
+```sh
+node bin/eng.mjs run --by isolation-<host> -- node --test --test-reporter=spec \
+  '--test-name-pattern=refuses writable binds of protected home state|may not mount a server socket outside the run' \
+  test/ephemeral.test.mjs
+node bin/eng.mjs verdict PASS --by isolation-<host> --evidence <evidence> --pr <n>
+```
+
+`eng run --by` runs in a private worktree with no bwrap of its own, so the tests can use bwrap there. Use a `--by` name
+that ran nothing else on the head: the verdict attaches every run that name made, and the record must hold only these.
+
+**What self-merge enforces** (`ship.self_merge.isolation_record` in main's `eng.config.yml`, `lib/self-merge.mjs`). On a
+risk:high PR whose changed files (a rename's old name included) hit one of `paths`, or whose file list is unknown, some
+verifier's latest trusted verdict on the head must be a PASS whose every run exited 0 on that head and whose node `spec`
+output shows exactly the configured tests: one `✔ <title> (` line each, and `tests 2`, `pass 2`, and `fail`,
+`cancelled`, `skipped` and `todo` all 0. Otherwise it refuses with a reason naming the file and the tests. The record
+does not count as one of the N verifiers, and it does not count while its verifier has a run in progress. risk:low PRs
+and PRs that change none of the paths are not affected.
+
+**What it cannot enforce.** That the host is a bwrap host outside the heavy lane is what the record states, not
+something self-merge can see. The tests themselves make it hard to fake by accident: without usable bwrap, docker and a
+run folder outside `/tmp` they skip, which the record refuses, and inside the heavy lane's fence they fail. Like every
+run, the record's output is evidence self-merge reads but does not re-run (lock A).
+
+**Renaming either test.** main's list names the titles, and `test/self-merge.test.mjs` checks they exist in
+`test/ephemeral.test.mjs`. A PR that renames one cannot produce a record main's list accepts. Change the list first.
+
+**The p57es40c exclusion, narrowed (15 Nov 2026).** Only a verifier that runs the suite through the heavy lane
+(`heavyweight-job`) may skip tests, by exact name, and only these three: the two above and `another owner's anonymous
+volume a run container inherits (made before or during the run, owner removed mid-run) is kept`. Every other lane runs
+the whole suite. The earlier codex-lane allowance (`the raw docker socket is hidden...` and `an unlabelled container
+whose inspect fails...`) is withdrawn: the recorded verifier runs on #86 and
+#88 report `fail 0` and one skip, and those tests skip only along with every docker or bwrap test, so both ran and passed.
 
 ## Events
 

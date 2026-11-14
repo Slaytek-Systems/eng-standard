@@ -38,6 +38,12 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     commit status row must parse in one strict shape (an id, a known state, a context, two ISO times, a creator), or
     the merge is refused, and rows are ordered by GitHub's status id only. How to clear a dead run by hand, and the row
     shape: [docs/self-merge.md](docs/self-merge.md).
+  - **Isolation record** (Eng Manager, sweep F1, 15 Nov 2026). CI and the verifier lanes skip two run-isolation tests in
+    `test/ephemeral.test.mjs`. So a risk:high PR that changes `lib/run.mjs`, `lib/ephemeral.mjs` or
+    `test/ephemeral.test.mjs` also needs a PASS on the exact head whose every run passed exactly those two tests and
+    nothing else, none skipped, run outside the heavy lane on a bwrap host. Record it under its own `--by` name. It is not
+    one of the N verifiers. Self-merge checks the record's runs; the host and lane are what the record states. The tests,
+    paths and command: `ship.self_merge.isolation_record` and [docs/self-merge.md](docs/self-merge.md).
   - No `hold` label and not draft.
 - **Post-merge check.** After each merge self-merge runs `ci.yml` on `main`. When it finishes, `ci.yml` starts
   self-merge again. If it failed, that run opens the merged

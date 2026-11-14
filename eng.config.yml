@@ -76,6 +76,12 @@ ship:
     status: verdict               # commit status eng verdict ... --pr <n> posts
     verifier_logins: [Mattslayga]   # only these logins' verdict comments count; guards against forged comments (docs/self-merge.md).
     #                               The one login that has posted eng-verdict/v1 comments here (PRs #71-#78).
+    isolation_record:             # sweep F1 (Eng Manager, 15 Nov 2026): a risk:high PR changing one of paths also needs a PASS whose
+      #                             every run passed exactly these tests, outside the heavy lane on a bwrap host (docs/self-merge.md)
+      paths: [lib/run.mjs, lib/ephemeral.mjs, test/ephemeral.test.mjs]
+      tests:                      # titles in test/ephemeral.test.mjs; CI and the verifier lanes skip both
+        - "isolation enforced: the run's docker socket refuses writable binds of protected home state, a parent of it, or a bind-backed volume; read-only passes"
+        - "isolation enforced: a container may not mount a server socket outside the run, read-only or not; the run's own socket is allowed"
 
 hygiene:                          # Four disk rules and ephemeral runs (Matt, 30 Oct 2026). Modes: fail | warn | off. CI runs npm test through eng run test (.github/workflows/ci.yml).
   disk_rules:
