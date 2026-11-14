@@ -70,7 +70,8 @@ test('invalid policy is rejected', () => {
 test('rendered pipeline and SHIPPING.md carry the policy; sync --check passes', () => {
   const s = eng('sync'); assert.equal(s.status, 0, s.stderr);
   const pipe = fs.readFileSync(path.join(dir, '.eng/ci/pipeline.yml'), 'utf8');
-  assert.match(pipe, /npx eng e2e --if-required/);
+  assert.match(pipe, /command: "node node_modules\/@slayteksystems\/eng-standard\/bin\/eng\.mjs e2e --if-required"/);
+  assert.doesNotMatch(pipe, /npx|bunx/);
   assert.match(pipe, /label: "required checks \(skipped = failed\)"\n    command: "for k in checks drift lint rules typecheck test launch verdict e2e; do o=\$\$\(buildkite-agent step get outcome/, 'a skipped step fails the build');
   assert.doesNotMatch(pipe, /ci-verdict/);
   assert.match(pipe, /# e2e: PRs run it only when/);
@@ -89,6 +90,8 @@ test('nightly enabled renders the nightly pipeline', () => {
   assert.equal(eng('sync').status, 0);
   const n = fs.readFileSync(path.join(dir, '.eng/ci/e2e-nightly.yml'), 'utf8');
   assert.match(n, /ENG_E2E_EVENT: nightly/);
+  assert.match(n, /command: "node node_modules\/@slayteksystems\/eng-standard\/bin\/eng\.mjs e2e --if-required"/);
+  assert.doesNotMatch(n, /npx|bunx/);
   assert.match(n, /cron "0 16 \* \* \*"/);
   fs.writeFileSync(p, s); eng('sync');
 });

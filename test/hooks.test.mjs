@@ -125,14 +125,44 @@ test('pre-commit reaches the locally installed eng in a repo where npx fails on 
   }
 });
 
-test('pre-commit falls back to npx --no-install eng when eng is not installed locally, and ENG still overrides', () => {
+// The npx cache once held the unrelated npm package eng@0.0.9, which runs no checks: `npx --no-install eng` ran it and
+// every commit passed. A decoy eng sits on PATH, behind a fake npx, and as a foreign node_modules/.bin/eng; none may run.
+const decoys = dir => {
+  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-decoy-'));
+  const decoy = '#!/bin/sh\necho "decoy $*" >> "$(git rev-parse --show-toplevel)/eng-calls"\n';
+  fs.writeFileSync(path.join(bin, 'npx'), decoy, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'eng'), decoy, { mode: 0o755 });
+  fs.mkdirSync(path.join(dir, 'node_modules', '.bin'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'node_modules', '.bin', 'eng'), decoy, { mode: 0o755 });
+  return bin;
+};
+
+test('pre-commit fails closed when this repo has no eng installed: it never runs npx, the npx cache or another eng', () => {
   const r = scratchRepo({ installed: false });
-  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-npx-'));
+  const bin = decoys(r.dir);
   try {
-    fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\necho "npx $*" >> eng-calls\n', { mode: 0o755 });
-    const viaNpx = runIn(r, { PATH: `${bin}:${process.env.PATH}` });
-    assert.equal(viaNpx.status, 0, viaNpx.stderr);
-    assert.equal(calls(r.dir), 'npx --no-install eng sync --check\nnpx --no-install eng lint\n');
+    const run = runIn(r, { PATH: `${bin}:${process.env.PATH}` });
+    assert.notEqual(run.status, 0, 'no eng installed: the commit must not pass');
+    assert.equal(calls(r.dir), '', 'no decoy ran');
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr.trim().split('\n').length, 1, run.stderr);
+    assert.match(run.stderr, /^eng: .*install this repo's dependencies.*ENG=<path to eng>/i);
+    assert.doesNotMatch(hooks(cfg())['.githooks/pre-commit'], /npx|bunx/, 'the hook names no package runner');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('pre-commit runs the installed eng from the repo root, wherever git starts it, and ENG still overrides', () => {
+  const r = scratchRepo({ installed: true });
+  const bin = decoys(r.dir);
+  const sub = path.join(r.dir, 'src');
+  fs.mkdirSync(sub);
+  try {
+    const nested = spawnSync('/bin/sh', [r.hook], { cwd: sub, encoding: 'utf8', env: { ...process.env, ENG: '', PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.equal(calls(r.dir), 'sync --check\nlint\n', 'the installed eng ran, from the root; no decoy ran');
     fs.rmSync(path.join(r.dir, 'eng-calls'));
     const viaEnv = runIn(r, { ENG: 'echo custom', PATH: `${bin}:${process.env.PATH}` });
     assert.equal(viaEnv.status, 0, viaEnv.stderr);
