@@ -200,9 +200,11 @@ that commit, workspaces included, matches the checkout's byte for byte, eng moun
 folders there read-only with `fuse-overlayfs` (the `npm ci` above installs them). Writes through the worktree's
 `node_modules` stay in the run's own layer; a command that names the checkout's own path still writes the checkout. eng
 unmounts when the run ends, a signal included. If `eng` itself is killed (SIGKILL), its mounts and round stay until the
-next `eng run` in the same checkout: it unmounts and removes each round whose `eng` is gone and that names this checkout's
-git common dir, and prunes the worktree entry. It leaves live runs and other checkouts' rounds, same-named repos included,
-alone. When a lockfile
+next `eng run` in the same repository: it stops the killed run's leftover processes, unmounts and removes each round
+whose `eng` is gone, that names this repository's git common dir and whose worktree git links back to it, and prunes the
+worktree entry. Linked checkouts of one repository share its common dir, so they clear each other's dead rounds. It leaves
+live runs and other repositories' rounds, same-named repos included, alone. A round it cannot clear stays whole for the
+next run, and eng prints the commands to clear it by hand. When a lockfile
 differs, the checkout has no `node_modules`, or `fuse-overlayfs` is missing or cannot mount, eng says so and the command installs the dependencies itself (`sh -c 'npm ci && npm test'`).
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
