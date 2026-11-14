@@ -17,7 +17,7 @@ const cfg = (extra = {}) => ({ project: { default_branch: 'main', protected_bran
 test('pre-commit runs each hooks.pre_commit command in its own shell after the eng checks', () => {
   const body = hooks(cfg({ hooks: { pre_commit: ['bun run lint:staged', "printf %s it's"] } }))['.githooks/pre-commit'].trim().split('\n').slice(-3);
   assert.deepEqual(body, [
-    '$ENG sync --check && $ENG lint || exit $?',
+    '"$@" sync --check && "$@" lint || exit $?',
     "sh -c 'bun run lint:staged' || exit $?",
     "sh -c 'printf %s it'\\''s' || exit $?",
   ]);
@@ -26,9 +26,10 @@ test('pre-commit runs each hooks.pre_commit command in its own shell after the e
 const runHook = (preCommit, engCmd) => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-run-'));
   try {
-    const file = path.join(dir, 'pre-commit');
+    const file = path.join(dir, 'pre-commit'), eng = path.join(dir, 'eng');
     fs.writeFileSync(file, hooks(cfg({ hooks: { pre_commit: preCommit } }))['.githooks/pre-commit']);
-    return spawnSync('/bin/sh', [file], { encoding: 'utf8', env: { ...process.env, ENG: engCmd } });
+    fs.writeFileSync(eng, `#!/bin/sh\n${engCmd}\n`, { mode: 0o755 });
+    return spawnSync('/bin/sh', [file], { encoding: 'utf8', env: { ...process.env, ENG: eng } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -53,7 +54,7 @@ test('a trailing comment in one command does not skip the next command', () => {
 });
 
 test('unset hook keys render the same pre-commit and Claude settings as before', () => {
-  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '$ENG sync --check && $ENG lint');
+  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '"$@" sync --check && "$@" lint');
   assert.equal(hooks(cfg({ hooks: { pre_commit: [] } }))['.githooks/pre-commit'], hooks(cfg())['.githooks/pre-commit']);
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg({ guard: 'off' })))), ['permissions'], 'with the guard off, as before 0.21.0');
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings({ project: { default_branch: 'main' }, guard: 'off' }))), ['permissions']);
@@ -125,19 +126,124 @@ test('pre-commit reaches the locally installed eng in a repo where npx fails on 
   }
 });
 
-test('pre-commit falls back to npx --no-install eng when eng is not installed locally, and ENG still overrides', () => {
+// The npx cache once held the unrelated npm package eng@0.0.9, which runs no checks: `npx --no-install eng` ran it and
+// every commit passed. A decoy eng sits on PATH, behind a fake npx, and as a foreign node_modules/.bin/eng; none may run.
+const decoys = dir => {
+  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-decoy-'));
+  const decoy = '#!/bin/sh\necho "decoy $*" >> "$(git rev-parse --show-toplevel)/eng-calls"\n';
+  fs.writeFileSync(path.join(bin, 'npx'), decoy, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'eng'), decoy, { mode: 0o755 });
+  fs.mkdirSync(path.join(dir, 'node_modules', '.bin'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'node_modules', '.bin', 'eng'), decoy, { mode: 0o755 });
+  return bin;
+};
+
+test('pre-commit fails closed when this repo has no eng installed: it never runs npx, the npx cache or another eng', () => {
   const r = scratchRepo({ installed: false });
-  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-npx-'));
+  const bin = decoys(r.dir);
   try {
-    fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\necho "npx $*" >> eng-calls\n', { mode: 0o755 });
-    const viaNpx = runIn(r, { PATH: `${bin}:${process.env.PATH}` });
-    assert.equal(viaNpx.status, 0, viaNpx.stderr);
-    assert.equal(calls(r.dir), 'npx --no-install eng sync --check\nnpx --no-install eng lint\n');
+    const run = runIn(r, { PATH: `${bin}:${process.env.PATH}` });
+    assert.notEqual(run.status, 0, 'no eng installed: the commit must not pass');
+    assert.equal(calls(r.dir), '', 'no decoy ran');
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr.trim().split('\n').length, 1, run.stderr);
+    assert.match(run.stderr, /^eng: .*install this repo's dependencies.*ENG=<path to eng>/i);
+    assert.doesNotMatch(hooks(cfg())['.githooks/pre-commit'].split('\n').filter(l => !l.startsWith('#')).join('\n'), /npx|bunx/, 'the hook runs no package runner');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('pre-commit runs the installed eng from the repo root, wherever git starts it, and ENG still overrides', () => {
+  const r = scratchRepo({ installed: true });
+  const bin = decoys(r.dir);
+  const sub = path.join(r.dir, 'src');
+  fs.mkdirSync(sub);
+  try {
+    const nested = spawnSync('/bin/sh', [r.hook], { cwd: sub, encoding: 'utf8', env: { ...process.env, ENG: '', PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.equal(calls(r.dir), 'sync --check\nlint\n', 'the installed eng ran, from the root; no decoy ran');
     fs.rmSync(path.join(r.dir, 'eng-calls'));
-    const viaEnv = runIn(r, { ENG: 'echo custom', PATH: `${bin}:${process.env.PATH}` });
+    fs.writeFileSync(path.join(bin, 'custom eng'), '#!/bin/sh\necho custom "$@"\n', { mode: 0o755 });
+    const viaEnv = runIn(r, { ENG: path.join(bin, 'custom eng'), PATH: `${bin}:${process.env.PATH}` });
     assert.equal(viaEnv.status, 0, viaEnv.stderr);
     assert.equal(viaEnv.stdout, 'custom sync --check\ncustom lint\n');
     assert.equal(calls(r.dir), '');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+// Lane-a, PR #89 round 1: an unquoted $ENG is split at spaces, so ENG=/x/override with spaces/eng ran /x/override and
+// a real commit passed with neither eng check. ENG names one executable file; anything else refuses in one line.
+test('a real commit runs ENG as one path, spaces included, and never the file its prefix names', () => {
+  const r = scratchRepo({ installed: false });
+  const tools = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-spaces-'));
+  const log = path.join(tools, 'calls');
+  const script = tag => `#!/bin/sh\necho "${tag} $*" >> '${log}'\n`;
+  const real = path.join(tools, 'override with spaces', 'eng');
+  fs.mkdirSync(path.dirname(real));
+  fs.writeFileSync(real, script('real'), { mode: 0o755 });
+  fs.writeFileSync(path.join(tools, 'override'), script('decoy'), { mode: 0o755 });
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const commit = (ENG, msg) => {
+    if (fs.existsSync(log)) fs.rmSync(log);
+    fs.writeFileSync(path.join(r.dir, 'f.txt'), msg);
+    execSync('git add f.txt', { cwd: r.dir });
+    const c = spawnSync('git', ['commit', '-qm', msg], { cwd: r.dir, encoding: 'utf8', env: { ...env, ENG } });
+    return { ...c, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+  };
+  try {
+    execSync('git config core.hooksPath .githooks', { cwd: r.dir });
+    const ok = commit(real, 'spaces');
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.calls, 'real sync --check\nreal lint\n', 'the override ran as one path');
+    for (const [ENG, why] of [[path.join(tools, 'missing dir', 'eng'), 'a path that does not exist'], [path.dirname(real), 'a directory'], [`${path.join(tools, 'override')} --flag`, 'a path plus words']]) {
+      const no = commit(ENG, why);
+      assert.notEqual(no.status, 0, `${why}: the commit must not pass`);
+      assert.equal(no.calls, '', `${why}: neither the override nor the prefix decoy ran`);
+      assert.equal(no.stderr.trim().split('\n').length, 1, `${why}: ${no.stderr}`);
+      assert.match(no.stderr, /^eng: pre-commit: ENG=.* is not an executable file/, why);
+    }
+    fs.chmodSync(real, 0o644);
+    const noExec = commit(real, 'not executable');
+    assert.notEqual(noExec.status, 0, 'a file that is not executable refuses');
+    assert.equal(noExec.calls, '');
+    assert.match(noExec.stderr, /^eng: pre-commit: ENG=.* is not an executable file/);
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(tools, { recursive: true, force: true });
+  }
+});
+
+// Lane-a, PR #89 round 2: with ENG=eng, `[ -x "$ENG" ]` tested ./eng but `"$ENG"` ran the eng found on PATH, so a decoy
+// there passed a real commit. A slash-free ENG refuses; with a slash the shell runs exactly the file it checked.
+test('a real commit with a slash-free ENG refuses, and never runs an eng on PATH instead of the ./eng it checked', () => {
+  const r = scratchRepo({ installed: false });
+  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-bare-'));
+  const log = path.join(bin, 'calls');
+  fs.writeFileSync(path.join(bin, 'eng'), `#!/bin/sh\necho "decoy $*" >> '${log}'\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(r.dir, 'eng'), `#!/bin/sh\necho "real $*" >> '${log}'\nexit 1\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const commit = (ENG, msg) => {
+    if (fs.existsSync(log)) fs.rmSync(log);
+    fs.writeFileSync(path.join(r.dir, 'f.txt'), msg);
+    execSync('git add f.txt', { cwd: r.dir });
+    const c = spawnSync('git', ['commit', '-qm', msg], { cwd: r.dir, encoding: 'utf8', env: { ...env, ENG } });
+    return { ...c, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+  };
+  try {
+    execSync('git config core.hooksPath .githooks', { cwd: r.dir });
+    const bare = commit('eng', 'bare');
+    assert.equal(bare.calls, '', 'neither the PATH decoy nor ./eng ran');
+    assert.notEqual(bare.status, 0, 'a slash-free ENG must not pass the commit');
+    assert.equal(bare.stderr.trim().split('\n').length, 1, bare.stderr);
+    assert.match(bare.stderr, /^eng: pre-commit: ENG=eng is not an executable file/);
+    const dotted = commit('./eng', 'dotted');
+    assert.equal(dotted.calls, 'real sync --check\n', 'ENG=./eng runs the file it checked, not the PATH decoy');
+    assert.notEqual(dotted.status, 0, 'the checked eng failed, so the commit fails');
   } finally {
     fs.rmSync(r.dir, { recursive: true, force: true });
     fs.rmSync(bin, { recursive: true, force: true });

@@ -296,7 +296,8 @@ test('CI and the rendered pipeline run the checks: a command or gate cleanup can
   assert.ok(scripts.includes('gate-runs-checks.sh'), 'the repo keeps the check that a failing check fails eng gate');
   const tpl = YAML.parse(fs.readFileSync(new URL('../templates/eng.config.yml', import.meta.url), 'utf8'));
   const pipe = pipeline(tpl);
-  assert.match(pipe, /key: "checks"\n    command: "npx eng gate checks"/);
+  assert.match(pipe, /key: "checks"\n    command: "node node_modules\/@slayteksystems\/eng-standard\/bin\/eng\.mjs gate checks"/);
+  assert.doesNotMatch(pipe, /npx|bunx/, 'every step runs the installed eng, never a package runner that can fetch or cache another eng');
   assert.match(pipe, /for k in checks /, 'the finalizer requires the checks step to pass');
 });
 
