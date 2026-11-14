@@ -8,7 +8,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 - `ship.self_merge.isolation_record` in `eng.config.yml` names the paths and the two test titles. On such a PR, some verifier's latest PASS on the head must hold only runs that exited 0 and whose node spec output shows exactly those two tests passing, none skipped. That record is not one of the N verifiers. An unknown file list needs it too. risk:low PRs and PRs that change none of the paths are unchanged.
 - The host (bwrap, outside the heavy lane) is what the record states; self-merge cannot see it. The tests skip without bwrap and docker, which the record refuses. Command and limits: `docs/self-merge.md`, "Isolation record".
-- The p57es40c exclusion is narrowed: only a heavy-lane verifier may skip, by exact name, those two tests and the anonymous-volume one. The codex-lane allowance is withdrawn.
+- The p57es40c exclusion is narrowed: only a heavy-lane verifier may skip, by exact name, those two tests and the anonymous-volume one. The earlier allowance for one verifier lane's sandbox is withdrawn.
 - **Upgrade:** nothing to do. This is eng-standard's own merge rule.
 
 ## 0.23.5 (14 Nov 2026)

@@ -164,7 +164,7 @@ run, the record's output is evidence self-merge reads but does not re-run (lock 
 **The p57es40c exclusion, narrowed (15 Nov 2026).** Only a verifier that runs the suite through the heavy lane
 (`heavyweight-job`) may skip tests, by exact name, and only these three: the two above and `another owner's anonymous
 volume a run container inherits (made before or during the run, owner removed mid-run) is kept`. Every other lane runs
-the whole suite. The earlier codex-lane allowance (`the raw docker socket is hidden...` and `an unlabelled container
+the whole suite. The earlier allowance for one verifier lane's sandbox (`the raw docker socket is hidden...` and `an unlabelled container
 whose inspect fails...`) is withdrawn: the recorded verifier runs on #86 and
 #88 report `fail 0` and one skip, and those tests skip only along with every docker or bwrap test, so both ran and passed.
 
