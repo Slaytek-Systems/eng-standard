@@ -114,32 +114,46 @@ test('the verdict product, carried directly: a run off the head or with a nonzer
 
 // ---------- recorder: the end-to-end product through the CLI ----------
 let repo;
-const git = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+const git = (c, cwd = repo) => execSync(`git ${c}`, { cwd, stdio: 'pipe', encoding: 'utf8' }).trim();
 // Each run sees no CI variable, so heavy checks are deferred as on a workstation.
-const eng = (args, { onSpawn, env = {} } = {}) => new Promise(resolve => {
+const eng = (args, { onSpawn, env = {}, cwd = repo } = {}) => new Promise(resolve => {
   const e = { ...process.env, ...env }; if (!('CI' in env)) delete e.CI;
-  const p = spawn(process.execPath, [ENG, ...args], { cwd: repo, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [ENG, ...args], { cwd, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   p.stdout.on('data', d => { stdout += d; }); p.stderr.on('data', d => { stderr += d; });
   onSpawn?.(p, () => stdout);
   p.on('close', (status, signal) => resolve({ status, signal, stdout, stderr, out: stdout + stderr }));
 });
-const runLogFile = () => path.join(repo, '.git', 'eng', 'verdict-runs.jsonl');
-const lastRun = by => fs.readFileSync(runLogFile(), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by).at(-1);
+const runLogFile = (root = repo) => path.join(root, '.git', 'eng', 'verdict-runs.jsonl');
+const lastRun = (by, root = repo) => !fs.existsSync(runLogFile(root)) ? undefined : fs.readFileSync(runLogFile(root), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by).at(-1);
 const pool = async (items, n, f) => { const out = [], q = items.map((x, i) => [x, i]); await Promise.all(Array.from({ length: n }, async () => { while (q.length) { const [x, i] = q.shift(); out[i] = await f(x); } })); return out; };
 
-before(() => {
-  repo = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-pass-integrity-repo-'));
-  git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
+const repos = [];
+function makeRepo() {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-pass-integrity-repo-'));
+  repos.push(dir);
+  git('init -q -b main', dir); git('config user.email t@t', dir); git('config user.name t', dir);
   const c = YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
   c.gates.required = []; c.hygiene.run_rules.ephemeral_runs.mode = 'off'; c.verification.flake_runs = 1;
-  fs.writeFileSync(path.join(repo, 'eng.config.yml'), YAML.stringify(c));
-  fs.mkdirSync(path.join(repo, '.eng/checks'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.eng/checks/light.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(repo, '.eng/checks/model.sh'), '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=30s\nexit 0\n', { mode: 0o755 });
-  git('add -A'); git('commit -qm base');
+  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(c));
+  fs.mkdirSync(path.join(dir, '.eng/checks'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.eng/checks/light.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, '.eng/checks/model.sh'), '#!/bin/sh\n# weight: heavy\n# budget: memory=128M workers=1 timeout=30s\nexit 0\n', { mode: 0o755 });
+  git('add -A', dir); git('commit -qm base', dir);
+  return dir;
+}
+before(() => { repo = makeRepo(); });
+after(() => { for (const d of repos) fs.rmSync(d, { recursive: true, force: true }); });
+
+// CI run 43598304842: one eng run of the pool below ended before it recorded anything, and lastRun's ENOENT failed the test
+// with none of eng's output, while the other runs kept going and wrote into the repo after it was removed.
+test('the recorder harness: an eng run that ends before it records is reported with its exit and output, not an ENOENT', async () => {
+  const dir = makeRepo(), by = 'e2e-ends-before-recording';
+  const run = await eng(['run', '--by', by, '--ref', 'no-such-ref', '--', 'true'], { cwd: dir });
+  assert.equal(run.status, 1, run.out);
+  assert.match(run.stderr, /git worktree add failed/);
+  assert.equal(lastRun(by, dir), undefined, 'no record, and no throw');
 });
-after(() => fs.rmSync(repo, { recursive: true, force: true }));
 
 const OUTCOMES = { 'exit 0': 'exit 0', 'exit 1': 'exit 1', 'exit 3': 'exit 3', 'exit 124': 'exit 124', 'SIGKILL (137)': 'kill -KILL $$', 'SIGTERM': 'kill -TERM $$' };
 const script = ({ outcome, budget, nested }) => [
@@ -159,7 +173,7 @@ test('the recorder product: only a command that exited 0, unstopped, with no nes
   });
   for (const { row, by, run, rec } of results) {
     const name = JSON.stringify(row), honest = row.outcome === 'exit 0' && row.budget === 'none' && row.nested === 'none';
-    assert.ok(rec, `the run was recorded: ${name}\n${run.out}`);
+    assert.ok(rec, `the run was recorded: ${name} (eng ended with ${run.signal ?? `exit ${run.status}`})\n${run.out}`);
     assert.equal(run.status, rec.exit, `eng run exits with the recorded code: ${name}`);
     if (row.budget === 'timeout stop') assert.match(run.stderr, /stopped by its budget: timeout 3s/, name);
     if (row.nested === 'deferring gate' && row.outcome === 'exit 0' && row.budget === 'none') assert.match(rec.output, /INCOMPLETE \(exit 3\)/, name);
