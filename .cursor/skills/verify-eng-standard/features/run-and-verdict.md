@@ -8,6 +8,7 @@ A verifier runs a command on the exact commit with `eng run --by <id> -- <cmd>`,
 - `verdict-pass` records a PASS backed by a passing run on HEAD.
 - `verdict-check-head` passes for that head and fails after a new commit.
 - `run-deps` mounts the checkout's `node_modules` folders (root and workspaces) read-only with `fuse-overlayfs` when every lockfile in every folder matches the commit, keeps every write the run makes out of the checkout, and names the cause and `npm ci` when a lockfile differs or the mount fails.
+- `run-recover` clears a SIGKILLed run's mounts, round and worktree entry on the next `eng run` in the same checkout, and leaves a live run and a same-named repo's rounds alone.
 - `verdict-refuse` refuses a PASS when the latest run of a command failed.
 - `run-by-id` refuses a `--by` with a `/` or a space, which no `eng-run/...` status can carry.
 
