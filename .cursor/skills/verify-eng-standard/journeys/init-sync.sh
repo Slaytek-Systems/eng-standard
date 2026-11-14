@@ -5,7 +5,8 @@ source "$(dirname "$0")/lib.sh"
 repo init-sync
 expect 0 eng init
 has 'seeded eng.config.yml'
-for f in eng.config.yml AGENTS.md SHIPPING.md .eng/lock.json .eng/guard/hook.mjs .githooks/pre-commit .agents/skills/eng-verify/SKILL.md; do
+has 'seeded .eng/rule-proofs/no-focused-tests'
+for f in eng.config.yml AGENTS.md SHIPPING.md .eng/lock.json .eng/guard/hook.mjs .githooks/pre-commit .agents/skills/eng-verify/SKILL.md .eng/rule-proofs/no-focused-tests/src/cart.test.ts.fixture; do
   expect 0 test -s "$f"
 done
 expect 0 git config core.hooksPath
