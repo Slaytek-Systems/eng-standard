@@ -7,7 +7,7 @@ A verifier runs a command on the exact commit with `eng run --by <id> -- <cmd>`,
 - `run-record` records the run, its exit code and its commit.
 - `verdict-pass` records a PASS backed by a passing run on HEAD.
 - `verdict-check-head` passes for that head and fails after a new commit.
-- `run-deps` gives the command the checkout's `node_modules` as hard links when every lockfile matches the commit, and names the cause and `npm ci` when one differs.
+- `run-deps` mounts the checkout's `node_modules` folders (root and workspaces) read-only with `fuse-overlayfs` when every lockfile in every folder matches the commit, keeps every write the run makes out of the checkout, and names the cause and `npm ci` when a lockfile differs or the mount fails.
 - `verdict-refuse` refuses a PASS when the latest run of a command failed.
 - `run-by-id` refuses a `--by` with a `/` or a space, which no `eng-run/...` status can carry.
 
@@ -27,7 +27,7 @@ Preconditions:
 - **New head.** Commit another change, then `eng verdict check`. Exit 1 with `no verdict for HEAD`.
 - **Failed run.** `eng run --by v1 -- false` exits 1 with `(exit 1) as verdict evidence`. `eng verdict PASS --by v1` then exits 1 and names the run that `exited 1`. `eng verdict check` still exits 1.
 - **Bad id.** `eng run --by a/b -- true`. Exit 1, output has `cannot name a run status`.
-- **Deps.** With a committed `package-lock.json` and an installed `node_modules`, `eng run -- node -e 'import("<dep>")'` exits 0 and prints `node_modules: hard links to`. Edit the lockfile without committing: the same run prints `package-lock.json differs` and fails to import. The checkout's `node_modules` is unchanged after `eng run -- rm -rf node_modules`.
+- **Deps.** With a committed `package-lock.json` and an installed `node_modules`, `eng run -- node -e 'import("<dep>")'` exits 0 and prints `read-only under the run's own overlay`. Edit the lockfile without committing: the same run prints `package-lock.json differs` and fails to import. The checkout's `node_modules` is unchanged (inode, mode, content) after `eng run -- sh -c 'npm ci && echo x >> node_modules/<dep>/README.md && chmod 600 node_modules/<dep>/package.json'`, and no mount remains under the scratch root.
 - **Journey.** `verify.sh journey <id> run-verdict`.
 
 ## Gotchas

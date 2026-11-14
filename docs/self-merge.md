@@ -196,9 +196,10 @@ node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or 
 ```
 
 `eng run` runs in a private worktree of the exact commit. Git puts tracked files only there, so when every lockfile at
-that commit matches the checkout's byte for byte, eng copies the checkout's `node_modules` in as hard links (the `npm ci`
-above installs it). When a lockfile differs or the checkout has no `node_modules`, eng says so and the command installs
-the dependencies itself (`sh -c 'npm ci && npm test'`).
+that commit, workspaces included, matches the checkout's byte for byte, eng mounts each of the checkout's `node_modules`
+folders there read-only with `fuse-overlayfs` (the `npm ci` above installs them). The run's writes stay in its own layer
+and never reach the checkout. When a lockfile differs, the checkout has no `node_modules`, or `fuse-overlayfs` is missing,
+eng says so and the command installs the dependencies itself (`sh -c 'npm ci && npm test'`).
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the
