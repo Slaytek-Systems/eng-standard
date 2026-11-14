@@ -153,8 +153,8 @@ function envMoves(w, b) {
 // ---------- the controller: scripts/pr-gate.mjs merge() for one PR, one GitHub read per step ----------
 // merge() reads main's tip, then the PR, then runs evaluate() once to decide whether to re-check. That first pass only
 // gates the re-check, so the model lets it pass every time: more behaviors than the code has, never fewer. The re-check
-// (the PR and main again, then prState: statuses, test check, compare, comments, then the statuses and the labels again) and the
-// merge call go read by read.
+// (the PR and main again, then prState: statuses, test check, compare, comments, then the labels, the statuses and the
+// comments again) and the merge call go read by read.
 function ctrlMoves(w, need, risk, firstPass) {
   const n = clone(w), c = n.ctrl, one = s => [[s, n]];
   switch (c.pc) {
@@ -175,17 +175,20 @@ function ctrlMoves(w, need, risk, firstPass) {
       const d = evaluate(n, c, risk);
       const first = c.first;
       if (first) { delete c.first; c.firstPassRan = true; }
-      c.pc = d.merge ? (first ? 'again' : 's2') : 'done';
+      c.pc = d.merge ? (first ? 'again' : 'l2') : 'done';
       return one(`self-merge reads ${n.comments.length} comment(s); ${first ? 'the first ' : ''}decide() says ${d.merge ? 'merge' : 'skip'}: ${d.reason}`);
     }
+    case 'l2':
+      c.pc = n.hold === c.hold ? 's2' : 'done';
+      return one(`self-merge reads the PR's labels again: ${n.hold === c.hold ? 'unchanged' : 'changed, skip'}`);
     case 's2': {
       const more = n.statuses.filter(s => s.sha === c.sha && s.id > c.statusesUpto).length;
-      c.pc = more ? 'done' : 'l2';
+      c.pc = more ? 'done' : 'c2';
       return one(`self-merge reads the statuses on h${c.sha + 1} again: ${more ? `${more} new, skip` : 'unchanged'}`);
     }
-    case 'l2':
-      c.pc = n.hold === c.hold ? 'put' : 'done';
-      return one(`self-merge reads the PR's labels again: ${n.hold === c.hold ? 'unchanged' : 'changed, skip'}`);
+    case 'c2':
+      c.pc = n.comments.length === c.commentsUpto ? 'put' : 'done';
+      return one(`self-merge reads the comments again: ${n.comments.length === c.commentsUpto ? 'unchanged' : 'new, skip'}`);
     case 'put':
       if (n.head !== c.sha) { c.pc = 'done'; return one(`self-merge calls merge pinned to h${c.sha + 1}: GitHub refuses, the head moved`); }
       n.merged = true; c.pc = 'done';
@@ -193,7 +196,7 @@ function ctrlMoves(w, need, risk, firstPass) {
   }
   return [];
 }
-const inWindow = c => !c.first && ['s', 'k', 'b', 'v', 's2', 'l2', 'put'].includes(c.pc);
+const inWindow = c => !c.first && ['s', 'k', 'b', 'v', 'l2', 's2', 'c2', 'put'].includes(c.pc);
 
 function check(name) {
   const b = SCENARIOS[name], risk = b.risk, need = risk === 'high' ? C.high_verifiers : 1;

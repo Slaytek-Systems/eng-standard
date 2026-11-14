@@ -15,13 +15,13 @@ All commands run from the repo root after `npm ci`. `F=.cursor/skills/formal-mer
 
 `rulesHold()` in `check.mjs` judges this from what happened: who started which run, who ended or cleared it, and which comments exist. It never reads status rows, so a bug in how `decide()` reads rows shows up as a disagreement.
 
-**MergeMatchesAMoment** (`--property moment`): one moment existed, between the re-check's PR read and the merge call, when every rule held at once. It fails today on finding F1 below.
+**MergeMatchesAMoment** (`--property moment`): one moment existed, between the re-check's PR read and the merge call, when every rule held at once. It failed on finding F1 below until 0.23.6.
 
 ## Run it
 
 ```sh
 node --max-old-space-size=1500 $F/check.mjs                      # RulesHeldWhenRead, all 6 scenarios: about 15 s, under 1 GB
-node --max-old-space-size=1500 $F/check.mjs --property moment    # fails today on F1 only
+node --max-old-space-size=1500 $F/check.mjs --property moment    # passes every scenario since 0.23.6
 node $F/sensitivity.mjs                                          # every seeded fault must be CAUGHT: about 15 s
 ```
 
@@ -50,7 +50,7 @@ Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario m
 | first `decide()` pass | `merge()`: `evaluate(p, tip)`. It only gates the re-check, so every scenario except `f1-replay` takes it as merge. That allows more behaviors than the code has, never fewer, so a pass is sound. A counterexample from those scenarios is abstract, so replay it in `f1-replay` or a scenario like it before you call it a bug. |
 | `again` (head, hold label, main unchanged) | `merge()`: `again = get(pulls/n)` and `mainTip()`, two reads modeled as one step. Main cannot move during the run, and the head is pinned by the merge call. |
 | `s`, `k`, `b`, `v`: statuses, then `test` check and `now`, then compare, then comments and `decide()` | `prState()` in that order, then `evaluate()` and `decide()` |
-| `s2`, `l2`: the statuses, then the labels, read again; any change skips | `merge()`: after `evaluate(again, tip)`, `pages(statuses)` and `get(pulls/n)` compared with the re-check's reads |
+| `l2`, `s2`, `c2`: the labels, the statuses, then the comments, read again; any change skips | `merge()`: after `evaluate(again, tip)`, `get(pulls/n)`, `pages(statuses)` and `pages(comments)` compared with the re-check's reads |
 | `put`: merge, refused if the head moved | `PUT pulls/n/merge` with `sha` |
 | run start, end, `error` clear, `collab` statuses | `lib/run.mjs` posts through `runStatusContext` and `runStatusText`, and docs/self-merge.md "Run guard" covers the hand clear |
 | `rulesHold()` | AGENTS.md "Merge rule" and docs/self-merge.md, restated without `lib/` |
@@ -63,7 +63,7 @@ Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario m
 
 ## Findings
 
-- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the full replay, with the first pass read by read (`--property moment --scenario f1-replay`, 16 steps). V1 posts PASS. Self-merge's first pass reads it and says merge. V1 posts FAIL. Self-merge re-reads the PR and the statuses, and no run is pending. V1 starts `eng run --by V1`, which posts pending, and then V1 posts PASS while that run is still going. Self-merge reads the comments, counts the latest PASS, sees no run, and merges. After the FAIL, there was no moment when the latest verdict was a PASS and V1 had no run in progress. This is the #73 pattern (PASS, then FAIL, then a re-run) that the run guard exists for. A hold label added just before a late PASS is missed the same way. `--property moment` fails in `run-ownership`, `dead-runs`, `two-verifiers`, `hold-label` and `f1-replay`, and passes `heads`. Since 0.23.6 the re-check reads the statuses and the labels again after the comments and skips on any change (`s2`, `l2`). `--property moment` now passes every scenario except `hold-label` (14 steps): the hold label is added, a PASS lands, the comments are read, a FAIL lands, and the label is removed before the label re-read. Labels can return to an earlier value, so an equal re-read does not prove they never changed. Reading the labels, then the statuses, then the comments again after the first comment read would close it (inferred, not built). When `--property moment` passes every scenario, make it the default and drop this entry.
+- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the full replay, with the first pass read by read (`--property moment --scenario f1-replay`, 16 steps). V1 posts PASS. Self-merge's first pass reads it and says merge. V1 posts FAIL. Self-merge re-reads the PR and the statuses, and no run is pending. V1 starts `eng run --by V1`, which posts pending, and then V1 posts PASS while that run is still going. Self-merge reads the comments, counts the latest PASS, sees no run, and merges. After the FAIL, there was no moment when the latest verdict was a PASS and V1 had no run in progress. This is the #73 pattern (PASS, then FAIL, then a re-run) that the run guard exists for. A hold label added just before a late PASS is missed the same way. Before 0.23.6, `--property moment` failed in `run-ownership`, `dead-runs`, `two-verifiers`, `hold-label` and `f1-replay`, and passed `heads`. Fixed in 0.23.6: after `decide()` says merge, the re-check reads the labels, the statuses and the comments again and skips on any change (`l2`, `s2`, `c2`), so the label read is one moment when every rule held. `--property moment` passes every scenario, so it can become the default and this entry can go (not done here).
 
 ## Reading a result
 
