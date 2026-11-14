@@ -217,3 +217,35 @@ test('a real commit runs ENG as one path, spaces included, and never the file it
     fs.rmSync(tools, { recursive: true, force: true });
   }
 });
+
+// Lane-a, PR #89 round 2: with ENG=eng, `[ -x "$ENG" ]` tested ./eng but `"$ENG"` ran the eng found on PATH, so a decoy
+// there passed a real commit. A slash-free ENG refuses; with a slash the shell runs exactly the file it checked.
+test('a real commit with a slash-free ENG refuses, and never runs an eng on PATH instead of the ./eng it checked', () => {
+  const r = scratchRepo({ installed: false });
+  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-bare-'));
+  const log = path.join(bin, 'calls');
+  fs.writeFileSync(path.join(bin, 'eng'), `#!/bin/sh\necho "decoy $*" >> '${log}'\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(r.dir, 'eng'), `#!/bin/sh\necho "real $*" >> '${log}'\nexit 1\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const commit = (ENG, msg) => {
+    if (fs.existsSync(log)) fs.rmSync(log);
+    fs.writeFileSync(path.join(r.dir, 'f.txt'), msg);
+    execSync('git add f.txt', { cwd: r.dir });
+    const c = spawnSync('git', ['commit', '-qm', msg], { cwd: r.dir, encoding: 'utf8', env: { ...env, ENG } });
+    return { ...c, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+  };
+  try {
+    execSync('git config core.hooksPath .githooks', { cwd: r.dir });
+    const bare = commit('eng', 'bare');
+    assert.equal(bare.calls, '', 'neither the PATH decoy nor ./eng ran');
+    assert.notEqual(bare.status, 0, 'a slash-free ENG must not pass the commit');
+    assert.equal(bare.stderr.trim().split('\n').length, 1, bare.stderr);
+    assert.match(bare.stderr, /^eng: pre-commit: ENG=eng is not an executable file/);
+    const dotted = commit('./eng', 'dotted');
+    assert.equal(dotted.calls, 'real sync --check\n', 'ENG=./eng runs the file it checked, not the PATH decoy');
+    assert.notEqual(dotted.status, 0, 'the checked eng failed, so the commit fails');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
