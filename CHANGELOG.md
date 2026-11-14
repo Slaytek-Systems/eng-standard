@@ -2,14 +2,23 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.23.2 (14 Nov 2026)
+## 0.23.3 (14 Nov 2026)
 
 **The next `eng run` clears what a SIGKILLed `eng run` left behind, in its own checkout only** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). In 0.23.1 a killed `eng` left its `node_modules` mounts and its round until someone cleared them by hand.
 
 - Each run round records its checkout, the realpath of its git common dir, in `.eng-checkout`. Before a run opens its round, eng resolves the scratch root (a symlinked `$HOME`, `XDG_CACHE_HOME` or `hygiene.scratch_root` included) and finds each run round there whose `eng` (the pid in the round's name) is gone, whose `.eng-checkout` names this checkout, and whose `wt/.git` is a worktree of this checkout that git links back to. It stops the processes the killed run left (those with the round's `ENG_SCRATCH`, as a normal end does), unmounts the round's mounts (`fusermount3 -u -z`), confirms none is left, removes the round with `.eng-checkout` last, prunes the worktree entry and prints one line saying so.
 - If a process will not stop, a mount will not come off or removal fails, the round stays whole, `.eng-checkout` included, the next `eng run` tries again, and the line gives the commands to clear it by hand.
-- A round whose `eng` is alive, a round of another repository (a repo with the same project name, which shares the scratch root, included), a round whose `.eng-checkout` or `wt/.git` is missing, a symlink or names another repository, a round made before 0.23.2, and anything else in the scratch root are left alone. Linked checkouts (`git worktree add`) of one repository share its git common dir and worktree list, so they clear each other's dead rounds. Matching on the project name alone, as #85 did, let one repo unmount and delete a same-named repo's round.
-- **Upgrade:** zero manual edits. Rounds left by 0.23.1 are still cleared by hand (`kill -9` each process whose `/proc/<pid>/environ` has `ENG_SCRATCH=<round>`, `fusermount3 -u -z <path>`, `rm -rf <round>`, `git worktree prune`).
+- A round whose `eng` is alive, a round of another repository (a repo with the same project name, which shares the scratch root, included), a round whose `.eng-checkout` or `wt/.git` is missing, a symlink or names another repository, a round made before 0.23.3, and anything else in the scratch root are left alone. Linked checkouts (`git worktree add`) of one repository share its git common dir and worktree list, so they clear each other's dead rounds. Matching on the project name alone, as #85 did, let one repo unmount and delete a same-named repo's round.
+- **Upgrade:** zero manual edits. Rounds left by 0.23.1 and 0.23.2 are still cleared by hand (`kill -9` each process whose `/proc/<pid>/environ` has `ENG_SCRATCH=<round>`, `fusermount3 -u -z <path>`, `rm -rf <round>`, `git worktree prune`).
+
+## 0.23.2 (14 Nov 2026)
+
+**The pre-commit hook and the pipeline run this repo's installed eng, never npx** (Core task p5756x5be3hw56e8my0k966yg98j7btm). The hook ran `${ENG:-npx --no-install eng}` when eng was not installed. In a worktree with no `node_modules`, `npx --no-install` still resolves from the npx cache, and on one devbox that cache held the unrelated npm package `eng@0.0.9`. It runs no checks and exits 0, so pre-commit passed silently in every eng repo for about 36 hours.
+
+- **The hook fails closed.** `.githooks/pre-commit` moves to the repo root (`git rev-parse --show-toplevel`) and runs `$ENG` if set, else `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. With neither, it exits 1 with one line: `eng: pre-commit cannot find node_modules/@slayteksystems/eng-standard/bin/eng.mjs. Install this repo's dependencies, or set ENG=<path to eng>`. It never calls npx, the npx cache, an `eng` on PATH or a foreign `node_modules/.bin/eng`. The bun-repo fix from 0.20.3 (#55) still holds: the installed eng runs with node, so npm never reads the project.
+- **`$ENG` is one executable file** (PR #89 review). The hook expanded `$ENG` unquoted, so `ENG=/x/override with spaces/eng` ran `/x/override` and a decoy there passed the commit with no eng check. The hook now runs `"$ENG"` as one quoted path. A value that is not an executable file (a missing path, a directory, or a command with arguments such as `node eng.mjs`) exits 1 with one line that starts `eng: pre-commit: ENG=<value> is not an executable file path`. So does a name with no slash: with `ENG=eng` the hook checked `./eng` but sh ran the `eng` on PATH, and a decoy there passed a real commit. Set `ENG` to the eng script's path, such as `./eng`.
+- **The Buildkite pipeline does the same.** `.eng/ci/pipeline.yml` and `.eng/ci/e2e-nightly.yml` ran `npx eng <cmd>`, which with no install fetches the registry's `eng` and passes. Each step now runs `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs <cmd>` and fails when eng is not installed.
+- **Upgrade:** run `eng sync` and commit the new `.githooks/pre-commit` (and pipeline files). Until then a repo keeps the old hook. A worktree with no `node_modules` now refuses commits: install dependencies there, or set `ENG`.
 
 ## 0.23.1 (14 Nov 2026)
 

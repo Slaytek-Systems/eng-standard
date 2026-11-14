@@ -192,7 +192,7 @@ test('merge.auto.tests_check: naming another check as the tests is listed', asyn
 test('lint gates on the PR\'s own config: the rendered pipeline never reads another ref\'s config', async () => {
   const { pipeline } = await import('../lib/render.mjs');
   const cfg = YAML.parse(base);
-  assert.match(pipeline(cfg), /command: "npx eng lint"/);
+  assert.match(pipeline(cfg), /command: "node node_modules\/@slayteksystems\/eng-standard\/bin\/eng\.mjs lint"/);
   assert.doesNotMatch(pipeline(cfg), /config-from/);
   for (const f of ['ci.yml', 'gate.yml']) assert.doesNotMatch(fs.readFileSync(path.join(PKG, 'templates/merge-auto', f), 'utf8'), /config-from/, f);
 });

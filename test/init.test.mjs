@@ -15,7 +15,7 @@ const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
 const TPL = path.resolve(new URL('../templates/eng.config.yml', import.meta.url).pathname);
 let root, dir;
 // The pre-commit hook eng init installs runs $ENG sync --check and $ENG lint.
-const env = () => ({ ...process.env, ENG: `${process.execPath} ${ENG}`, ENG_TMP: '', ENG_TMP_BASE: '', ENG_BASE: '', GITHUB_ACTIONS: '', BUILDKITE: '' });
+const env = () => ({ ...process.env, ENG, ENG_TMP: '', ENG_TMP_BASE: '', ENG_BASE: '', GITHUB_ACTIONS: '', BUILDKITE: '' });
 const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env: env() });
 const git = (c, cwd = dir) => execSync(`git ${c}`, { cwd, stdio: 'pipe', encoding: 'utf8', env: env() }).trim();
 const put = (p, c) => { fs.mkdirSync(path.dirname(path.join(dir, p)), { recursive: true }); fs.writeFileSync(path.join(dir, p), c); };
