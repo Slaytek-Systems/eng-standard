@@ -1035,4 +1035,6 @@ test('F1: the re-check refuses when the labels, statuses or verdict comments cha
   assert.ok(r.sent.some(c => c[0] === 'PUT'), `another context's status, whose event never runs self-merge, does not skip the merge: ${r.stdout}`);
   r = gate({ ...f1, [`GET ${R}/commits/${SHA}/statuses`]: { seq: [[VROW], [VROW], [row({ id: 60, state: 'bogus' }), VROW]] }, [`GET ${R}/issues/3/comments?per_page=100`]: [pass1].map(asComment) }, comment);
   assert.ok(!r.sent.some(c => c[0] === 'PUT'), `a malformed row posted during the re-check refuses the merge: ${r.stdout}`);
+  r = gate({ ...f1, [`GET ${R}/commits/${SHA}/statuses`]: { seq: [[row({ id: 60 }), VROW], [row({ id: 60 }), VROW], [row({ id: 60 }), row({ id: 60, context: 'ci/lint' }), VROW]] }, [`GET ${R}/issues/3/comments?per_page=100`]: [pass1].map(asComment) }, comment);
+  assert.ok(!r.sent.some(c => c[0] === 'PUT'), `a repeated status id posted during the re-check refuses the merge: ${r.stdout}`);
 });

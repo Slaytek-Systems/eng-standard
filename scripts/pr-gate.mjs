@@ -163,9 +163,9 @@ function merge() {
     if (!d2.merge) { console.log(`#${p.number}: refused on re-check: ${d2.reason}`); continue; }
     // prState() read the statuses first and the comments last. Read the labels, then the statuses, then the comments again:
     // if none changed, every rule held at once when the labels were read (bug p571wk5x, formal-merge-gate F1). Only the rows
-    // decide() reads count: the verdict and eng-run contexts, whose events run self-merge again, and any malformed row,
-    // which refuses every merge anyway. Another context's status would skip with no event to retry.
-    const gating = l => Array.isArray(l) ? l.filter(r => r?.context === C.status || String(r?.context).startsWith(RUN_STATUS) || parseStatuses([r]).problem) : l;
+    // decide() reads count: the verdict and eng-run contexts, whose events run self-merge again. A list parseStatuses()
+    // refuses is compared whole, since it refuses every merge anyway. Another context's status would skip with no retry.
+    const gating = l => parseStatuses(l).problem ? l : l.filter(r => r.context === C.status || r.context.startsWith(RUN_STATUS));
     const names = x => x.labels.map(l => l.name).sort().join('\n'), last = get(`repos/${R}/pulls/${p.number}`);
     const statuses = pages(`repos/${R}/commits/${p.head.sha}/statuses?per_page=100`);
     const verdicts = parseVerdicts(pages(`repos/${R}/issues/${p.number}/comments?per_page=100`));
