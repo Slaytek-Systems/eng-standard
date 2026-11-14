@@ -2,16 +2,6 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
-## 0.23.4 (14 Nov 2026)
-
-**The merge gate's tests catch 96% of seeded faults in it** (Core task p57cegath6psjr5fy1ncyg7bsh8j7mxb, decision nd77ge2m5baa3974ghxrsqk0w18j6gfx). The goal: the gate refuses whenever its input is wrong, and the tests prove it. #80's verifiers kept finding malformed status rows the tests missed. Tests only; no gate code changed.
-
-- **A mutation harness, with no dependency.** `node test/mutation/mutate.mjs` seeds 1,334 faults (swapped operators, flipped conditions and booleans, emptied strings, dropped optional chains) into `lib/self-merge.mjs`, `lib/merge-queue.mjs` and `lib/merge-cli.mjs`, one at a time, each in a worker's copy of the tree, and runs the gate's test files against each. It never writes the checkout itself. Ctrl-C, SIGTERM or a crash kills every test it started and removes the worker copies; `node test/mutation/signal-check.mjs` proves it on a scratch repo. `npm test` does not run either. `--list` prints them; `--ids` and `--tests` rerun a subset. Share caught: 63.0% before, 95.95% after (1,280 of 1,334). Of the 54 left, nearly all change nothing a caller can see (`trim` against `trimEnd` on a blank check, an encoding nothing reads, an `|| ''` whose result is discarded).
-- **Malformed and missing-field input is refused, and each test shows it** (`test/gate-inputs.test.mjs`). Every missing or wrongly typed status-row field (`updated_at`, `description`, `creator`, a blank context, a run row with no creator), a status list that is missing or not an array, verdict comments missing `sha`, `result` or `by`, an unset `ship` or `merge.auto` block, and the edges of each rule: a run's first pending status sets its deadline, `decide()` judges it at `state.now`, and the configured review-only paths decide whether a review PASS counts.
-- **`eng merge gate`, `eng merge post` and the doctor checks against a strict fake `gh`** (`test/merge-cli.test.mjs`). The fake parses each call as `gh` does and refuses any argument it does not know. The tests assert every status, label, comment, PR, dispatch, approval and webhook the gate sends, and the auto-revert branch it pushes (author, parent, tree and message). They also cover a PR head that exists only on origin, a PR object with no base or author, empty `gh` bodies, a merge-queue base whose `eng.config.yml` is executable, missing or invalid, and dry runs that never disarm or re-arm auto-merge. A fake `sleep` logs each wait in call order and returns at once, so the poll tests assert when the gate waits and take no real time.
-- **The scratch origin's branch is `main` whatever git's `init.defaultBranch` says.** Its bare repo was created without `-b main`, so a clone checked out no `main` and `git push origin main` failed on CI.
-- **Upgrade:** nothing to do.
-
 ## 0.23.3 (14 Nov 2026)
 
 **The next `eng run` clears what a SIGKILLed `eng run` left behind, in its own checkout only** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). In 0.23.1 a killed `eng` left its `node_modules` mounts and its round until someone cleared them by hand.
