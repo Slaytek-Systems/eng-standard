@@ -1,7 +1,7 @@
 // profile: generic by default (no person, company, private tool or note in what eng renders); `profile: slaytek`
 // renders what v0.17.2 rendered, apart from one reviewed line (LINT_LINE). test/fixtures/profile/v0.17.2.json holds the
 // v0.17.2 output hashes, made with scripts/render-hashes.mjs --pkg <v0.17.2 checkout> test/fixtures/profile/*.yml;
-// v0.18.2.json, v0.19.0.json, v0.19.1.json, v0.19.2.json, v0.20.3.json, v0.21.0.json and v0.21.1.json hold those releases' and v0.23.1.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
+// v0.18.2.json, v0.19.0.json, v0.19.1.json, v0.19.2.json, v0.20.3.json, v0.21.0.json and v0.21.1.json hold those releases' and v0.23.2.json this package's, made with scripts/render-hashes.mjs --append 'profile: slaytek' test/fixtures/profile/*.yml.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -73,7 +73,7 @@ test('outcome 2: STACK.md frames picks as recommendations the owner adopts; DRAF
 
 // The one line 0.18.2 changed on purpose (Matt, 10 Nov 2026): the pipeline's lint step reads the PR's own config.
 const LINT_LINE = { file: '.eng/ci/pipeline.yml', old: '    command: "npx eng lint --config-from origin/main"', new: '    command: "npx eng lint"' };
-// 0.23.1 runs the installed eng by its package path instead of npx (the npx cache held an unrelated package named eng).
+// 0.23.2 runs the installed eng by its package path instead of npx (the npx cache held an unrelated package named eng).
 const INSTALLED_ENG = 'node node_modules/@slayteksystems/eng-standard/bin/eng.mjs ';
 const viaNpx = text => text.replaceAll(`command: "${INSTALLED_ENG}`, 'command: "npx eng ');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -92,12 +92,12 @@ const LOCAL_ENG = ['.githooks/pre-commit'];
 const GUARDED = ['.claude/settings.json', '.eng/guard/codex-hooks.json', '.eng/guard/config.json', '.eng/guard/cursor-hooks.json', '.eng/guard/guard.mjs', '.eng/guard/hook.mjs', '.eng/lock.json', 'SHIPPING.md'];
 // The files 0.21.1 changed on purpose (Matt's decision on E2): the one line saying what a PASS proves.
 const PASS_LINE = ['AGENTS.md', 'SHIPPING.md'];
-// The files 0.23.1 changed on purpose (the npx-cache impostor): the pre-commit hook and the pipeline run the installed eng.
+// The files 0.23.2 changed on purpose (the npx-cache impostor): the pre-commit hook and the pipeline run the installed eng.
 const NO_NPX = ['.eng/ci/pipeline.yml', '.githooks/pre-commit'];
 const diff = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(f => JSON.stringify(a[f]) !== JSON.stringify(b[f]));
 
-test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.23.1.json, which differs from v0.21.1 only in the pre-commit hook and the pipeline, v0.21.1 from v0.21.0 only in the PASS line, v0.21.0 from v0.20.3 only in the guard files, v0.20.3 from v0.19.2 only in the pre-commit hook, v0.19.2 from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
-  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.23.1.json'), 'utf8')), v211 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.1.json'), 'utf8')), v210 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.0.json'), 'utf8')), v203 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.20.3.json'), 'utf8')), v192 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
+test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.23.2.json, which differs from v0.21.1 only in the pre-commit hook and the pipeline, v0.21.1 from v0.21.0 only in the PASS line, v0.21.0 from v0.20.3 only in the guard files, v0.20.3 from v0.19.2 only in the pre-commit hook, v0.19.2 from v0.19.1 only in the rewritten skills, v0.19.1 from v0.19.0 only in the hook messages, v0.19.0 from v0.18.2 only in the moved AGENTS.md text, and v0.18.2 from v0.17.2 by one reviewed line', () => {
+  const want = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.23.2.json'), 'utf8')), v211 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.1.json'), 'utf8')), v210 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.21.0.json'), 'utf8')), v203 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.20.3.json'), 'utf8')), v192 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.2.json'), 'utf8')), v191 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.1.json'), 'utf8')), v190 = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.19.0.json'), 'utf8')), prev = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.18.2.json'), 'utf8')), old = JSON.parse(fs.readFileSync(path.join(FIX, 'v0.17.2.json'), 'utf8'));
   assert.deepEqual(Object.keys(want), Object.keys(old));
   assert.deepEqual(Object.keys(prev), Object.keys(old)); assert.deepEqual(Object.keys(v190), Object.keys(old));
   assert.deepEqual(Object.keys(v192), Object.keys(old));
@@ -137,7 +137,7 @@ test('outcome 3: profile: slaytek renders every fixture byte for byte as v0.23.1
   assert.ok(fixtures.length >= 3 && fixtures.every(f => fs.existsSync(f)), 'every fixture in the hash file exists');
   const r = spawnSync(process.execPath, [path.join(PKG, 'scripts/render-hashes.mjs'), '--append', 'profile: slaytek', ...fixtures], { encoding: 'utf8', env: env() });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.23.1 output');
+  assert.deepEqual(JSON.parse(r.stdout), want, 'every rendered file matches the frozen v0.23.2 output');
   for (const [name, w] of Object.entries(prev)) {
     const o = old[name], changed = [...new Set([...Object.keys(w), ...Object.keys(o)])].filter(p => JSON.stringify(w[p]) !== JSON.stringify(o[p]));
     if (!changed.length) continue;

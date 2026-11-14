@@ -156,7 +156,7 @@ as commands in `eng.config.yml`, not in another hooks directory.
 - `hooks.pre_commit`. `.githooks/pre-commit` runs `eng sync --check` and `eng lint`, then each command in its own
   `sh -c`, in order. It stops at the first failure. It runs from the repo root and finds eng as `$ENG`, else
   `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. With neither, it exits 1 with one line saying to install
-  the repo's dependencies or set `ENG=<path to eng>` (0.23.1). It never runs npx.
+  the repo's dependencies or set `ENG=<path to eng>` (0.23.2). It never runs npx.
 - `hooks.pre_push` (0.17.0). `.githooks/pre-push` runs eng's push checks first, unchanged (`git.rewrite_pushed`). When
   they refuse, the push fails and no command runs. Then it runs each command in its own `sh -c`, in order, with the
   hook's arguments (`$1` the remote name, `$2` its URL) and the same ref lines on stdin that git gave the hook, byte for
