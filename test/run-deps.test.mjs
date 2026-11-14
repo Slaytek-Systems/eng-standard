@@ -337,7 +337,7 @@ test('eng run: a killed run started under another spelling of the scratch root h
     const r = engIn(dir, { ...env, XDG_CACHE_HOME: real });
     assert.equal(r.status, 0, out(r));
     assert.equal(stopped(k.cmd), true, 'the command is stopped before its round goes');
-    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid} .+\\(1 process stopped\\)`));
+    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid}\\b.+\\(1 process stopped\\)`));
     assert.equal(fs.existsSync(k.round), false);
   } finally { await k.kill(); unmountAll([fs.existsSync(k.round) ? fs.realpathSync(k.round) : k.round]); }
 });
