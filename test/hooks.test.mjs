@@ -17,7 +17,7 @@ const cfg = (extra = {}) => ({ project: { default_branch: 'main', protected_bran
 test('pre-commit runs each hooks.pre_commit command in its own shell after the eng checks', () => {
   const body = hooks(cfg({ hooks: { pre_commit: ['bun run lint:staged', "printf %s it's"] } }))['.githooks/pre-commit'].trim().split('\n').slice(-3);
   assert.deepEqual(body, [
-    '$ENG sync --check && $ENG lint || exit $?',
+    '"$@" sync --check && "$@" lint || exit $?',
     "sh -c 'bun run lint:staged' || exit $?",
     "sh -c 'printf %s it'\\''s' || exit $?",
   ]);
@@ -26,9 +26,10 @@ test('pre-commit runs each hooks.pre_commit command in its own shell after the e
 const runHook = (preCommit, engCmd) => {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-run-'));
   try {
-    const file = path.join(dir, 'pre-commit');
+    const file = path.join(dir, 'pre-commit'), eng = path.join(dir, 'eng');
     fs.writeFileSync(file, hooks(cfg({ hooks: { pre_commit: preCommit } }))['.githooks/pre-commit']);
-    return spawnSync('/bin/sh', [file], { encoding: 'utf8', env: { ...process.env, ENG: engCmd } });
+    fs.writeFileSync(eng, `#!/bin/sh\n${engCmd}\n`, { mode: 0o755 });
+    return spawnSync('/bin/sh', [file], { encoding: 'utf8', env: { ...process.env, ENG: eng } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -53,7 +54,7 @@ test('a trailing comment in one command does not skip the next command', () => {
 });
 
 test('unset hook keys render the same pre-commit and Claude settings as before', () => {
-  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '$ENG sync --check && $ENG lint');
+  assert.equal(hooks(cfg())['.githooks/pre-commit'].trim().split('\n').at(-1), '"$@" sync --check && "$@" lint');
   assert.equal(hooks(cfg({ hooks: { pre_commit: [] } }))['.githooks/pre-commit'], hooks(cfg())['.githooks/pre-commit']);
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings(cfg({ guard: 'off' })))), ['permissions'], 'with the guard off, as before 0.21.0');
   assert.deepEqual(Object.keys(JSON.parse(claudeSettings({ project: { default_branch: 'main' }, guard: 'off' }))), ['permissions']);
@@ -164,7 +165,8 @@ test('pre-commit runs the installed eng from the repo root, wherever git starts 
     assert.equal(nested.status, 0, nested.stderr);
     assert.equal(calls(r.dir), 'sync --check\nlint\n', 'the installed eng ran, from the root; no decoy ran');
     fs.rmSync(path.join(r.dir, 'eng-calls'));
-    const viaEnv = runIn(r, { ENG: 'echo custom', PATH: `${bin}:${process.env.PATH}` });
+    fs.writeFileSync(path.join(bin, 'custom eng'), '#!/bin/sh\necho custom "$@"\n', { mode: 0o755 });
+    const viaEnv = runIn(r, { ENG: path.join(bin, 'custom eng'), PATH: `${bin}:${process.env.PATH}` });
     assert.equal(viaEnv.status, 0, viaEnv.stderr);
     assert.equal(viaEnv.stdout, 'custom sync --check\ncustom lint\n');
     assert.equal(calls(r.dir), '');

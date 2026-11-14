@@ -416,7 +416,7 @@ test('the hook script fails open on its own errors: malformed input, an unknown 
 test('the hook script writes nothing: the repo, its index and the guard folder are unchanged after every call', () => {
   const dir = initRepo();
   fs.writeFileSync(path.join(dir, 'AGENTS.md'), `${fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')}\nlocal edit\n`);
-  execSync('git add -A && git commit -qm base && echo x >> AGENTS.md', { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh' });
+  execSync('git add -A && git commit -qm base && echo x >> AGENTS.md', { cwd: dir, env: { ...env, ENG }, shell: '/bin/sh' });
   const shot = () => execSync('ls -la --time-style=full-iso .git/index .eng/guard && git --no-optional-locks status --porcelain=v2 --untracked-files=all', { cwd: dir, env, encoding: 'utf8', shell: '/bin/sh' });
   const before = shot();
   for (const command of ['git reset --hard', 'git checkout -- .', 'git branch -D main', 'git push -f', 'ls'])
@@ -427,7 +427,7 @@ test('the hook script writes nothing: the repo, its index and the guard folder a
 
 test('the rendered hook on real repos: destructive git runs only alone from the repo root; the round 4 bypasses are denied', () => {
   const dir = tmp('eng-guard-r5-');
-  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG }, shell: '/bin/sh', stdio: 'pipe' });
   sh('git init -q -b main');
   assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
   sh('mkdir sub clean && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base');
@@ -558,7 +558,7 @@ test('one table: every destructive git form in DESTRUCTIVE is a row of the table
 
 test('round 6 table: the rendered hook on a real repo decides every row the same way', () => {
   const dir = tmp('eng-guard-r6-');
-  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG }, shell: '/bin/sh', stdio: 'pipe' });
   sh('git init -q -b main');
   assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
   sh('mkdir sub && echo one > a.txt && echo s > sub/s.txt && git add -A && git commit -qm base && git commit -q --allow-empty -m two');
@@ -592,7 +592,7 @@ test('untracked files: forms that write the tree from a commit are denied when t
 
 test('untracked files: the rendered hook on a real repo decides every row the same way', () => {
   const dir = tmp('eng-guard-r7-');
-  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+  const sh = c => execSync(c, { cwd: dir, env: { ...env, ENG }, shell: '/bin/sh', stdio: 'pipe' });
   sh('git init -q -b main');
   assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
   sh('mkdir sub && echo one > a.txt && echo s > sub/s.txt && echo n > new.txt && git add -A && git commit -qm base && git rm -q new.txt && git commit -qm rm && echo mine > new.txt');
@@ -627,7 +627,7 @@ let r8Base;
 const r8Repo = () => {
   if (!r8Base) {
     r8Base = tmp('eng-guard-r8-');
-    const sh = c => execSync(c, { cwd: r8Base, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+    const sh = c => execSync(c, { cwd: r8Base, env: { ...env, ENG }, shell: '/bin/sh', stdio: 'pipe' });
     sh('git init -q -b main');
     assert.equal(spawnSync(process.execPath, [ENG, 'init'], { cwd: r8Base, encoding: 'utf8', env, timeout: 120_000 }).status, 0);
     sh('echo one > a.txt && git add a.txt && git commit -qm base && git branch topic && git branch merged && git branch gone');
@@ -698,7 +698,7 @@ const r9Repo = () => {
   if (!r9Base) {
     const base = path.join(tmp('eng-guard-r9-'), 'repo');
     fs.cpSync(r8Repo(), base, { recursive: true, verbatimSymlinks: true });
-    const sh = c => execSync(c, { cwd: base, env: { ...env, ENG: `${process.execPath} ${ENG}` }, shell: '/bin/sh', stdio: 'pipe' });
+    const sh = c => execSync(c, { cwd: base, env: { ...env, ENG }, shell: '/bin/sh', stdio: 'pipe' });
     sh('git symbolic-ref refs/heads/alias refs/heads/gone');
     sh('git switch -q -c chained topic && git commit -q --allow-empty -m chained && git symbolic-ref refs/heads/link1 refs/heads/chained && git symbolic-ref refs/heads/link2 refs/heads/link1');
     sh('git switch -q -c rgone topic && git commit -q --allow-empty -m rgone && git symbolic-ref refs/remotes/origin/HEAD refs/heads/rgone');

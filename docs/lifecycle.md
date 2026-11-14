@@ -30,10 +30,10 @@ The package is not on npm. A repo installs it from GitHub as a dev dependency pi
 - Releases 0.9.1 to 0.14.0 have no tag. A repo on one of them pins its full commit SHA until it upgrades.
 - A full commit SHA is also fixed. A branch (`#main`), a short SHA, a range or a git URL with no `#` floats: the
   standard would change under the repo with no commit in it. `eng sync --check` fails a floating pin.
-- Run the CLI as `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs` (or the `eng` your package manager linked
-  into `node_modules/.bin`). Never `npx eng` or `bunx eng` outside an installed repo: the npm registry and the npx cache
-  hold an unrelated package named `eng` that runs no checks and exits 0. The pre-commit hook and the rendered pipeline
-  run the installed path; the hook reads `$ENG` to override it.
+- Run the CLI as `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. Not `node_modules/.bin/eng`, which any
+  installed package can own, and never `npx eng` or `bunx eng`: the npm registry and the npx cache hold an unrelated
+  package named `eng` that runs no checks and exits 0. The pre-commit hook and the rendered pipeline run the installed
+  path; the hook reads `$ENG` to override it.
 
 ## Keep it current
 
@@ -156,7 +156,9 @@ as commands in `eng.config.yml`, not in another hooks directory.
 - `hooks.pre_commit`. `.githooks/pre-commit` runs `eng sync --check` and `eng lint`, then each command in its own
   `sh -c`, in order. It stops at the first failure. It runs from the repo root and finds eng as `$ENG`, else
   `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. With neither, it exits 1 with one line saying to install
-  the repo's dependencies or set `ENG=<path to eng>` (0.23.2). It never runs npx.
+  the repo's dependencies or set `ENG=<path to eng>` (0.23.2). It never runs npx. `$ENG` is the path of one executable
+  file, spaces allowed, run as it is: `ENG="$HOME/my tools/eng"`. A command with arguments (`ENG="node eng.mjs"`), a
+  missing file or one that is not executable fails the commit with one line naming `$ENG`.
 - `hooks.pre_push` (0.17.0). `.githooks/pre-push` runs eng's push checks first, unchanged (`git.rewrite_pushed`). When
   they refuse, the push fails and no command runs. Then it runs each command in its own `sh -c`, in order, with the
   hook's arguments (`$1` the remote name, `$2` its URL) and the same ref lines on stdin that git gave the hook, byte for
