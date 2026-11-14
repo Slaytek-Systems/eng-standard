@@ -109,7 +109,7 @@ before(() => {
   fs.writeFileSync(path.join(dir, '.gitignore'), '.bin/\n.gh/\n.gh-calls\n');
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), TEMPLATE); fs.writeFileSync(path.join(dir, 'README.md'), 'x\n');
   git('add', '-A'); git('commit', '-qm', 'base');
-  execFileSync('git', ['init', '-q', '--bare', origin]); git('remote', 'add', 'origin', origin); git('push', '-q', 'origin', 'main');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]); git('remote', 'add', 'origin', origin); git('push', '-q', 'origin', 'main');
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
