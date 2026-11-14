@@ -158,7 +158,8 @@ as commands in `eng.config.yml`, not in another hooks directory.
   `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. With neither, it exits 1 with one line saying to install
   the repo's dependencies or set `ENG=<path to eng>` (0.23.2). It never runs npx. `$ENG` is the path of one executable
   file, spaces allowed, run as it is: `ENG="$HOME/my tools/eng"`. A command with arguments (`ENG="node eng.mjs"`), a
-  missing file or one that is not executable fails the commit with one line naming `$ENG`.
+  missing file, one that is not executable, or a name with no slash (`ENG=eng`, which sh would look up on PATH) fails
+  the commit with one line naming `$ENG`. Write `ENG=./eng` for a file in the repo root.
 - `hooks.pre_push` (0.17.0). `.githooks/pre-push` runs eng's push checks first, unchanged (`git.rewrite_pushed`). When
   they refuse, the push fails and no command runs. Then it runs each command in its own `sh -c`, in order, with the
   hook's arguments (`$1` the remote name, `$2` its URL) and the same ref lines on stdin that git gave the hook, byte for
