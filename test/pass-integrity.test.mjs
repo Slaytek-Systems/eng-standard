@@ -166,12 +166,12 @@ const script = ({ outcome, budget, nested }) => [
 test('the recorder product: only a command that exited 0, unstopped, with no nested deferral is recorded as exit 0 and yields PASS', { timeout: 300e3 }, async t => {
   const rows = product({ outcome: Object.keys(OUTCOMES), budget: ['none', 'timeout stop'], nested: ['none', 'deferring gate'] });
   assert.equal(rows.length, 24);
-  const results = await pool(rows, 4, async row => {
+  const runs = await pool(rows, 4, async row => {
     const by = `e2e-${Object.values(row).join('-').replace(/[^a-z0-9]+/gi, '-')}`;
-    const run = await eng(['run', '--by', by, ...(row.budget === 'timeout stop' ? ['--budget', 'memory=256M workers=1 timeout=3s'] : []), '--', 'sh', '-c', script(row)]);
-    return { row, by, run, rec: lastRun(by) };
+    return { row, by, run: await eng(['run', '--by', by, ...(row.budget === 'timeout stop' ? ['--budget', 'memory=256M workers=1 timeout=3s'] : []), '--', 'sh', '-c', script(row)]) };
   });
-  for (const { row, by, run, rec } of results) {
+  // Read only once every run has ended: a run still appending can leave a partial line.
+  for (const { row, by, run, rec } of runs.map(r => ({ ...r, rec: lastRun(r.by) }))) {
     const name = JSON.stringify(row), honest = row.outcome === 'exit 0' && row.budget === 'none' && row.nested === 'none';
     assert.ok(rec, `the run was recorded: ${name} (eng ended with ${run.signal ?? `exit ${run.status}`})\n${run.out}`);
     assert.equal(run.status, rec.exit, `eng run exits with the recorded code: ${name}`);

@@ -6,7 +6,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 **The recorder test reports an `eng run` that ended before it recorded, with eng's exit and output, instead of an ENOENT** (Core task p57aqqsrnj1p2cqhjpj7916yqn8j7d6d). main's post-merge CI run 43598304842 failed `test/pass-integrity.test.mjs` on a missing `.git/eng/verdict-runs.jsonl`. One of the four parallel `eng run --by` calls ended 539 ms in, before it recorded anything. The test's read of the run log threw, so eng's exit code and output were lost. The other three runs kept going and wrote into the repo after the test removed it, which the same run reported as a leftover.
 
-- `lastRun` returns nothing when the run log does not exist yet. The test then fails on "the run was recorded" with eng's exit code or signal and its output, and every run in the pool ends before the test does.
+- The test reads the run log only after every run in the pool has ended, and `lastRun` returns nothing when the log does not exist. A run that recorded nothing fails on "the run was recorded" with eng's exit code or signal and its output, and no run outlives the test.
 - A new test reproduces the CI failure without timing. An `eng run --by` whose `git worktree add` fails ends with exit 1 and no record, and the harness reports that instead of throwing.
 - The 0.23.3 cleanup did not cause it. A run clears only rounds whose `eng` pid is gone and whose `.eng-checkout` names its own checkout. Each round in that pool belonged to a live `eng` of a checkout made for the test, so no run there could clear another's.
 - Why that `eng run` ended early is not in the CI log. A repeat now names it.
