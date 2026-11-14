@@ -125,7 +125,7 @@ const eng = (args, { onSpawn, env = {}, cwd = repo } = {}) => new Promise(resolv
   p.on('close', (status, signal) => resolve({ status, signal, stdout, stderr, out: stdout + stderr }));
 });
 const runLogFile = (root = repo) => path.join(root, '.git', 'eng', 'verdict-runs.jsonl');
-const lastRun = (by, root = repo) => fs.readFileSync(runLogFile(root), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by).at(-1);
+const lastRun = (by, root = repo) => !fs.existsSync(runLogFile(root)) ? undefined : fs.readFileSync(runLogFile(root), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.by === by).at(-1);
 const pool = async (items, n, f) => { const out = [], q = items.map((x, i) => [x, i]); await Promise.all(Array.from({ length: n }, async () => { while (q.length) { const [x, i] = q.shift(); out[i] = await f(x); } })); return out; };
 
 const repos = [];
@@ -173,7 +173,7 @@ test('the recorder product: only a command that exited 0, unstopped, with no nes
   });
   for (const { row, by, run, rec } of results) {
     const name = JSON.stringify(row), honest = row.outcome === 'exit 0' && row.budget === 'none' && row.nested === 'none';
-    assert.ok(rec, `the run was recorded: ${name}\n${run.out}`);
+    assert.ok(rec, `the run was recorded: ${name} (eng ended with ${run.signal ?? `exit ${run.status}`})\n${run.out}`);
     assert.equal(run.status, rec.exit, `eng run exits with the recorded code: ${name}`);
     if (row.budget === 'timeout stop') assert.match(run.stderr, /stopped by its budget: timeout 3s/, name);
     if (row.nested === 'deferring gate' && row.outcome === 'exit 0' && row.budget === 'none') assert.match(rec.output, /INCOMPLETE \(exit 3\)/, name);
