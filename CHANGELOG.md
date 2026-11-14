@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.3 (14 Nov 2026)
+
+**The next `eng run` clears what a SIGKILLed `eng run` left behind, in its own checkout only** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). In 0.23.1 a killed `eng` left its `node_modules` mounts and its round until someone cleared them by hand.
+
+- Each run round records its checkout, the realpath of its git common dir, in `.eng-checkout`. Before a run opens its round, eng resolves the scratch root (a symlinked `$HOME`, `XDG_CACHE_HOME` or `hygiene.scratch_root` included) and finds each run round there whose `eng` (the pid in the round's name) is gone, whose `.eng-checkout` names this checkout, and whose `wt/.git` is a worktree of this checkout that git links back to. It stops the processes the killed run left (those with the round's `ENG_SCRATCH`, as a normal end does), unmounts the round's mounts (`fusermount3 -u -z`), confirms none is left, removes the round with `.eng-checkout` last, prunes the worktree entry and prints one line saying so.
+- If a process will not stop, a mount will not come off or removal fails, the round stays whole, `.eng-checkout` included, the next `eng run` tries again, and the line gives the commands to clear it by hand.
+- A round whose `eng` is alive, a round of another repository (a repo with the same project name, which shares the scratch root, included), a round whose `.eng-checkout` or `wt/.git` is missing, a symlink or names another repository, a round made before 0.23.3, and anything else in the scratch root are left alone. Linked checkouts (`git worktree add`) of one repository share its git common dir and worktree list, so they clear each other's dead rounds. Matching on the project name alone, as #85 did, let one repo unmount and delete a same-named repo's round.
+- **Upgrade:** zero manual edits. Rounds left by 0.23.1 and 0.23.2 are still cleared by hand (`kill -9` each process whose `/proc/<pid>/environ` has `ENG_SCRATCH=<round>`, `fusermount3 -u -z <path>`, `rm -rf <round>`, `git worktree prune`).
+
 ## 0.23.2 (14 Nov 2026)
 
 **The pre-commit hook and the pipeline run this repo's installed eng, never npx** (Core task p5756x5be3hw56e8my0k966yg98j7btm). The hook ran `${ENG:-npx --no-install eng}` when eng was not installed. In a worktree with no `node_modules`, `npx --no-install` still resolves from the npx cache, and on one devbox that cache held the unrelated npm package `eng@0.0.9`. It runs no checks and exits 0, so pre-commit passed silently in every eng repo for about 36 hours.
