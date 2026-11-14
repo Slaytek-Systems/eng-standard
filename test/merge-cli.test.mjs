@@ -57,20 +57,25 @@ const fs = require('fs');
 fs.appendFileSync(process.env.GH_CALLS, JSON.stringify({ curl: process.argv.slice(2), input: fs.readFileSync(0, 'utf8') }) + '\\n');
 process.exit(Number(process.env.FAKE_CURL_EXIT || 0));
 `;
+// The gate waits with spawnSync('sleep'); this one logs the wait in call order and returns at once, so no test waits.
+const FAKE_SLEEP = `#!/bin/sh
+printf '{"sleep":"%s"}\\n' "$1" >> "$GH_CALLS"
+`;
 
 let dir, bin, ghd, calls, origin;
 const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 let table = {};
 const respond = (o, reset = false) => { table = reset ? { ...o } : { ...table, ...o }; fs.writeFileSync(path.join(ghd, 'responses.json'), JSON.stringify(table)); };
 const log = () => fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
-// Each gh api call as GitHub sees it: method, path, body. pr merge and curl calls as their argv.
+// Each gh api call as GitHub sees it: method, path, body. pr merge and curl calls as their argv, and each sleep.
 const sent = () => log().map(c => {
+  if (c.sleep) return { sleep: c.sleep };
   if (c.curl) return { curl: c.curl, body: JSON.parse(c.input) };
   if (c.argv[0] !== 'api') return c.argv.join(' ');
   const m = c.argv.includes('-X') ? c.argv[c.argv.indexOf('-X') + 1] : c.input !== null || c.argv.includes('-f') ? 'POST' : 'GET';
   return { call: `${m} ${c.argv.find(x => x.startsWith('repos/'))}`, ...(c.input !== null ? { body: JSON.parse(c.input) } : {}) };
 });
-const writes = () => sent().filter(c => typeof c === 'string' || c.curl || !c.call.startsWith('GET '));
+const writes = () => sent().filter(c => typeof c === 'string' || c.curl || (c.call && !c.call.startsWith('GET ')));
 const ENV = { GITHUB_REPOSITORY: 'o/r', GITHUB_EVENT_PATH: '', GITHUB_STEP_SUMMARY: '', GITHUB_SHA: '', GITHUB_RUN_ID: '', GITHUB_SERVER_URL: '', ENG_PR: '', ENG_RESTART_WEBHOOK: '' };
 const eng = (args, extra = {}) => {
   fs.writeFileSync(calls, '');
@@ -98,6 +103,7 @@ before(() => {
   origin = path.join(dir, '.gh', 'origin.git');
   fs.mkdirSync(bin); fs.mkdirSync(ghd);
   fs.writeFileSync(path.join(bin, 'gh'), FAKE_GH, { mode: 0o755 }); fs.writeFileSync(path.join(bin, 'curl'), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'sleep'), FAKE_SLEEP, { mode: 0o755 });
   respond({}, true);
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
   fs.writeFileSync(path.join(dir, '.gitignore'), '.bin/\n.gh/\n.gh-calls\n');
@@ -275,13 +281,12 @@ test('eng merge gate --post-status: a forged check, missing tests and running te
 
 test('eng merge gate --post-status polls the tests every 15 s until they finish', () => {
   config();
-  const h = branch('poll'), t0 = Date.now();
+  const h = branch('poll'), runs = `GET repos/o/r/commits/${h}/check-runs?per_page=100`;
   respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'poll'), ...facts(7, h, [PASS(h)]),
     [`GET repos/o/r/commits/${h}/check-runs?per_page=100`]: { __seq: [{ check_runs: [{ name: 'test', status: 'in_progress' }] }, { check_runs: [{ name: 'test', status: 'completed', conclusion: 'success' }] }] } }, true);
   const r = eng(['merge', 'gate', '--pr', '7', '--post-status']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.ok(Date.now() - t0 >= 14e3, `waited ${Date.now() - t0} ms between polls`);
-  assert.equal(sent().filter(c => c.call?.includes('check-runs')).length, 2);
+  assert.deepEqual(sent().filter(c => c.sleep || c.call === runs), [{ call: runs }, { sleep: '15' }, { call: runs }], 'one 15 s wait between the two polls');
 });
 
 test('eng merge gate: each refusal names what the owner does next', () => {
@@ -356,12 +361,12 @@ test('eng merge post: a behind PR with auto-merge is updated, then its checks ar
   config();
   const h = branch('behind');
   git('checkout', '-q', 'main'); fs.writeFileSync(path.join(dir, 'ahead.md'), `${Date.now()}\n`); git('add', '-A'); git('commit', '-qm', 'ahead'); git('push', '-q', 'origin', 'main');
-  const main = git('rev-parse', 'main'), p = prObj(8, h, 'behind', { auto_merge: { merge_method: 'squash' } }), t0 = Date.now();
+  const main = git('rev-parse', 'main'), p = prObj(8, h, 'behind', { auto_merge: { merge_method: 'squash' } });
   respond({ ...tendOnly(main), ...open([p]), ...status(h, 'success', new Date().toISOString()), ...facts(8, h, [PASS(h)]),
     'GET repos/o/r/pulls/8': { __seq: [{ head: { sha: h } }, { head: { sha: 'f'.repeat(40) } }] } }, true);
   let r = post([], { GITHUB_RUN_ID: '2' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.ok(Date.now() - t0 >= 4.5e3, 'waits 5 s before asking again');
+  assert.deepEqual(sent().filter(c => c.sleep || c.call === 'GET repos/o/r/pulls/8').slice(-3), [{ call: 'GET repos/o/r/pulls/8' }, { sleep: '5' }, { call: 'GET repos/o/r/pulls/8' }], 'waits 5 s before asking again');
   assert.match(r.stdout, /^ {2}#8: behind main with auto-merge on: updating the branch$/m);
   assert.deepEqual(writes(), [{ call: 'PUT repos/o/r/pulls/8/update-branch', body: { expected_head_sha: h } },
     { call: 'POST repos/o/r/actions/workflows/ci.yml/dispatches', body: { ref: 'behind', inputs: { pr: '8' } } },
@@ -487,13 +492,13 @@ test('eng merge post: a passing check on a tip not checked before', () => {
 test('eng merge post: a red check opens the exact inverse as an auto-revert PR, armed, dispatched and its held runs approved', () => {
   config(t => t.replace('post_merge: { check: "bash scripts/shipped-artifact-check.sh" }', 'post_merge: { check: "exit 3" }'));
   fs.writeFileSync(path.join(dir, 'bad.md'), 'bad\n'); git('add', '-A'); git('commit', '-qm', 'bad change'); git('push', '-q', 'origin', 'main');
-  const tip = git('rev-parse', 'main'), branchName = `auto-revert/${tip.slice(0, 12)}`, t0 = Date.now(), held = `GET repos/o/r/actions/runs?branch=${encodeURIComponent(branchName)}&status=action_required&per_page=20`;
+  const tip = git('rev-parse', 'main'), branchName = `auto-revert/${tip.slice(0, 12)}`, held = `GET repos/o/r/actions/runs?branch=${encodeURIComponent(branchName)}&status=action_required&per_page=20`;
   respond({ ...open([]), 'POST repos/o/r/pulls': { number: 31, html_url: 'https://x/31' },
     [held]: { __seq: [{ workflow_runs: [] }, { workflow_runs: [{ id: 91, event: 'pull_request', name: 'ci' }, { id: 92, event: 'push', name: 'other' }, { id: 93, event: 'pull_request', name: 'gate' }] }] },
     'POST repos/o/r/actions/runs/93/approve': { __fail: 'HTTP 403: nope' } }, true);
   const r = post();
   assert.equal(r.status, 1, r.stdout + r.stderr);
-  assert.ok(Date.now() - t0 >= 4.5e3, 'waits 5 s before looking for held runs again');
+  assert.deepEqual(sent().filter(c => c.sleep || c.call === held), [{ call: held }, { sleep: '5' }, { call: held }], 'waits 5 s before looking for held runs again');
   const marker = `<!-- eng-auto-revert of=${tip} -->`;
   assert.deepEqual(writes(), [
     { call: 'POST repos/o/r/labels', body: { name: 'auto-revert', color: 'B60205', description: 'Opened by eng merge post; merges through the normal gate' } },
