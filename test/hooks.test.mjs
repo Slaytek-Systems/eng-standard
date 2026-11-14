@@ -173,3 +173,45 @@ test('pre-commit runs the installed eng from the repo root, wherever git starts 
     fs.rmSync(bin, { recursive: true, force: true });
   }
 });
+
+// Lane-a, PR #89 round 1: an unquoted $ENG is split at spaces, so ENG=/x/override with spaces/eng ran /x/override and
+// a real commit passed with neither eng check. ENG names one executable file; anything else refuses in one line.
+test('a real commit runs ENG as one path, spaces included, and never the file its prefix names', () => {
+  const r = scratchRepo({ installed: false });
+  const tools = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-hook-spaces-'));
+  const log = path.join(tools, 'calls');
+  const script = tag => `#!/bin/sh\necho "${tag} $*" >> '${log}'\n`;
+  const real = path.join(tools, 'override with spaces', 'eng');
+  fs.mkdirSync(path.dirname(real));
+  fs.writeFileSync(real, script('real'), { mode: 0o755 });
+  fs.writeFileSync(path.join(tools, 'override'), script('decoy'), { mode: 0o755 });
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const commit = (ENG, msg) => {
+    if (fs.existsSync(log)) fs.rmSync(log);
+    fs.writeFileSync(path.join(r.dir, 'f.txt'), msg);
+    execSync('git add f.txt', { cwd: r.dir });
+    const c = spawnSync('git', ['commit', '-qm', msg], { cwd: r.dir, encoding: 'utf8', env: { ...env, ENG } });
+    return { ...c, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '' };
+  };
+  try {
+    execSync('git config core.hooksPath .githooks', { cwd: r.dir });
+    const ok = commit(real, 'spaces');
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.calls, 'real sync --check\nreal lint\n', 'the override ran as one path');
+    for (const [ENG, why] of [[path.join(tools, 'missing dir', 'eng'), 'a path that does not exist'], [path.dirname(real), 'a directory'], [`${path.join(tools, 'override')} --flag`, 'a path plus words']]) {
+      const no = commit(ENG, why);
+      assert.notEqual(no.status, 0, `${why}: the commit must not pass`);
+      assert.equal(no.calls, '', `${why}: neither the override nor the prefix decoy ran`);
+      assert.equal(no.stderr.trim().split('\n').length, 1, `${why}: ${no.stderr}`);
+      assert.match(no.stderr, /^eng: pre-commit: ENG=.* is not an executable file/, why);
+    }
+    fs.chmodSync(real, 0o644);
+    const noExec = commit(real, 'not executable');
+    assert.notEqual(noExec.status, 0, 'a file that is not executable refuses');
+    assert.equal(noExec.calls, '');
+    assert.match(noExec.stderr, /^eng: pre-commit: ENG=.* is not an executable file/);
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+    fs.rmSync(tools, { recursive: true, force: true });
+  }
+});
