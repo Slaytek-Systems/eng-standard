@@ -32,6 +32,7 @@ if (a[0] === 'api') {
     else if (x.startsWith('-') || !x) bad('unknown flag');
     else if (p) bad('two paths'); else p = x;
   }
+  if (p) p = p.replace('repos/{owner}/{repo}', 'repos/o/r');
   if (!p || !/^repos\\/o\\/r(\\/|$)/.test(p)) bad('no repos/o/r path');
   if (slurp !== paginate) bad('--slurp needs --paginate');
   method ??= input !== null || Object.keys(fields).length ? 'POST' : 'GET';
@@ -39,11 +40,15 @@ if (a[0] === 'api') {
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   if (!/^\\d+$/.test(a[2]) || a[3] !== '--repo' || a[4] !== 'o/r' || !a.slice(5).length || a.slice(5).some(f => !['--auto', '--squash', '--disable-auto'].includes(f))) bad('bad pr merge');
   key = 'pr merge ' + a[2];
+} else if (a[0] === 'pr' && a[1] === 'view') {
+  if (a.join(' ') === 'pr view --json labels') { process.stdout.write('{"labels":[]}'); process.exit(0); }
+  if (!/^\\d+$/.test(a[2]) || a.slice(3).join(' ') !== '--json headRefOid,state') bad('bad pr view');
+  process.stdout.write(JSON.stringify({ headRefOid: require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), state: 'OPEN' })); process.exit(0);
 } else bad('unexpected command');
 const table = JSON.parse(fs.readFileSync(file, 'utf8'));
 let r = table[key];
 if (r && r.__seq) { r = r.__seq.length > 1 ? r.__seq.shift() : r.__seq[0]; fs.writeFileSync(file, JSON.stringify(table)); }
-if (r && r.__fail) { process.stderr.write(r.__fail); process.exit(1); }
+if (r && r.__fail !== undefined) { process.stderr.write(r.__fail); process.stdout.write(r.__out || ''); process.exit(1); }
 if (r === undefined) { if (key.startsWith('GET ')) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); } r = {}; }
 process.stdout.write(typeof r === 'string' ? r : JSON.stringify(r));
 `;
@@ -542,5 +547,226 @@ test('eng merge post: no merge.auto in eng.config.yml is a failure', () => {
   config(t => t.replace(/\n {2}auto:[\s\S]*?\nship:/, '\nship:'));
   const r = post();
   assert.equal(r.status, 1); assert.match(r.stderr, /merge post: no merge\.auto in eng\.config\.yml/);
+  config();
+});
+
+// ---------- inputs GitHub and git leave out: no repo env, empty bodies, missing fields, objects only on origin ----------
+const other = () => {
+  const o = path.join(ghd, `other-${Math.random().toString(36).slice(2)}`);
+  execFileSync('git', ['clone', '-q', origin, o]); const g = (...a) => execFileSync('git', a, { cwd: o, encoding: 'utf8' }).trim();
+  g('config', 'user.email', 'o@o'); g('config', 'user.name', 'o'); return g;
+};
+const syncMain = () => { git('checkout', '-q', 'main'); git('fetch', '-q', 'origin'); git('merge', '-q', '--ff-only', 'origin/main'); };
+
+test('eng merge: with no GITHUB_REPOSITORY gh resolves {owner}/{repo} itself; a failing gh is reported from stderr, else stdout', () => {
+  config(); respond({ 'GET repos/o/r/pulls/7': { number: 7, state: 'closed' } }, true);
+  const r = eng(['merge', 'gate', '--pr', '7'], { GITHUB_REPOSITORY: '' });
+  assert.equal(r.stdout.trim(), 'merge gate: PR #7 is closed; nothing to do');
+  assert.deepEqual(log().map(c => c.argv), [['api', 'repos/{owner}/{repo}/pulls/7']]);
+  respond({ 'GET repos/o/r': { __fail: '', __out: 'HTTP 500 said on stdout\nmore' } }, true);
+  assert.equal(inProcess(() => mergeDoctor(cfgOf())).value[0].what, 'merge.auto: cannot read repo settings (gh api repos/o/r: HTTP 500 said on stdout)');
+  respond({ 'GET repos/o/r': { __fail: '' } }, true);
+  assert.equal(inProcess(() => mergeDoctor(cfgOf())).value[0].what, 'merge.auto: cannot read repo settings (gh api repos/o/r: )');
+});
+
+test('eng merge: an empty gh response is no data, not a crash', () => {
+  respond({ ...repoFacts(), 'GET repos/o/r/rulesets': '' }, true);
+  assert.deepEqual(inProcess(() => repoMode()).value.required, []);
+  config();
+  const h = branch('emptybody');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'emptybody'), ...facts(7, h), 'GET repos/o/r/issues/7/comments?per_page=100': '' }, true);
+  const r = eng(['merge', 'gate', '--pr', '7']);
+  assert.match(r.stdout, new RegExp(`^ {2}- no verdict for head ${h.slice(0, 8)}$`, 'm'));
+});
+
+test('eng merge gate: an event whose workflow_run lists no PR falls through to ENG_PR', () => {
+  respond({ 'GET repos/o/r/pulls/7': { number: 7, state: 'closed' } }, true);
+  const r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: event({ workflow_run: { pull_requests: [] } }), ENG_PR: '7' });
+  assert.equal(r.stdout.trim(), 'merge gate: PR #7 is closed; nothing to do');
+});
+
+test('eng merge gate fetches the base: a main that moved on origin makes the PR behind', () => {
+  config();
+  const h = branch('stale');
+  const g = other(); fs.writeFileSync(path.join(g('rev-parse', '--show-toplevel'), 'remote.md'), 'r\n'); g('add', '-A'); g('commit', '-qm', 'remote'); g('push', '-q', 'origin', 'main');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'stale'), ...facts(7, h, [PASS(h)]) }, true);
+  const r = eng(['merge', 'gate', '--pr', '7']);
+  assert.equal(r.status, 1); assert.match(r.stdout, /is behind main: update the branch/);
+  syncMain();
+});
+
+test('eng merge: a PR head that exists only on origin is fetched by gate and by post', () => {
+  config();
+  const g = other(), top = g('rev-parse', '--show-toplevel'), make = (name, ref) => {
+    g('checkout', '-q', '-B', name, 'origin/main'); fs.writeFileSync(path.join(top, `${name}.md`), `${name}\n`); g('add', '-A'); g('commit', '-qm', name);
+    g('push', '-q', 'origin', `HEAD:${ref}`); return g('rev-parse', 'HEAD');
+  };
+  const h1 = make('remote1', 'refs/pull/7/head'), h2 = make('remote2', 'refs/pull/8/head');
+  assert.throws(() => git('cat-file', '-e', `${h1}^{commit}`), 'not here yet');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h1, 'remote1'), ...facts(7, h1, [PASS(h1)]) }, true);
+  let r = eng(['merge', 'gate', '--pr', '7']);
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.doesNotMatch(r.stdout, /note:/);
+  const main = git('rev-parse', 'main');
+  respond({ ...tendOnly(main), ...open([prObj(8, h2, 'remote2', { updated_at: new Date().toISOString() })]), ...status(h2, 'success'), ...facts(8, h2, [PASS(h2)]) });
+  r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, new RegExp(`^#8 ${h2.slice(0, 8)}: ok; gate PASS$`, 'm'));
+});
+
+test('eng merge: a PR object with no base is judged against the configured base', () => {
+  config();
+  const h = branch('nobase'), main = git('rev-parse', 'main'), { base, ...p } = prObj(8, h, 'nobase', { updated_at: new Date().toISOString() });
+  respond({ 'GET repos/o/r/pulls/8': p, ...tendOnly(main), ...open([p]), ...status(h, 'success'), ...facts(8, h, [PASS(h)]) }, true);
+  let r = eng(['merge', 'gate', '--pr', '8']);
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.doesNotMatch(r.stdout, /note:/);
+  r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, new RegExp(`^#8 ${h.slice(0, 8)}: ok; gate PASS$`, 'm'));
+});
+
+test('eng merge gate, queue mode: a PR outside the queue need not be up to date', () => {
+  config(t => t.replace('mode: strict', 'mode: queue'));
+  const h = branch('queued');
+  git('checkout', '-q', 'main'); fs.writeFileSync(path.join(dir, 'later.md'), `${Date.now()}\n`); git('add', '-A'); git('commit', '-qm', 'later'); git('push', '-q', 'origin', 'main');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'queued'), ...facts(7, h, [PASS(h)]) }, true);
+  const r = eng(['merge', 'gate', '--pr', '7']);
+  assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /\(queue\), bound to head/);
+  config();
+});
+
+test('eng merge gate: with verifier_logins set, the result does not call verdicts self-declared', () => {
+  config(t => t.replace('high_risk_verifiers: 2', 'high_risk_verifiers: 2\n    verifier_logins: [lane]'));
+  const h = branch('logins');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'logins'), ...facts(7, h, [PASS(h)]) }, true);
+  const r = eng(['merge', 'gate', '--pr', '7']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.stdout.split('\n')[0], `eng-merge-gate: PASS for PR #7 head ${h.slice(0, 8)} (strict), bound to head ${h.slice(0, 8)}`);
+  config();
+});
+
+test('eng merge: an auto-revert label on a PR with no author, or a revert whose inverse does not apply, is refused', () => {
+  config();
+  const of = (() => { fs.writeFileSync(path.join(dir, 'shipped.md'), 's\n'); git('add', '-A'); git('commit', '-qm', 'shipped'); git('push', '-q', 'origin', 'main'); return git('rev-parse', 'HEAD'); })();
+  git('checkout', '-q', '-B', `auto-revert/${of.slice(0, 12)}`, `${of}^`); fs.writeFileSync(path.join(dir, 'unrelated.md'), 'u\n'); git('add', '-A'); git('commit', '-qm', 'not the inverse');
+  const h = git('rev-parse', 'HEAD'); git('checkout', '-q', 'main');
+  const p = prObj(7, h, `auto-revert/${of.slice(0, 12)}`, { labels: [{ name: 'auto-revert' }], body: `<!-- eng-auto-revert of=${of} -->`, user: { login: BOT } });
+  respond({ 'GET repos/o/r/pulls/7': p, ...facts(7, h) }, true);
+  let r = eng(['merge', 'gate', '--pr', '7']);
+  assert.match(r.stdout, /^ {2}- labelled auto-revert but: the patch is not its exact inverse$/m, 'the inverse of the shipped commit does not apply where the branch forked');
+  const { user, ...anon } = p;
+  respond({ 'GET repos/o/r/pulls/7': anon });
+  r = eng(['merge', 'gate', '--pr', '7']);
+  assert.match(r.stdout, /^ {2}- labelled auto-revert but: opened by undefined, not github-actions\[bot\]; the patch is not its exact inverse$/m);
+  respond({ ...tendOnly(git('rev-parse', 'main')), ...open([{ ...anon, number: 8, updated_at: new Date().toISOString() }]), ...status(h, 'success'), ...facts(8, h) });
+  r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, new RegExp(`^#8 ${h.slice(0, 8)}: ok; gate needs review$`, 'm'));
+});
+
+test('eng verdict --pr in a merge.auto repo also dispatches the gate for that PR', () => {
+  config();
+  const h = branch('verdictpr'); git('checkout', '-q', 'verdictpr');
+  respond({}, true);
+  const r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7']);
+  git('checkout', '-q', 'main');
+  assert.match(r.stdout, /dispatched gate\.yml for PR #7 so eng-merge-gate sees this verdict/, r.stdout + r.stderr);
+  assert.deepEqual(writes().filter(c => c.call?.includes('dispatches')), [{ call: 'POST repos/o/r/actions/workflows/gate.yml/dispatches', body: { ref: 'main', inputs: { pr: '7' } } }]);
+  assert.ok(h);
+});
+
+test('eng merge gate, merge_group: the queue base\'s eng.config.yml may be executable, must exist, and its errors are listed', () => {
+  config();
+  const h = branch('grouped'), queue = base => {
+    git('checkout', '-q', '--detach', base); git('merge', '-q', '--squash', 'grouped'); git('commit', '-qm', 'group');
+    const g = git('rev-parse', 'HEAD'); git('checkout', '-q', 'main');
+    return event({ merge_group: { head_sha: g, base_sha: base, head_ref: `refs/heads/gh-readonly-queue/main/pr-7-${h}` } });
+  };
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'grouped'), ...facts(7, h) }, true);
+  const variant = edit => { git('checkout', '-q', '--detach', 'main'); edit(); git('add', '-A'); git('commit', '-qm', 'variant'); const b = git('rev-parse', 'HEAD'); git('checkout', '-q', 'main'); return b; };
+  let r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: queue(variant(() => fs.chmodSync(path.join(dir, 'eng.config.yml'), 0o755))) });
+  assert.doesNotMatch(r.stderr, /not a regular file|cannot read/); assert.match(r.stdout, /^eng-merge-gate: FAIL for merge_group [0-9a-f]{8} \(PR #7\), bound to patch-id/m);
+  assert.match(r.stderr, /eng: FAIL merge gate: a verifier runs the change .* --pr 7 for this patch$/m);
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: queue(variant(() => fs.rmSync(path.join(dir, 'eng.config.yml')))) });
+  assert.match(r.stderr, /merge gate: cannot read the trusted eng\.config\.yml at [0-9a-f]{8} \(the queue's base\); refusing to gate/);
+  r = eng(['merge', 'gate'], { GITHUB_EVENT_PATH: queue(variant(() => fs.writeFileSync(path.join(dir, 'eng.config.yml'), 'version: 1\nmerge: { method: rebase }\n'))) });
+  const m = r.stderr.match(/is invalid; refusing to gate:\n((?: {2}.+\n?)+)/);
+  assert.ok(m, r.stderr); assert.ok(m[1].trim().split('\n  ').length >= 2, 'one error per line');
+});
+
+test('eng merge gate --post-status: the latest test run decides, and a run with no start time is the oldest', () => {
+  config();
+  const h = branch('sorting');
+  respond({ 'GET repos/o/r/pulls/7': prObj(7, h, 'sorting'), ...facts(7, h, [PASS(h)]),
+    [`GET repos/o/r/commits/${h}/check-runs?per_page=100`]: { check_runs: [{ name: 'test', status: 'completed', conclusion: 'failure' }, { name: 'test', status: 'completed', conclusion: 'success', started_at: '2026-11-01T01:00:00Z' }, { name: 'test', status: 'completed', conclusion: 'failure', started_at: '2026-11-01T00:00:00Z' }] } }, true);
+  const r = eng(['merge', 'gate', '--pr', '7', '--post-status']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
+test('eng merge post: GitHub lists a context\'s newest status first; comments without a body and odd commit lists are tolerated', () => {
+  config();
+  const main = git('rev-parse', 'main'), h = branch('odd'), now = new Date().toISOString(), h2 = branch('odd2'), h3 = branch('odd3');
+  const p = prObj(8, h, 'odd', { updated_at: now, labels: [{ name: 'stuck' }] });
+  respond({ ...tendOnly(main), ...open([p]), [`GET repos/o/r/commits/${h}/status`]: { statuses: [{ context: 'eng-merge-gate', state: 'success', created_at: now, updated_at: now }, { context: 'eng-merge-gate', state: 'failure', created_at: OLD, updated_at: OLD }] },
+    ...facts(8, h, [PASS(h)]), 'GET repos/o/r/issues/8/comments?per_page=100': [[{ created_at: OLD }, ...comments([PASS(h)])]] }, true);
+  let r = post([], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, new RegExp(`^#8 ${h.slice(0, 8)}: ok; gate PASS$`, 'm'));
+  assert.deepEqual(sent().filter(c => c.call?.startsWith('DELETE')).map(c => c.call), ['DELETE repos/o/r/issues/8/labels/stuck'], 'the newest status is green');
+  const nocheck = (n, head, o) => ({ ...prObj(n, head, `odd${n}`, { updated_at: now, ...o }) });
+  respond({ ...open([nocheck(8, h2, { labels: [{ name: 'stuck' }] }), nocheck(9, h3)]), [`GET repos/o/r/commits/${h2}/status`]: {}, [`GET repos/o/r/commits/${h3}/status`]: {},
+    ...Object.fromEntries([h2, h3].map(x => [`GET repos/o/r/commits/${x}/check-runs?check_name=eng-merge-gate&filter=latest`, { check_runs: [] }])),
+    ...facts(8, h2, [PASS(h2, { result: 'FAIL' })]), 'GET repos/o/r/issues/8/comments?per_page=100': [[{ created_at: OLD }, ...comments([PASS(h2, { result: 'FAIL' })])]], ...facts(9, h3, [PASS(h3)]) });
+  r = post([], { GITHUB_RUN_ID: '2' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^#8 [0-9a-f]{8}: ok \(required check missing; idle 0 of 30 min\); gate needs fix$/m);
+  assert.match(r.stdout, /^#9 [0-9a-f]{8}: ok \(required check missing; idle 0 of 30 min\); gate PASS$/m);
+  assert.deepEqual(writes().filter(c => typeof c === 'string' || c.call?.startsWith('DELETE')), [], 'no check: not un-stuck, not re-armed');
+  const commitList = list => ({ ...open([prObj(8, h, 'odd', { updated_at: OLD, body: 'Owner: lead' })]), ...status(h, 'failure', now), ...facts(8, h, []), 'GET repos/o/r/pulls/8/commits?per_page=100': [list] });
+  for (const list of [[{ commit: { message: 'x' } }]]) {
+    respond(commitList(list));
+    r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+    assert.match(r.stdout, /RESTART owner lead: no verdict/, `${JSON.stringify(list)}: the PR's update time`);
+  }
+  respond(commitList([{ commit: { committer: { date: OLD } } }, { commit: { committer: { date: now } } }, { commit: { committer: { date: OLD } } }]));
+  r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, /RESTART owner lead: no verdict/, 'the last commit decides');
+});
+
+test('eng merge post --dry-run never disarms or re-arms auto-merge', () => {
+  config();
+  const main = git('rev-parse', 'main'), h = branch('dryarm'), now = new Date().toISOString();
+  respond({ ...tendOnly(main), ...open([prObj(8, h, 'dryarm', { updated_at: now, labels: [{ name: 'hold' }], auto_merge: {} }), prObj(9, h, 'dryarm', { updated_at: now })]), ...status(h, 'success', now), ...facts(8, h, [PASS(h)]), ...facts(9, h, [PASS(h)]) }, true);
+  const r = post(['--dry-run'], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, /#8: hold: would turn auto-merge off/); assert.match(r.stdout, /#9: gate PASS, auto-merge off: would re-arm it/);
+  assert.deepEqual(writes(), []);
+});
+
+test('eng merge post: another restart\'s failed delivery does not silence this one', () => {
+  config();
+  const main = git('rev-parse', 'main'), h = branch('tworestarts'), fail = PASS(h, { result: 'FAIL' });
+  respond({ ...tendOnly(main), ...open([prObj(8, h, 'tworestarts', { updated_at: new Date().toISOString() })]), ...status(h, 'failure', new Date().toISOString()),
+    ...facts(8, h, [fail, '<!-- eng-restart/v1 key=fail:other:t -->\nWebhook: failed (curl exit 7); retried next run.']) }, true);
+  post([], { GITHUB_RUN_ID: '2', ENG_RESTART_WEBHOOK: 'https://hook.x/r', FAKE_CURL_EXIT: '7' });
+  assert.deepEqual(writes().map(c => c.curl ? 'curl' : c.call), ['curl', 'POST repos/o/r/issues/8/comments']);
+});
+
+test('eng merge post: the first finished run of this workflow is the one reported', () => {
+  config();
+  const main = git('rev-parse', 'main');
+  respond({ ...open([]), [`GET repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${main}&per_page=20`]: { workflow_runs: [{ id: 4, status: 'completed', conclusion: 'success' }, { id: 6, status: 'completed', conclusion: 'success' }] } }, true);
+  const r = post([], { GITHUB_RUN_ID: '2' });
+  assert.match(r.stdout, /already ran \(merge-post\.yml run 4, success\)/);
+});
+
+test('eng merge post: a failed revert step stops with git\'s own error', () => {
+  config(t => t.replace('post_merge: { check: "bash scripts/shipped-artifact-check.sh" }', 'post_merge: { check: "exit 3" }'));
+  fs.writeFileSync(path.join(dir, 'twice.md'), 't\n'); git('add', '-A'); git('commit', '-qm', 'twice'); git('push', '-q', 'origin', 'main');
+  const tip = git('rev-parse', 'main'), b = `auto-revert/${tip.slice(0, 12)}`;
+  git('branch', b);
+  respond({ ...open([]) }, true);
+  const r = post();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, new RegExp(`^eng: FAIL merge post: git switch -c ${b}: fatal: a branch named '${b}' already exists$`, 'm'));
+  git('branch', '-D', b);
+  respond({ ...open([]), [`GET repos/o/r/actions/workflows/merge-post.yml/runs?head_sha=${tip}&per_page=20`]: { workflow_runs: [{ id: 5, status: 'completed', conclusion: 'failure' }, { id: 7, status: 'completed', conclusion: 'failure' }] } });
+  git('push', '-q', 'origin', `${tip}:refs/heads/${b}`);
+  const again = post([], { GITHUB_RUN_ID: '2' });
+  assert.match(again.stdout, new RegExp(`already ran \\(merge-post\\.yml run 5, failure, ${b} pushed\\)`));
   config();
 });

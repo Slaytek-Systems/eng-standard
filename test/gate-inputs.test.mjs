@@ -196,3 +196,7 @@ test('stuck, restart and owner: the edges of each wait, and what each restart sa
   assert.equal(ownerOf('', authorsFrom(['Agent: first, second'])), 'first');
   assert.equal(ownerOf('Owner: lead\n', a), 'lead');
 });
+
+test('verdict gate: too few counted PASSes names each one that counted', () => {
+  assert.match(verdictGate([V({ key: 'k1' }), V({ key: 'k2', by: 'k2' })], SHA, 3).reason, /have 2 \(k1, k2\)$/);
+});
