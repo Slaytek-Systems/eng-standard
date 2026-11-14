@@ -4,7 +4,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## 0.23.6 (14 Nov 2026)
 
-**Self-merge's re-check reads the labels, the statuses and the verdict comments again after its first read, and refuses the merge if any changed** (bug p571wk5x4dpjwem54zx5nxkvts8j7pa3, finding F1). A verifier could start an `eng run` and post a PASS between the re-check's status read and its comment read, and self-merge counted that PASS with no run in progress. Now an unchanged second read means every rule held at one moment. `test/self-merge.test.mjs` replays the formal 16-step path through `scripts/pr-gate.mjs merge`, and the formal check's `--property moment` passes every scenario. **Upgrade:** nothing to do.
+**Self-merge's re-check reads the labels, the statuses and the verdict comments again after its first read, and refuses the merge if any changed** (bug p571wk5x4dpjwem54zx5nxkvts8j7pa3, finding F1). A verifier could start an `eng run` and post a PASS between the re-check's status read and its comment read, and self-merge counted that PASS with no run in progress. Now an unchanged second read means every rule held at one moment. A status on another context, whose event never starts self-merge, does not count as a change. `test/self-merge.test.mjs` replays the formal 16-step path through `scripts/pr-gate.mjs merge`, and the formal check's `--property moment` passes every scenario. **Upgrade:** nothing to do.
 
 ## 0.23.5 (14 Nov 2026)
 
