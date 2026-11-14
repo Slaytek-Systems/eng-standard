@@ -20,7 +20,7 @@ All commands run from the repo root after `npm ci`. `F=.cursor/skills/formal-mer
 ## Run it
 
 ```sh
-node --max-old-space-size=1500 $F/check.mjs                      # RulesHeldWhenRead, all 5 scenarios: about 15 s, under 1 GB
+node --max-old-space-size=1500 $F/check.mjs                      # RulesHeldWhenRead, all 6 scenarios: about 15 s, under 1 GB
 node --max-old-space-size=1500 $F/check.mjs --property moment    # fails today on F1 only
 node $F/sensitivity.mjs                                          # every seeded fault must be CAUGHT: about 15 s
 ```
@@ -38,15 +38,16 @@ One self-merge run on one PR. Verifiers `V1` and `V2` post as the `verifier_logi
 | `two-verifiers` | high | 5 events: 1 run, 3 verdicts from V1 and V2 |
 | `heads` | low | 6 events: 2 verdicts, 2 verdict statuses, 1 push, main moves once, CI on each head |
 | `hold-label` | low | 4 events: 2 verdicts, the hold label added and removed |
+| `f1-replay` | low | 6 events: 2 runs, 3 verdicts, all by the login. Self-merge's first `decide()` pass runs read by read here, so a counterexample is a full replay of `merge()`. |
 
-Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario must reach its witnesses (`EXPECT` in `check.mjs`), such as a merge after a dead run's deadline, or a refusal after `collab` posted success on a live run. A pass where nothing merges proves nothing.
+Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario must reach its witnesses (`EXPECT` in `check.mjs`). Each witness requires that self-merge read the event it names. One example is a merge that counted a PASS after the dead run's pending status was read and `now` was past its deadline. Another is a refusal where `collab`'s success on the login's live run was read, with the test green, no hold label and the verifier's latest read verdict a PASS. A pass where nothing merges proves nothing.
 
 ## What maps to the code
 
 | Model | Code |
 | --- | --- |
 | `ctrlMoves`: `idle` (main's tip), `pr` (the PR) | `merge()`: `mainTip()`, then `prsFor()` |
-| first `decide()` pass, taken as merge | `merge()`: `evaluate(p, tip)`. It only gates the re-check, so the model allows more behaviors than the code has, never fewer. |
+| first `decide()` pass | `merge()`: `evaluate(p, tip)`. It only gates the re-check, so every scenario except `f1-replay` takes it as merge. That allows more behaviors than the code has, never fewer, so a pass is sound. A counterexample from those scenarios is abstract, so replay it in `f1-replay` or a scenario like it before you call it a bug. |
 | `again` (head, hold label, main unchanged) | `merge()`: `again = get(pulls/n)` and `mainTip()`, two reads modeled as one step. Main cannot move during the run, and the head is pinned by the merge call. |
 | `s`, `k`, `b`, `v`: statuses, then `test` check and `now`, then compare, then comments and `decide()` | `prState()` in that order, then `evaluate()` and `decide()` |
 | `put`: merge, refused if the head moved | `PUT pulls/n/merge` with `sha` |
@@ -61,7 +62,7 @@ Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario m
 
 ## Findings
 
-- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the shortest path. Self-merge reads the statuses on the head, and no run is pending. V1 starts `eng run --by V1`, which posts pending. V1 posts PASS. Self-merge reads the comments, counts the PASS, and merges. At no moment were the PASS present and V1's run not in progress. A hold label added just before a late PASS is missed the same way. `--property moment` shows this in `run-ownership`, `dead-runs`, `two-verifiers` and `hold-label`, and passes `heads`. When F1 is fixed, `--property moment` must pass every scenario. Then make it the default and drop this entry.
+- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the full replay, with the first pass read by read (`--property moment --scenario f1-replay`, 16 steps). V1 posts PASS. Self-merge's first pass reads it and says merge. V1 posts FAIL. Self-merge re-reads the PR and the statuses, and no run is pending. V1 starts `eng run --by V1`, which posts pending, and then V1 posts PASS while that run is still going. Self-merge reads the comments, counts the latest PASS, sees no run, and merges. After the FAIL, there was no moment when the latest verdict was a PASS and V1 had no run in progress. This is the #73 pattern (PASS, then FAIL, then a re-run) that the run guard exists for. A hold label added just before a late PASS is missed the same way. `--property moment` fails in `run-ownership`, `dead-runs`, `two-verifiers`, `hold-label` and `f1-replay`, and passes `heads`. When F1 is fixed, `--property moment` must pass every scenario. Then make it the default and drop this entry.
 
 ## Reading a result
 
@@ -85,4 +86,4 @@ Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario m
 | `scripts/pr-gate.mjs` | `merge()` and `prState()`: the order of the reads and the re-check (modeled, not run) |
 | `eng.config.yml` | `ship.self_merge`, `ship.high_risk.verifiers` (read through `selfMergeConfig`) |
 
-Sync commit: `ae2ac73a314b8f6f89eba908ef41d1964bb0872b`. At this commit the model, the scenarios and the faults were confirmed against the covered code: RulesHeldWhenRead PASS in all 5 scenarios, 10 of 10 faults CAUGHT, and MergeMatchesAMoment failing only on F1. The maintenance method is `/maintain-formal-verification-skill` (`vendor/pstack/skills/maintain-formal-verification-skill/SKILL.md`).
+Sync commit: `ae2ac73a314b8f6f89eba908ef41d1964bb0872b`. At this commit the model, the scenarios and the faults were confirmed against the covered code: RulesHeldWhenRead PASS in all 6 scenarios, 10 of 10 faults CAUGHT, and MergeMatchesAMoment failing only on F1. The maintenance method is `/maintain-formal-verification-skill` (`vendor/pstack/skills/maintain-formal-verification-skill/SKILL.md`).

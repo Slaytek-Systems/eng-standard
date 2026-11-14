@@ -46,6 +46,7 @@ const SCENARIOS = {
   'two-verifiers': { ...S, risk: 'high', events: 5, runs: 1, verdicts: 3, bys: ['V1', 'V2'], runAccts: [VERIFIER] },
   'heads': { ...S, risk: 'low', events: 6, verdicts: 2, verdictStatus: 2, pushes: 1, mainMoves: 1, preset: false },
   'hold-label': { ...S, risk: 'low', events: 4, verdicts: 2, holds: 2 },
+  'f1-replay': { ...S, risk: 'low', events: 6, runs: 2, verdicts: 3, runAccts: [VERIFIER], verdictAccts: [VERIFIER], firstPass: true },
 };
 const WITNESSES = {
   'a merge': w => w.merged,
@@ -53,15 +54,20 @@ const WITNESSES = {
   'a merge after main moved and the builder updated the branch': w => w.merged && w.main === 1 && w.heads[w.head].base === 1,
   'a refusal on a hold label': w => w.ctrl.pc === 'done' && !w.merged && w.ctrl.hold,
   'a merge after the hold label was removed': w => w.merged && w.used.holds === 2,
-  'a merge after a dead run reached its deadline': w => w.merged && w.runs.some(r => r.died && r.endId === null),
-  [`a merge after ${VERIFIER} cleared ${COLLAB}'s live run`]: w => w.merged && w.runs.some(r => r.owner === COLLAB && r.how === 'cleared' && !r.died),
-  [`a refusal after ${COLLAB} posted success on ${VERIFIER}'s live run`]: w => w.ctrl.pc === 'done' && !w.merged && w.runs.some(r => r.endId === null && !r.died && w.statuses.some(s => s.context === r.ctx && s.login === COLLAB && s.state === 'success')),
+  'a merge after a dead run reached its deadline': w => w.merged && w.runs.some(r => r.died && r.endId === null && r.startId <= w.ctrl.statusesUpto && w.ctrl.now >= deadline(r) && readPass(w, r.by)),
+  [`a merge after ${VERIFIER} cleared ${COLLAB}'s live run`]: w => w.merged && w.runs.some(r => r.owner === COLLAB && r.how === 'cleared' && !r.died && r.endId <= w.ctrl.statusesUpto && readPass(w, r.by)),
+  [`a refusal after ${COLLAB} posted success on ${VERIFIER}'s live run`]: w => w.ctrl.pc === 'done' && !w.merged && w.ctrl.commentsUpto !== undefined && w.ctrl.check === 'success' && !w.ctrl.hold
+    && w.runs.some(r => r.owner === VERIFIER && r.endId === null && !r.died && readPass(w, r.by) && w.statuses.some(s => s.id <= w.ctrl.statusesUpto && s.context === r.ctx && s.login === COLLAB && s.state === 'success')),
+  'a merge whose first decide() pass ran read by read': w => w.merged && w.ctrl.firstPassRan,
   'a merge with two distinct verifiers': w => w.merged && new Set(w.comments.filter(c => c.login === VERIFIER).map(c => c.by)).size === 2,
 };
+// The latest verdict by the given verifier among the comments self-merge read is the login's PASS.
+const readPass = (w, by) => w.comments.filter(c => c.n <= w.ctrl.commentsUpto && c.sha === w.ctrl.sha && c.login === VERIFIER && c.by === by).at(-1)?.result === 'PASS';
 const EXPECT = {
   'run-ownership': ['a merge', `a merge after ${VERIFIER} cleared ${COLLAB}'s live run`, `a refusal after ${COLLAB} posted success on ${VERIFIER}'s live run`],
   'dead-runs': ['a merge', 'a merge after a dead run reached its deadline'],
   'two-verifiers': ['a merge', 'a merge with two distinct verifiers'],
+  'f1-replay': ['a merge', 'a merge whose first decide() pass ran read by read'],
   'heads': ['a merge', 'a merge after a push', 'a merge after main moved and the builder updated the branch'],
   'hold-label': ['a merge', 'a refusal on a hold label', 'a merge after the hold label was removed'],
 };
@@ -129,7 +135,7 @@ function envMoves(w, b) {
     m(`${COLLAB} posts success on run ${r.id}'s context`, n => { spend(n, 'foreign'); postStatus(n, r.sha, r.ctx, 'success', runStatusText(r.by, { exit: 0 }, CMD), COLLAB); });
     m(`${COLLAB} posts pending (timeout 0s) on run ${r.id}'s context`, n => { spend(n, 'foreign'); postStatus(n, r.sha, r.ctx, 'pending', runStatusText(r.by, { timeoutS: 0 }, CMD), COLLAB, 0); });
   }
-  if (use(w, 'verdicts', b)) for (const by of b.bys) for (const [a, result] of [[VERIFIER, 'PASS'], [VERIFIER, 'FAIL'], [COLLAB, 'PASS']])
+  if (use(w, 'verdicts', b)) for (const by of b.bys) for (const [a, result] of [[VERIFIER, 'PASS'], [VERIFIER, 'FAIL'], [COLLAB, 'PASS']].filter(([a]) => (b.verdictAccts ?? [VERIFIER, COLLAB]).includes(a)))
     m(`${a} posts eng verdict ${result} --by ${by} for ${hs}`, n => { spend(n, 'verdicts'); n.comments.push({ n: n.comments.length + 1, sha: h, by, result, login: a, at: n.clock }); });
   if (use(w, 'verdictStatus', b)) m(`${VERIFIER} sets the verdict status on ${hs} to success`, n => { spend(n, 'verdictStatus'); postStatus(n, h, C.status, 'success', 'eng verdict check', VERIFIER); });
   if (w.ci[h] === null && room(w, b)) m(`ci finishes on ${hs}: ${C.check} success`, n => { n.ci[h] = 'success'; n.used.events = (n.used.events || 0) + 1; });
@@ -148,11 +154,14 @@ function envMoves(w, b) {
 // merge() reads main's tip, then the PR, then runs evaluate() once to decide whether to re-check. That first pass only
 // gates the re-check, so the model lets it pass every time: more behaviors than the code has, never fewer. The re-check
 // (the PR and main again, then prState: statuses, test check, compare, comments) and the merge call go read by read.
-function ctrlMoves(w, need, risk) {
+function ctrlMoves(w, need, risk, firstPass) {
   const n = clone(w), c = n.ctrl, one = s => [[s, n]];
   switch (c.pc) {
     case 'idle': c.tip = n.main; c.pc = 'pr'; return one(`self-merge starts and reads main's tip (m${n.main + 1})`);
-    case 'pr': c.sha = n.head; c.pc = 'again'; return one(`self-merge reads the PR (head h${n.head + 1}); its first decide() pass is taken as merge`);
+    case 'pr':
+      c.sha = n.head;
+      if (firstPass) { c.hold = n.hold; c.first = true; c.pc = 's'; return one(`self-merge reads the PR (head h${n.head + 1})${n.hold ? ', hold label on' : ''}; its first decide() pass reads below`); }
+      c.pc = 'again'; return one(`self-merge reads the PR (head h${n.head + 1}); its first decide() pass is taken as merge`);
     case 'again':
       if (n.head !== c.sha || n.main !== c.tip) { c.pc = 'done'; return one('self-merge re-reads the PR and main: changed, skip'); }
       c.hold = n.hold; c.pc = 's';
@@ -163,8 +172,10 @@ function ctrlMoves(w, need, risk) {
     case 'v': {
       c.commentsUpto = n.comments.length;
       const d = evaluate(n, c, risk);
-      c.pc = d.merge ? 'put' : 'done';
-      return one(`self-merge reads ${n.comments.length} comment(s); decide() says ${d.merge ? 'merge' : 'skip'}: ${d.reason}`);
+      const first = c.first;
+      if (first) { delete c.first; c.firstPassRan = true; }
+      c.pc = d.merge ? (first ? 'again' : 'put') : 'done';
+      return one(`self-merge reads ${n.comments.length} comment(s); ${first ? 'the first ' : ''}decide() says ${d.merge ? 'merge' : 'skip'}: ${d.reason}`);
     }
     case 'put':
       if (n.head !== c.sha) { c.pc = 'done'; return one(`self-merge calls merge pinned to h${c.sha + 1}: GitHub refuses, the head moved`); }
@@ -173,7 +184,7 @@ function ctrlMoves(w, need, risk) {
   }
   return [];
 }
-const inWindow = c => ['s', 'k', 'b', 'v', 'put'].includes(c.pc);
+const inWindow = c => !c.first && ['s', 'k', 'b', 'v', 'put'].includes(c.pc);
 
 function check(name) {
   const b = SCENARIOS[name], risk = b.risk, need = risk === 'high' ? C.high_verifiers : 1;
@@ -187,7 +198,7 @@ function check(name) {
     for (const w of frontier) {
       if (w.ctrl.pc === 'done') continue;
       const wk = key(w);
-      for (const [a, n] of [...ctrlMoves(w, need, risk), ...envMoves(w, b)]) {
+      for (const [a, n] of [...ctrlMoves(w, need, risk, b.firstPass), ...envMoves(w, b)]) {
         if (PROPERTY === 'moment' && !n.ok && (inWindow(n.ctrl) || n.merged)) n.ok = rulesHold(n, nowView(n, n.ctrl.sha), need);
         const nk = key(n);
         if (seen.has(nk)) continue;
