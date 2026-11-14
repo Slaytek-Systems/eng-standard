@@ -61,7 +61,7 @@ cmd_sh() {
 
 cmd_journey() {
   local id=${1:-}; run_dir "$id" >/dev/null; shift
-  local names=("$@"); [ ${#names[@]} -gt 0 ] && [ "${names[0]}" != all ] || names=(init-sync doctor guard run-verdict gate)
+  local names=("$@"); [ ${#names[@]} -gt 0 ] && [ "${names[0]}" != all ] || names=(init-sync doctor guard run-verdict gate gate-affected)
   local fail=0
   for j in "${names[@]}"; do
     local f=$SKILL/journeys/$j.sh log=$EVIDENCE/$id/$j.log
