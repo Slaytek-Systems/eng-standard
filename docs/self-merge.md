@@ -190,13 +190,22 @@ Any thread may run it, the builder included: what counts is what ran on the exac
 # inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
 git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
-node bin/eng.mjs run --by <id> -- sh -c 'npm ci && npm test'  # one run per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs run --by <id> -- npm test  # one run per check: tests, the CLI on a scratch repo, property tests
 node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
 # docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
 
-`eng run` runs in a private worktree of the exact commit that holds tracked files only, so a command that needs the
-dependencies installs them itself (`sh -c 'npm ci && npm test'`); a bare `npm test` there fails on a missing module.
+`eng run` runs in a private worktree of the exact commit. Git puts tracked files only there, so when every lockfile at
+that commit, workspaces included, matches the checkout's byte for byte, eng mounts each of the checkout's `node_modules`
+folders there read-only with `fuse-overlayfs` (the `npm ci` above installs them). Writes through the worktree's
+`node_modules` stay in the run's own layer; a command that names the checkout's own path still writes the checkout. eng
+unmounts when the run ends, a signal included. If `eng` itself is killed (SIGKILL), its mounts and round stay until the
+next `eng run` in the same repository: it stops the killed run's leftover processes, unmounts and removes each round
+whose `eng` is gone, that names this repository's git common dir and whose worktree git links back to it, and prunes the
+worktree entry. Linked checkouts of one repository share its common dir, so they clear each other's dead rounds. It leaves
+live runs and other repositories' rounds, same-named repos included, alone. A round it cannot clear stays whole for the
+next run, and eng prints the commands to clear it by hand. When a lockfile
+differs, the checkout has no `node_modules`, or `fuse-overlayfs` is missing or cannot mount, eng says so and the command installs the dependencies itself (`sh -c 'npm ci && npm test'`).
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the

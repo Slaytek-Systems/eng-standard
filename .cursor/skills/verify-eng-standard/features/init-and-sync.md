@@ -22,7 +22,7 @@ Preconditions:
 
 - A run from `verify.sh up`, and an empty repo from `verify.sh repo <id> <name>`.
 
-- **Init.** Run `verify.sh sh <id> <name> -- eng init`. Exit 0, output has `seeded eng.config.yml`, and `eng.config.yml`, `AGENTS.md`, `SHIPPING.md`, `.eng/lock.json`, `.eng/guard/hook.mjs`, `.githooks/pre-commit` and `.agents/skills/eng-verify/SKILL.md` exist. `git config core.hooksPath` prints `.githooks`.
+- **Init.** Run `verify.sh sh <id> <name> -- eng init`. Exit 0, output has `seeded eng.config.yml` and `seeded .eng/rule-proofs/no-focused-tests`, and `eng.config.yml`, `AGENTS.md`, `SHIPPING.md`, `.eng/lock.json`, `.eng/guard/hook.mjs`, `.githooks/pre-commit`, `.agents/skills/eng-verify/SKILL.md` and `.eng/rule-proofs/no-focused-tests/src/cart.test.ts.fixture` exist. `git config core.hooksPath` prints `.githooks`.
 - **Check passes.** Run `eng sync --check`. Exit 0 with `eng sync --check: PASS`.
 - **Drift.** Append a line to `SHIPPING.md`, then run `eng sync --check`. Exit 1 with `SHIPPING.md: differs from what eng.config.yml renders`.
 - **Restore.** Run `eng sync`. Output has `wrote SHIPPING.md`, and `eng sync --check` exits 0.

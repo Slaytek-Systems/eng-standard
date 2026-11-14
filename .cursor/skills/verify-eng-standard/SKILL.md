@@ -34,7 +34,7 @@ It checks that the installed version matches the source `package.json`, that the
 Run the mapped journeys:
 
 ```sh
-$V journey $ID all                    # or name them: init-sync doctor guard run-verdict gate
+$V journey $ID all                    # or name them: init-sync doctor guard run-verdict gate gate-affected
 ```
 
 It prints `PASS <journey>` or `FAIL <journey>` with the log path, and exits 1 if any journey failed. Each journey is a script in `journeys/` that makes its own fresh repo, so journeys can run again in the same run.
@@ -60,7 +60,7 @@ Proof standards:
 - Drive the packed CLI and the files it renders (the git hooks, `.eng/guard/hook.mjs` through the exact command in `.claude/settings.json`). Never import `lib/` or call internal functions.
 - Assert the action and the end state: the exit code, the line eng prints, and the file or git state it changed (a commit that did or did not land, a file restored).
 - A journey that fails on main is a bug finding. Report it with the log. Never weaken the journey to make it pass.
-- `eng doctor` reads the latest version from `ENG_STANDARD_SOURCE`, which `verify.sh` points at the source checkout. Nothing in the journeys calls GitHub. `eng verdict` without `--pr` writes only to the scratch repo.
+- `eng doctor` reads the latest version from `ENG_STANDARD_SOURCE`, which `verify.sh` points at the source checkout. Nothing in the journeys calls GitHub. `eng verdict` without `--pr` writes only to the scratch repo, and `eng run --by` posts its `eng-run/...` commit status only when `origin` is on github.com, which a scratch repo never has.
 
 ## Cleanup
 

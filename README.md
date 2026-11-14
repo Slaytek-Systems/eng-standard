@@ -28,7 +28,8 @@ default is `profile: generic`, and `eng init` writes it into a new `eng.config.y
 the approver, the dated attributions and incident names, the persist names above as defaults, the Core routing note,
 and three rules only Slaytek runs (briefs live in Core, the T3 callback contract, hand off by default). For each fixture
 in `test/fixtures/profile/`, that output is byte-identical to v0.17.2 except one reviewed line from 0.18.2: the
-pipeline's lint step is `npx eng lint`, without `--config-from origin/main` (`test/profile.test.mjs`).
+pipeline's lint step is `npx eng lint`, without `--config-from origin/main`, and from 0.23.2 the pre-commit hook and
+the pipeline run the installed eng instead of npx (`test/profile.test.mjs`).
 
 A config with no `profile` line still validates and renders the generic text. `eng sync` and `eng doctor` print one
 line saying the Slaytek rules are now opt-in, with the line to add. eng never adds it itself, because a config may

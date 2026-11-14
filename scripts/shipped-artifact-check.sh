@@ -9,7 +9,7 @@ npm pack --silent --pack-destination "$work" >/dev/null
 cd "$work"
 npm init -y >/dev/null
 npm install --no-audit --no-fund --silent ./*.tgz
-npx --no-install eng --help >/dev/null
+node node_modules/@slayteksystems/eng-standard/bin/eng.mjs --help >/dev/null
 mkdir repo && cd repo && git init -q -b main && cp ../node_modules/@slayteksystems/eng-standard/templates/eng.config.yml .
-npx --no-install eng e2e --required --files docs/a.md --json | grep -q '"required": false'
+node ../node_modules/@slayteksystems/eng-standard/bin/eng.mjs e2e --required --files docs/a.md --json | grep -q '"required": false'
 echo "shipped artifact OK: $(ls "$work"/*.tgz | xargs -n1 basename)"
