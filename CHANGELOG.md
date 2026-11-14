@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.2 (14 Nov 2026)
+
+**The next `eng run` clears what a SIGKILLed `eng run` left behind, in its own checkout only** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). In 0.23.1 a killed `eng` left its `node_modules` mounts and its round until someone cleared them by hand.
+
+- Each run round records its checkout, the realpath of its git common dir, in `.eng-checkout`. Before a run opens its round, eng finds each run round in the scratch root whose `eng` (the pid in the round's name) is gone and whose `.eng-checkout` names this checkout. It unmounts that round's mounts (`fusermount3 -u -z`), removes the round, prunes the worktree entry and prints one line saying so. If removal fails, the line gives the commands to clear it by hand.
+- A round whose `eng` is alive, a round of another checkout (a repo with the same project name, which shares the scratch root, included), a round made before 0.23.2 (no `.eng-checkout`) and anything else in the scratch root are left alone. Matching on the project name alone, as #85 did, let one repo unmount and delete a same-named repo's round.
+- **Upgrade:** zero manual edits. Rounds left by 0.23.1 are still cleared by hand (`fusermount3 -u -z <path>`, `rm -rf <round>`, `git worktree prune`).
+
 ## 0.23.1 (14 Nov 2026)
 
 **`eng run --by <id> -- npm test` finds the dependencies** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). `eng run`'s private worktree holds tracked files only, so `yaml` and `semver` did not resolve there and a bare `npm test` failed on a missing module. Every verifier recorded `sh -c 'npm ci && npm test'` instead.
