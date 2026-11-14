@@ -1003,3 +1003,30 @@ test('fix round 5: generated from the row schema, every missing, null or wrongly
     assert.equal(passAt0(real.map(([, x]) => x), 1, c).merge, true, 'all of them together');
   }
 });
+
+// F1 (bug p571wk5x, formal-merge-gate --property moment --scenario f1-replay, 16 steps): the re-check reads the statuses,
+// then the comments. V1 posts PASS, the first pass says merge, V1 posts FAIL, the re-check reads the statuses (no run),
+// V1 starts a run and posts PASS while it is going, and the re-check reads that PASS. No moment had a PASS and no run.
+test('F1: the re-check refuses when the statuses or the labels changed while it read the comments', () => {
+  const ago = s => new Date(Date.now() - s * 1000).toISOString();
+  const p = { ...p3, labels: [{ name: 'risk:low' }] }, full = { ...p, changed_files: 1, commits: 1 };
+  const runRow = row({ id: 50, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', created_at: ago(60), updated_at: ago(60), description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') });
+  const pass1 = V({ comment_at: ago(180) }), fail = V({ result: 'FAIL', comment_at: ago(120) }), pass2 = V({ comment_at: ago(30) });
+  const f1 = {
+    ...routes, [`GET ${R}/pulls/3`]: full, [`GET ${R}/issues/3/labels`]: [{ name: 'risk:low' }],
+    [`GET ${R}/pulls/3/files?per_page=100`]: [{ filename: 'lib/example.mjs', status: 'modified' }],
+    [`GET ${R}/commits/${SHA}/statuses`]: { seq: [[VROW], [VROW], [runRow, VROW]] },
+    [`GET ${R}/issues/3/comments?per_page=100`]: { seq: [[pass1].map(asComment), [pass1, fail, pass2].map(asComment)] },
+  };
+  const comment = { name: 'issue_comment', payload: { issue: { number: 3, pull_request: {} }, comment: { body: verdictBody(pass2) } } };
+  let r = gate(f1, comment);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /#3 aaaaaaaa: MERGE: risk:low: PASS by checker-a/, 'the first pass says merge');
+  assert.ok(!r.sent.some(c => c[0] === 'PUT'), `a run started while the re-check read the comments refuses the merge: ${r.stdout}`);
+  assert.match(r.stdout, /#3: the statuses or labels changed while the re-check read them; skip/);
+  r = gate({ ...f1, [`GET ${R}/commits/${SHA}/statuses`]: [VROW], [`GET ${R}/issues/3/comments?per_page=100`]: [pass1].map(asComment),
+    [`GET ${R}/pulls/3`]: { seq: [full, full, { ...full, labels: [...p.labels, { name: 'hold' }] }] } }, comment);
+  assert.ok(!r.sent.some(c => c[0] === 'PUT'), `a hold label added while the re-check read the comments refuses the merge: ${r.stdout}`);
+  r = gate({ ...f1, [`GET ${R}/commits/${SHA}/statuses`]: [VROW], [`GET ${R}/issues/3/comments?per_page=100`]: [pass1].map(asComment) }, comment);
+  assert.ok(r.sent.some(c => c[0] === 'PUT'), `nothing changed: it merges: ${r.stdout}`);
+});
