@@ -26,7 +26,8 @@ const canMount = (PATH = process.env.PATH) => {
   return ok;
 };
 const stub = (name, body) => { const bin = path.join(root, `bin-${name}`); fs.mkdirSync(bin, { recursive: true }); fs.writeFileSync(path.join(bin, 'fuse-overlayfs'), `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return `${bin}:${env.PATH}`; };
-const REFUSED = 'echo "fuse-overlayfs: cannot mount: Operation not permitted" >&2\nexit 1';
+// Like GitHub's runner: the tool is installed and answers --version, and the mount is refused.
+const REFUSED = '[ "$1" = --version ] && exit 0\necho "fuse-overlayfs: cannot mount: Operation not permitted" >&2\nexit 1';
 const overlay = canMount();
 const fallback = /eng run: no node_modules in the worktree \(.+\); a command that needs the dependencies installs them itself, e\.g\. eng run -- sh -c 'npm ci && npm test'/;
 const tree = d => fs.readdirSync(d, { recursive: true }).sort().map(f => { const p = path.join(d, f), s = fs.lstatSync(p); return `${f} ${s.ino} ${(s.mode & 0o7777).toString(8)} ${s.isFile() ? fs.readFileSync(p, 'utf8') : ''}`; });
