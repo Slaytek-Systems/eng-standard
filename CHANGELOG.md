@@ -2,6 +2,14 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.1 (14 Nov 2026)
+
+**The pre-commit hook and the pipeline run this repo's installed eng, never npx** (Core task p5756x5be3hw56e8my0k966yg98j7btm). The hook ran `${ENG:-npx --no-install eng}` when eng was not installed. In a worktree with no `node_modules`, `npx --no-install` still resolves from the npx cache, and on one devbox that cache held the unrelated npm package `eng@0.0.9`. It runs no checks and exits 0, so pre-commit passed silently in every eng repo for about 36 hours.
+
+- **The hook fails closed.** `.githooks/pre-commit` moves to the repo root (`git rev-parse --show-toplevel`) and runs `$ENG` if set, else `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. With neither, it exits 1 with one line: `eng: pre-commit cannot find node_modules/@slayteksystems/eng-standard/bin/eng.mjs. Install this repo's dependencies, or set ENG=<path to eng>`. It never calls npx, the npx cache, an `eng` on PATH or a foreign `node_modules/.bin/eng`. The bun-repo fix from 0.20.3 (#55) still holds: the installed eng runs with node, so npm never reads the project.
+- **The Buildkite pipeline does the same.** `.eng/ci/pipeline.yml` and `.eng/ci/e2e-nightly.yml` ran `npx eng <cmd>`, which with no install fetches the registry's `eng` and passes. Each step now runs `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs <cmd>` and fails when eng is not installed.
+- **Upgrade:** run `eng sync` and commit the new `.githooks/pre-commit` (and pipeline files). Until then a repo keeps the old hook. A worktree with no `node_modules` now refuses commits: install dependencies there, or set `ENG`.
+
 ## 0.23.0 (14 Nov 2026)
 
 **A verifier's PASS doesn't count while its own run on that head is still going** (Core task p574yb0qyj3n9xyd3tad1h4mg98j3wpy, decision nd7ebz69qb0c39691a3ab586t58j4qwc, Matt, 14 Nov 2026). The 12 Nov sweep found opencode-deepseek posting PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes apart, and self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs stood in the way. Now a rule in `lib/self-merge.mjs` does. There is still no wait after a verdict: a PASS followed by a newly started probe's FAIL can still merge, a gap Matt accepted knowingly.

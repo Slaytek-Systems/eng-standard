@@ -147,7 +147,7 @@ test('pre-commit fails closed when this repo has no eng installed: it never runs
     assert.equal(run.stdout, '');
     assert.equal(run.stderr.trim().split('\n').length, 1, run.stderr);
     assert.match(run.stderr, /^eng: .*install this repo's dependencies.*ENG=<path to eng>/i);
-    assert.doesNotMatch(hooks(cfg())['.githooks/pre-commit'], /npx|bunx/, 'the hook names no package runner');
+    assert.doesNotMatch(hooks(cfg())['.githooks/pre-commit'].split('\n').filter(l => !l.startsWith('#')).join('\n'), /npx|bunx/, 'the hook runs no package runner');
   } finally {
     fs.rmSync(r.dir, { recursive: true, force: true });
     fs.rmSync(bin, { recursive: true, force: true });
