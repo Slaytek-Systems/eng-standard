@@ -28,5 +28,6 @@ This directory is the maintained source for verifying what a consuming repo sees
 - [Guard](./guard.md) covers the rendered guard hook as Claude Code and Cursor run it.
 - [Run and verdict](./run-and-verdict.md) covers `eng run --by`, `eng verdict PASS` and `eng verdict check` on the exact head.
 - [Gate](./gate.md) covers `eng gate` with a check script and a required verdict.
+- [Gate on a pull request](./gate-affected.md) covers `eng gate --event pr` with `verification.pr_checks: affected`.
 
 Not reached yet: `../coverage.md`.

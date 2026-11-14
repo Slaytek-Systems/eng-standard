@@ -19,3 +19,5 @@ has '(exit 1) as verdict evidence'
 expect 1 eng verdict PASS --by v1
 has 'exited 1'
 expect 1 eng verdict check
+expect 1 eng run --by a/b -- true
+has 'cannot name a run status'
