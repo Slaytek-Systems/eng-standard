@@ -283,3 +283,61 @@ test('eng run: clearing a killed run first stops the command it left running', {
     assert.equal(fs.existsSync(k.round), false);
   } finally { await k.kill(); unmountAll([k.round]); }
 });
+
+// A removal that fails part way keeps .eng-checkout and wt/.git, the evidence the next run needs to finish the job.
+for (const [what, lock] of [
+  ['its scratch root', round => path.dirname(round)],
+  ['the round itself', round => { for (const n of fs.readdirSync(round)) if (n !== 'wt' && n !== '.eng-checkout') fs.rmSync(path.join(round, n), { recursive: true, force: true }); return round; }],
+])
+  test(`eng run: a killed run's round that cannot be removed because ${what} is read-only keeps its marker and worktree link, and a later run clears it`, async () => {
+    const e = { ...env, XDG_CACHE_HOME: path.join(root, `xdg-perm-${what.split(' ').at(-1)}`) }, k = await held(dir, e);
+    let locked = null;
+    try {
+      await k.kill();
+      locked = lock(k.round); fs.chmodSync(locked, 0o500);
+      const stuck = engIn(dir, e);
+      assert.doesNotMatch(stuck.stderr, /cleared/);
+      assert.match(stuck.stderr, new RegExp(`eng run: cannot clear ${k.round}`));
+      assert.ok(fs.existsSync(path.join(k.round, '.eng-checkout')), 'the marker stays');
+      assert.ok(fs.existsSync(path.join(k.round, 'wt', '.git')), 'the worktree link stays');
+      fs.chmodSync(locked, 0o700); locked = null;
+      const r = engIn(dir, e);
+      assert.equal(r.status, 0, out(r));
+      assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid}`));
+      assert.equal(fs.existsSync(k.round), false);
+      assert.doesNotMatch(worktrees(dir), new RegExp(path.basename(k.round)));
+    } finally { if (locked) fs.chmodSync(locked, 0o700); await k.kill(); unmountAll([k.round]); }
+  });
+
+test('eng run: a worktree link through a symlink in this checkout\'s worktrees folder does not let it clear another repo\'s round', () => {
+  const other = path.join(root, 'admin-link', 'repo'), base = path.join(root, 'admin-link-scratch'), round = path.join(base, 'eng-repo-abc-2147483647-run-forged');
+  fs.cpSync(dir, other, { recursive: true }); fs.mkdirSync(round, { recursive: true });
+  execSync(`git worktree add -q --detach ${JSON.stringify(path.join(round, 'wt'))} HEAD`, { cwd: other, stdio: 'pipe' });
+  const theirs = fs.readFileSync(path.join(round, 'wt', '.git'), 'utf8').trim().slice('gitdir: '.length), alias = path.join(dir, '.git', 'worktrees', 'alias');
+  fs.mkdirSync(path.dirname(alias), { recursive: true }); fs.symlinkSync(theirs, alias);
+  try {
+    fs.writeFileSync(path.join(round, 'wt', '.git'), `gitdir: ${alias}\n`);
+    fs.writeFileSync(path.join(round, '.eng-checkout'), fs.realpathSync(path.join(dir, '.git')));
+    fs.writeFileSync(path.join(round, 'sentinel'), 'keep');
+    const r = engIn(dir, { ...env, ENG_TMP_BASE: base });
+    assert.equal(r.status, 0, out(r));
+    assert.doesNotMatch(r.stderr, /cleared/);
+    assert.ok(fs.existsSync(path.join(round, 'sentinel')), 'the other repo\'s round stays');
+    assert.ok(fs.existsSync(path.join(theirs, 'gitdir')), 'the other repo keeps its worktree record');
+  } finally { fs.rmSync(alias, { force: true }); }
+});
+
+test('eng run: a killed run started under another spelling of the scratch root has its command stopped before its round goes', async () => {
+  const real = path.join(root, 'xdg-spelt'), link = path.join(root, 'xdg-spelt-link');
+  fs.mkdirSync(real); fs.symlinkSync(real, link);
+  const k = await held(dir, { ...env, XDG_CACHE_HOME: link });
+  try {
+    k.eng.kill('SIGKILL'); await k.ended;
+    assert.equal(stopped(k.cmd), false, 'the command outlives its SIGKILLed eng');
+    const r = engIn(dir, { ...env, XDG_CACHE_HOME: real });
+    assert.equal(r.status, 0, out(r));
+    assert.equal(stopped(k.cmd), true, 'the command is stopped before its round goes');
+    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid} .+\\(1 process stopped\\)`));
+    assert.equal(fs.existsSync(k.round), false);
+  } finally { await k.kill(); unmountAll([fs.existsSync(k.round) ? fs.realpathSync(k.round) : k.round]); }
+});
