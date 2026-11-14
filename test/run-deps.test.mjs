@@ -133,17 +133,17 @@ test('the mount probe calls a host that refuses the mount unsupported, so the mo
 // An eng run whose command holds until killed. The command reports its pid and round through a FIFO once it is up; if eng
 // ends first, the test opens the FIFO itself so the read ends.
 let fifos = 0;
-async function held(cwd) {
+async function held(cwd, e = env) {
   const fifo = path.join(root, `up-${fifos++}.fifo`);
   execSync(`mkfifo ${JSON.stringify(fifo)}`);
-  const eng = spawn(process.execPath, [ENG, 'run', '--', 'sh', '-c', `echo "$$ $ENG_SCRATCH" > ${JSON.stringify(fifo)}; exec sleep 600`], { cwd, env, stdio: 'ignore' });
+  const eng = spawn(process.execPath, [ENG, 'run', '--', 'sh', '-c', `echo "$$ $ENG_SCRATCH" > ${JSON.stringify(fifo)}; exec sleep 600`], { cwd, env: e, stdio: 'ignore' });
   let read = false;
   const ended = once(eng, 'exit').then(() => { if (!read) fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)); return ''; });
   const up = await Promise.race([fs.promises.readFile(fifo, 'utf8').then(t => { read = true; return t; }), ended]);
   assert.ok(up, 'eng ended before the command started');
   const [cmd, round] = up.trim().split(' ');
   const kill = async () => { eng.kill('SIGKILL'); await ended; try { process.kill(Number(cmd), 'SIGKILL'); } catch {} };
-  return { eng, ended, round, kill };
+  return { eng, ended, round, cmd: Number(cmd), kill };
 }
 const mountsUnder = round => fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').filter(l => l.includes(`${round}/`));
 const unmountAll = rounds => { for (const r of rounds) for (const l of mountsUnder(r)) spawnSync('fusermount3', ['-u', '-z', l.split(' ')[4]]); };
@@ -200,4 +200,86 @@ test('eng run: clearing a killed run leaves a live run of the same checkout alon
     assert.deepEqual(mountsUnder(live.round), [], 'the live run still cleans up after itself');
     assert.equal(fs.existsSync(live.round), false);
   } finally { await live.kill(); await dead.kill(); unmountAll([live.round, dead.round]); }
+});
+
+// A process is stopped once /proc shows it gone or a zombie.
+const stopped = pid => { try { return /^[ZX]/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')); } catch { return true; } };
+const engIn = (cwd, e = env) => spawnSync(process.execPath, [ENG, 'run', '--', 'true'], { cwd, encoding: 'utf8', env: e });
+
+test('eng run: a killed run under a symlinked scratch root loses its mounts and round', { skip: !overlay && 'fuse-overlayfs cannot mount here' }, async () => {
+  const real = path.join(root, 'xdg-real'), link = path.join(root, 'xdg-link');
+  fs.mkdirSync(real); fs.symlinkSync(real, link);
+  const e = { ...env, XDG_CACHE_HOME: link }, k = await held(dir, e), resolved = fs.realpathSync(k.round);
+  try {
+    await k.kill();
+    assert.equal(mountsUnder(resolved).length, 2);
+    const r = engIn(dir, e);
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid}`));
+    assert.deepEqual(mountsUnder(resolved), [], 'the mounts are matched on the resolved path');
+    assert.equal(fs.existsSync(k.round), false);
+    assert.doesNotMatch(worktrees(dir), new RegExp(path.basename(k.round)));
+  } finally { await k.kill(); unmountAll([resolved]); }
+});
+
+test('eng run: a round whose mounts will not come off stays whole, marker included, and a later run clears it', { skip: !overlay && 'fuse-overlayfs cannot mount here' }, async () => {
+  const bin = path.join(root, 'bin-nofuse'); fs.mkdirSync(bin, { recursive: true });
+  for (const t of ['fusermount3', 'fusermount', 'fuse-overlayfs']) fs.writeFileSync(path.join(bin, t), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const k = await held(dir);
+  try {
+    await k.kill();
+    const stuck = engIn(dir, { ...env, PATH: `${bin}:${env.PATH}` });
+    assert.equal(stuck.status, 0, out(stuck));
+    assert.doesNotMatch(stuck.stderr, /cleared/);
+    assert.match(stuck.stderr, new RegExp(`eng run: cannot clear ${k.round}.+fusermount3 -u -z .+node_modules`));
+    assert.equal(mountsUnder(k.round).length, 2);
+    assert.ok(fs.existsSync(path.join(k.round, '.eng-checkout')), 'the marker stays, so the next run retries');
+    const r = engIn(dir);
+    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid}`));
+    assert.deepEqual(mountsUnder(k.round), []);
+    assert.equal(fs.existsSync(k.round), false);
+  } finally { await k.kill(); unmountAll([k.round]); }
+});
+
+test('eng run: a round reached through a symlinked scratch root that only carries a matching marker is left alone', () => {
+  const outside = path.join(root, 'outside-scratch'), link = path.join(root, 'outside-link');
+  const fake = path.join(outside, 'eng-repo-abc-2147483647-run-x');
+  fs.mkdirSync(fake, { recursive: true }); fs.symlinkSync(outside, link);
+  fs.writeFileSync(path.join(fake, '.eng-checkout'), fs.realpathSync(path.join(dir, '.git')));
+  fs.writeFileSync(path.join(fake, 'sentinel'), 'keep');
+  const r = engIn(dir, { ...env, ENG_TMP_BASE: link });
+  assert.equal(r.status, 0, out(r));
+  assert.doesNotMatch(r.stderr, /cleared/);
+  assert.ok(fs.existsSync(path.join(fake, 'sentinel')));
+});
+
+test('eng run: a marker naming this checkout does not let it clear another repo\'s round', async () => {
+  const other = path.join(root, 'forged', 'repo');
+  fs.cpSync(dir, other, { recursive: true });
+  const k = await held(other), base = path.dirname(k.round), fake = path.join(base, 'eng-repo-abc-2147483647-run-marker-only');
+  const mine = fs.realpathSync(path.join(dir, '.git'));
+  fs.mkdirSync(path.join(fake, 'wt'), { recursive: true }); fs.writeFileSync(path.join(fake, '.eng-checkout'), mine);
+  try {
+    await k.kill();
+    fs.writeFileSync(path.join(k.round, '.eng-checkout'), mine);
+    const r = engIn(dir);
+    assert.equal(r.status, 0, out(r));
+    assert.doesNotMatch(r.stderr, /cleared/);
+    assert.ok(fs.existsSync(path.join(k.round, 'wt')), 'the other repo\'s round stays');
+    assert.match(worktrees(other), new RegExp(path.basename(k.round)), 'the other repo still lists its worktree');
+    assert.ok(fs.existsSync(fake), 'a round with no worktree of this checkout stays');
+  } finally { await k.kill(); unmountAll([k.round]); fs.rmSync(fake, { recursive: true, force: true }); fs.rmSync(k.round, { recursive: true, force: true }); }
+});
+
+test('eng run: clearing a killed run first stops the command it left running', { skip: !overlay && 'fuse-overlayfs cannot mount here' }, async () => {
+  const k = await held(dir);
+  try {
+    k.eng.kill('SIGKILL'); await k.ended;
+    assert.equal(stopped(k.cmd), false, 'the command outlives its SIGKILLed eng');
+    const r = engIn(dir);
+    assert.equal(r.status, 0, out(r));
+    assert.match(r.stderr, new RegExp(`eng run: cleared .+ left by eng pid ${k.eng.pid}`));
+    assert.equal(stopped(k.cmd), true, 'the command is stopped before its round goes');
+    assert.equal(fs.existsSync(k.round), false);
+  } finally { await k.kill(); unmountAll([k.round]); }
 });
