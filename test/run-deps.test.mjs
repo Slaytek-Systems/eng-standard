@@ -14,7 +14,7 @@ const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8
 const out = r => r.stdout + r.stderr;
 const LOCK = '{"name":"r","lockfileVersion":3,"packages":{"node_modules/dep":{"version":"1.0.0"}}}\n';
 const dep = path.join(dir, 'node_modules', 'dep');
-const usesDep = `import('dep').then(m => console.log('dep says', m.default))`;
+const usesDep = 'import("dep").then(m => console.log("dep says", m.default))';
 
 before(() => {
   fs.mkdirSync(dep, { recursive: true });

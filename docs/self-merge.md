@@ -190,13 +190,15 @@ Any thread may run it, the builder included: what counts is what ran on the exac
 # inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
 git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
-node bin/eng.mjs run --by <id> -- sh -c 'npm ci && npm test'  # one run per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs run --by <id> -- npm test  # one run per check: tests, the CLI on a scratch repo, property tests
 node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
 # docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
 
-`eng run` runs in a private worktree of the exact commit that holds tracked files only, so a command that needs the
-dependencies installs them itself (`sh -c 'npm ci && npm test'`); a bare `npm test` there fails on a missing module.
+`eng run` runs in a private worktree of the exact commit. Git puts tracked files only there, so when every lockfile at
+that commit matches the checkout's byte for byte, eng copies the checkout's `node_modules` in as hard links (the `npm ci`
+above installs it). When a lockfile differs or the checkout has no `node_modules`, eng says so and the command installs
+the dependencies itself (`sh -c 'npm ci && npm test'`).
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the

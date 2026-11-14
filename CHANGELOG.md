@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.1 (14 Nov 2026)
+
+**`eng run --by <id> -- npm test` finds the dependencies** (Core task p579jtt1jzw1pgbxqs0gn9373s8j0kt5). `eng run`'s private worktree holds tracked files only, so `yaml` and `semver` did not resolve there and a bare `npm test` failed on a missing module. Every verifier recorded `sh -c 'npm ci && npm test'` instead.
+
+- **The checkout's `node_modules` comes along when the lockfiles match.** Before the command starts, eng compares each lockfile (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `bun.lockb`) at the run's commit with the checkout's copy. When all match byte for byte and the checkout has a real `node_modules` folder, eng copies it into the worktree as hard links (`cp -al`): no download and no second copy on disk. The command runs exactly as given and is recorded as given.
+- **The worktree stays private.** An install, a new file or a removal in the run's `node_modules` replaces the run's links only, so `npm ci` inside the run leaves the checkout's `node_modules` as it was. A write into an installed file in place would reach the checkout. Installers replace files rather than write into them. A symlink was rejected for this reason: `npm ci` through it emptied the checkout's `node_modules`.
+- **Otherwise eng says why.** When a lockfile differs, the checkout has no `node_modules`, or the copy fails, eng prints one line naming the cause and `eng run -- sh -c 'npm ci && npm test'`, and the command runs without it. A repo with no lockfile sees no change.
+- `docs/self-merge.md` shows the checker's command as `eng run --by <id> -- npm test` again. `sh -c 'npm ci && npm test'` still works. **Upgrade:** zero manual edits.
+
 ## 0.23.0 (14 Nov 2026)
 
 **A verifier's PASS doesn't count while its own run on that head is still going** (Core task p574yb0qyj3n9xyd3tad1h4mg98j3wpy, decision nd7ebz69qb0c39691a3ab586t58j4qwc, Matt, 14 Nov 2026). The 12 Nov sweep found opencode-deepseek posting PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes apart, and self-merge fired 33 s after the deciding PASS on #73. Only prose in the briefs stood in the way. Now a rule in `lib/self-merge.mjs` does. There is still no wait after a verdict: a PASS followed by a newly started probe's FAIL can still merge, a gap Matt accepted knowingly.
