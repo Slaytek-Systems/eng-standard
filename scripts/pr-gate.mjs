@@ -130,7 +130,7 @@ function prsFor(t) {
 
 function evaluate(p, tip) {
   const pr = { number: p.number, base: p.base.ref, draft: p.draft, sameRepo: p.head.repo?.full_name === R, headSha: p.head.sha, labels: p.labels.map(l => l.name) };
-  try { return pr.base === C.base && pr.sameRepo ? decide(pr, prState(p, tip), C) : decide(pr, {}, C); }
+  try { if (!(pr.base === C.base && pr.sameRepo)) return decide(pr, {}, C); const s = prState(p, tip); return { ...decide(pr, s, C), statuses: s.statuses }; }
   catch (e) { return { merge: false, reason: `could not read state: ${e.message.split('\n')[0]}` }; }
 }
 
@@ -160,6 +160,10 @@ function merge() {
     if (again.state !== 'open' || again.head.sha !== p.head.sha || now.tip !== tip || now.test?.conclusion !== t.conclusion) { console.log(`#${p.number}: the PR, its head or ${C.base} changed during this run; skip (that change's own event runs self-merge again)`); continue; }
     const d2 = evaluate(again, tip);
     if (!d2.merge) { console.log(`#${p.number}: refused on re-check: ${d2.reason}`); continue; }
+    // prState() read the statuses before the comments. A run started, or a hold label added, while it read the comments
+    // refuses the merge (bug p571wk5x, formal-merge-gate F1).
+    const names = x => x.labels.map(l => l.name).sort().join('\n'), last = get(`repos/${R}/pulls/${p.number}`);
+    if (JSON.stringify(pages(`repos/${R}/commits/${p.head.sha}/statuses?per_page=100`)) !== JSON.stringify(d2.statuses) || names(last) !== names(again)) { console.log(`#${p.number}: the statuses or labels changed while the re-check read them; skip (that change's own event runs self-merge again)`); continue; }
     try {
       send('PUT', `repos/${R}/pulls/${p.number}/merge`, { merge_method: 'squash', sha: p.head.sha, commit_title: `${p.title} (#${p.number})` });
     } catch (e) { console.log(`#${p.number}: merge refused: ${e.message.split('\n')[0]}`); continue; }

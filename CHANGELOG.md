@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.6 (14 Nov 2026)
+
+**Self-merge's re-check reads the statuses and the labels again after the comments, and refuses the merge if either changed** (bug p571wk5x4dpjwem54zx5nxkvts8j7pa3, finding F1). A verifier could start an `eng run` and post a PASS between the re-check's status read and its comment read, and self-merge counted that PASS with no run in progress. `test/self-merge.test.mjs` replays the formal 16-step path through `scripts/pr-gate.mjs merge`. **Upgrade:** nothing to do.
+
 ## 0.23.5 (14 Nov 2026)
 
 **The recorder test reports an `eng run` that ended before it recorded, with eng's exit and output, instead of an ENOENT** (Core task p57aqqsrnj1p2cqhjpj7916yqn8j7d6d). main's post-merge CI run 43598304842 failed `test/pass-integrity.test.mjs` on a missing `.git/eng/verdict-runs.jsonl`. One of the four parallel `eng run --by` calls ended 539 ms in, before it recorded anything. The test's read of the run log threw, so eng's exit code and output were lost. The other three runs kept going and wrote into the repo after the test removed it, which the same run reported as a leftover.
