@@ -119,13 +119,18 @@ export function allMutants(root = ROOT) {
   return TARGETS.flatMap(f => mutants(f, fs.readFileSync(path.join(root, f), 'utf8'))).map((m, id) => ({ id, ...m }));
 }
 
+// Each test run is its own process group, so one kill ends node --test and every test file it started. A run still in
+// this set is killed when the harness exits for any reason.
+const groups = new Set();
+
 // node --test, TAP out; the first failing test ends the run. { killed, how, ms }.
 function runTests(cwd, files, timeoutMs, env) {
   return new Promise(resolve => {
     const t0 = Date.now();
     const p = spawn(process.execPath, ['--test', '--test-reporter=tap', ...files], { cwd, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    groups.add(p.pid);
     let buf = '', done = false, first = null;
-    const end = (killed, how) => { if (done) return; done = true; clearTimeout(timer); try { process.kill(-p.pid, 'SIGKILL'); } catch {} resolve({ killed, how, ms: Date.now() - t0, first }); };
+    const end = (killed, how) => { if (done) return; done = true; clearTimeout(timer); try { process.kill(-p.pid, 'SIGKILL'); } catch {} groups.delete(p.pid); resolve({ killed, how, ms: Date.now() - t0, first }); };
     const timer = setTimeout(() => end(true, 'timeout'), timeoutMs);
     p.stdout.on('data', d => {
       buf += d; let k;
@@ -167,6 +172,13 @@ async function main() {
   const env = { ...process.env, NODE_TEST_CONTEXT: undefined };
   delete env.NODE_TEST_CONTEXT;
   const dirs = Array.from({ length: workers }, (_, w) => path.join(out, `w${w}`));
+  // On any exit (done, a crash, SIGINT, SIGTERM, SIGHUP) kill the live test groups and remove the worker copies, mutants
+  // included. Only SIGKILL of the harness skips this.
+  process.on('exit', () => {
+    for (const pid of groups) try { process.kill(-pid, 'SIGKILL'); } catch {}
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+  for (const [sig, n] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) process.on(sig, () => process.exit(128 + n));
   dirs.forEach(workerCopy);
   // The unmutated tree must pass in a worker copy, or every mutant would look killed.
   const green = await runTests(dirs[0], tests, 600e3, env);
@@ -195,7 +207,6 @@ async function main() {
   for (const r of rows.filter(r => !r.killed).sort((x, y) => x.id - y.id)) console.log(`SURVIVED ${r.id}\t${r.file}:${r.line}:${r.col}\t${r.op}\t${r.from} -> ${r.to}`);
   for (const [f, b] of Object.entries(by)) console.log(`${f}: ${b.killed}/${b.total} (${(100 * b.killed / b.total).toFixed(1)}%)`);
   console.log(`mutation score: ${(100 * summary.score).toFixed(2)}% (${killed}/${rows.length} killed, ${summary.timeouts} by timeout); errors: ${errors}`);
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) await main();
