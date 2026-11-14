@@ -13,6 +13,7 @@ Rule summary: [AGENTS.md](../AGENTS.md).
 | Risk label | `.github/workflows/risk-label.yml` → `scripts/pr-gate.mjs label` → `lib/risk.mjs` | On PR open, push, reopen, ready and edit (incl. retarget to main): `risk:high` if any changed path (or a rename's old path) matches `ship.high_risk.paths`, else `risk:low`. `package.json` / `package-lock.json` count only when more than the version changed. Runs main's code (`pull_request_target`, no PR checkout) so a PR cannot relabel itself |
 | Verdict comment | `eng verdict ... --pr <n>` (`bin/eng.mjs`) | Posts an `eng-verdict/v1` PR comment with the record as JSON: head SHA, patch-id, result, by. Self-merge reads verdicts from these comments |
 | Verdict status | `eng verdict ... --pr <n>` / `eng verdict status --pr <n>` (`bin/eng.mjs`) | Posts commit status `verdict` (success/failure) on the PR's exact head SHA from `eng verdict check --pr <n>`, which counts this clone's records and the PR's trusted `eng-verdict/v1` comments for that head (self-merge's parse and `verifier_logins` rules). The ruleset requires it |
+| Run in progress | `eng run --by <id> -- <cmd>` (`lib/run.mjs`) | Sets commit status `eng-run/<id>/<command hash>-<run id>` pending on the run's commit, then success or failure when it ends; each run has its own context. The description says `eng run <id>: running` or `finished, exit N; not a merge check`. Self-merge does not count `<id>`'s PASS while one is pending |
 | Self-merge | `.github/workflows/self-merge.yml` → `scripts/pr-gate.mjs merge` → `lib/self-merge.mjs` | On events only (below) and on dispatch. Skips everything if main's `test` is running (no run yet: dispatches `ci.yml`). Then checks the event's PR, reads every rule again, squash-merges it with `sha=<head>`, deletes its branch and dispatches `ci.yml` on main (the post-merge check) |
 | Auto-revert | `scripts/pr-gate.mjs merge` on a red main | Opens `auto-revert/<sha12>` from `github-actions[bot]`: one commit on top of the red tip with the tip's parent tree, so it is the exact inverse. While main is red only that PR is considered, and only while it is still that exact inverse |
 | Undo | `gh pr revert <n>` | Opens a revert PR |
@@ -33,6 +34,7 @@ Self-merge merges a PR only when **all** hold:
     `ship.high_risk.paths` say so. Path patterns match raw names, newlines included (`glob2re` uses dotAll), for both
     a file's name and a rename's old name.
 - A comment's time is its last edit (`max(created_at, updated_at)`) when deciding which verdict is a verifier's latest.
+- No PASS counts from a verifier with an `eng-run/<id>/...` status pending on the head (Run guard, below).
 
 GitHub lists at most 3,000 files for a PR. When the listed files fall short of the PR's `changed_files`, the PR is
 risk:high and every file counts as testable. An incomplete list is never evidence.
@@ -40,8 +42,82 @@ risk:high and every file counts as testable. An incomplete list is never evidenc
 There is no wait (Matt, 26 Oct 2026: "Merge as soon as it's verified; post-merge checks roll back breakage"). A PR
 merges in the first run after its last rule goes green. A new push gives a new head SHA, so everything must go green
 again for it. Just before the merge call the run reads the PR, main's tip and its `test` run, and every rule again. If
-the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict), it merges nothing. The merge call pins
-the head SHA. `ship.self_merge.hold_minutes` no longer exists, and a config that sets it fails with a message saying so.
+the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict, a run in progress), it merges nothing. The merge call pins the head SHA. `ship.self_merge.hold_minutes` no
+longer exists, and a config that sets it fails with a message saying so.
+
+## Run guard (14 Nov 2026)
+
+Decision nd7ebz69qb0c39691a3ab586t58j4qwc (Matt, 14 Nov 2026): the run guard, and no wait after a verdict. The 12 Nov
+sweep found opencode-deepseek posting PASS and then its own FAIL on the same head three times, 1, 1 and 5.5 minutes
+apart (#73 at 1f2a2af5, and #66 twice). Self-merge fired 33 s after the deciding PASS on #73. A PASS doesn't count while
+that verifier's own run on the head is in progress. A PASS followed by a newly started probe's FAIL can still merge:
+Matt accepted that gap knowingly, and the post-merge check and auto-revert stay the backstop.
+
+- **A PASS does not count while its verifier still has a run in progress on the head.** `eng run --by <id> -- <cmd>`
+  sets commit status `eng-run/<id>/<8 hex of the command>-<run id>` to `pending` on the run's commit when the command
+  starts, and to `success` or `failure` when it ends (`lib/run.mjs`). The run id is random per run, so two runs by one
+  verifier, even of the same command at once, never share a context, and one's end never clears the other. Self-merge
+  reads every status on the head, every page of GitHub's list (a head can carry more than 100 contexts), and any run of
+  `<id>` still in progress stops `<id>`'s PASS from counting (`runsInProgress()`, `verdictGate()`). A FAIL from that
+  verifier still blocks. Only a clone whose `origin` is on github.com posts these. If GitHub refuses the post (an
+  unpushed commit, no `gh` login), `eng run` says so on stderr and the run goes on, and that run holds nothing back.
+- **The status says what it is.** The description reads `timeout 1800s; eng run <id>: running; not a merge check: <cmd>`,
+  then `eng run <id>: finished, exit N; not a merge check: <cmd>`. GitHub keeps 140 characters, so the timeout comes first
+  and only the tail (a long id or command) is ever cut. A failing run's status stays `failure`, so it shows red
+  on the PR: that is the honest state of that run. It is a verifier's run, not a required check; the verdict, not the run
+  status, says what the runs proved.
+- **Who owns a run, and who can end it.** A run's owner is the GitHub account that posted the first `pending` status on
+  its context (the lowest GitHub status id). The run is in progress until an end (`success`, `failure` or `error`) on that
+  context with a higher status id, posted by its owner or by a login in `ship.self_merge.verifier_logins`; a listed login
+  can end any run, whoever owns it. Times never order rows: GitHub stamps them to the second, so two rows in one second
+  would tie. A status on that context from any other account changes nothing: it does not start, end,
+  extend or shorten the run, and its description is not read. So a collaborator cannot release a verifier's PASS by
+  posting `success`, or a `pending` with a short timeout and then `success`, on its context. A run row with no creator
+  (GitHub shows none for a deleted account) has no owner, so it does not parse and refuses every merge on that head. What
+  this does not protect: anyone with push access
+  can post a `pending` status on a new `eng-run/<id>/...` context and hold `<id>`'s PASS back until its deadline, as anyone
+  with push access can add the `hold` label. A status can hold a PASS back; it never makes one count.
+- **A run whose `eng` died stops counting at its deadline.** The deadline is the time GitHub recorded the owner's first
+  pending status plus the budget timeout that description starts with (1800 s by default, `--budget timeout=...` sets
+  it) plus 5 minutes. A pending status whose timeout cannot be read has no deadline: no default stands in for a budget
+  that could be longer, so it holds until its owner or a listed login ends it. `eng run`'s budget stops a command at its timeout and then posts its end, so a run still alive never reaches its
+  deadline; only a run whose `eng` process was killed (SIGKILL, a lost machine) is still pending then. The skip reason
+  names the context and its deadline. To release it sooner, the verifier ends it knowingly with the same `gh` login that
+  ran it: `gh api -X POST repos/<owner>/<repo>/statuses/<sha> -f state=error -f context=<context> -f description='cleared
+  by hand: the run died'`. A finished `eng-run/...` status, that one included, runs self-merge for its head. A dead run
+  that reaches its deadline posts nothing, so then run `gh workflow run self-merge.yml -f pr=<n>`, or wait for the PR's
+  next event. Re-running the command does not clear it: the new run has its own context.
+- **A status row is well-formed, or self-merge refuses the merge** (decision nd71xqrdrqemzemfahkpcyvyz18j5gp8, 14 Nov
+  2026). `decide()` parses every row on every page once, up front (`parseStatuses()`), before any rule reads one, and
+  names the first bad row in the skip reason. No row is skipped: a skipped row could be a run's pending start. Every row,
+  on any context, needs all of these, or the merge is refused:
+
+  | Field | Required shape |
+  | --- | --- |
+  | the row | a JSON object |
+  | `id` | a positive whole number (GitHub's status id), unique in the list |
+  | `state` | `pending`, `success`, `failure` or `error` |
+  | `context` | a string with something besides space in it (the run rule below) |
+  | `created_at`, `updated_at` | ISO 8601 times, such as `2026-11-13T20:33:08Z` |
+  | `creator` | an object with a non-blank `login`. On a context that is not a run it may be `null`, which is how GitHub shows a deleted account. A run row needs the login: the run rule reads it |
+  | `description` | a string or `null` |
+
+  Other fields (`target_url`, `url`, `node_id`, `avatar_url`) are not read, and `null` is fine. The `null` creator call
+  rests on real rows: the 75 statuses on the heads of the last 40 merged PRs here are all `verdict` rows with a
+  creator, and GitHub documents `null` for an account that no longer exists. Refusing a `null` creator off a run would
+  block a head over a field no rule reads. Rows are ordered by status id only, and the `verdict` status is the row
+  with the highest id on that context. A row's time is read only for a run's deadline against now.
+
+  A context looks like a run's when, folded to NFKC lower case with everything but letters and digits removed, it starts
+  with `engrun`. That covers `eng-run/` with surrounding space, another case, another separator (`eng_run`, `eng run`,
+  `eng-run:`) and a missing or extra segment. It parses in full only as `eng-run/<id>/<8 lowercase hex>-<run id>`, where
+  `<id>` is one segment with no space and the run id is letters and digits. The rule is wide on purpose:
+  a CI context that happens to start with `engrun` (say `engrunner/ci`) refuses too, and needs a rename. A false refusal
+  costs a rename or a new commit (a status cannot be deleted); a skipped run row could merge. `eng run` refuses a `--by`
+  that cannot fill `<id>` (a `/` or a space in it) before it runs anything, so eng never posts a row its own gate refuses.
+
+A PR held back by a run in progress needs no dispatch: when the run ends, its `eng-run/...` status (posted with the
+verifier's own token, so it starts workflows) runs self-merge for that head.
 
 ## Events
 
@@ -56,6 +132,7 @@ that PR again.
 | `workflow_run`: `ci` completed on main after a push or a manual dispatch | every open PR (main's state changed) |
 | `issue_comment` created or edited, body starts with `<!-- eng-verdict/v1 -->` | that PR |
 | `status` with context `verdict` | the open PR whose head is that SHA |
+| `status` with context `eng-run/...` and state other than `pending` (an `eng run --by` ended) | the open PR whose head is that SHA |
 | `pull_request_target` labeled, unlabeled, ready_for_review, or edited with a base change (retargeted) | that PR |
 | `workflow_dispatch` | input `pr`, or every open PR |
 | `workflow_dispatch` from `ci.yml` job `start-self-merge` | every open PR |
@@ -113,10 +190,13 @@ Any thread may run it, the builder included: what counts is what ran on the exac
 # inputs: <n> PR number, <id> the verifier's name (a tool, lane or thread id),
 #         <evidence> Core note id (or path) with what it checked
 git fetch origin main && gh pr checkout <n> && git pull --ff-only && npm ci
-node bin/eng.mjs run --by <id> -- npm test                    # one run per check: tests, the CLI on a scratch repo, property tests
+node bin/eng.mjs run --by <id> -- sh -c 'npm ci && npm test'  # one run per check: tests, the CLI on a scratch repo, property tests
 node bin/eng.mjs verdict PASS --by <id> --evidence <evidence> --pr <n>     # or FAIL; attaches the rounds as evidence
 # docs or policy text only: node bin/eng.mjs verdict PASS --by <id> --review --evidence <evidence> --pr <n>
 ```
+
+`eng run` runs in a private worktree of the exact commit that holds tracked files only, so a command that needs the
+dependencies installs them itself (`sh -c 'npm ci && npm test'`); a bare `npm test` there fails on a missing module.
 
 Running the change replaces most model review rounds and spends fewer tokens. A model review (`interrogate` or one
 reviewer) stays available. It is required only for text no check can run, and optional on a high-risk change at the

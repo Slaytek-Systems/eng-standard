@@ -7,9 +7,9 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
 
 - **Self-merge.** `.github/workflows/self-merge.yml` runs main's code only and squash-merges at most one PR into
   `main` per run. It runs on events only, never on a schedule: `ci` finished, a verdict comment or `verdict` status, a
-  label added or removed, ready for review, retargeted to main, or a manual dispatch. Runs queue one at a time. There
-  is no wait: a PR merges as soon as every condition below holds on its current head SHA, and each one is read again
-  just before the merge call:
+  label added or removed, ready for review, retargeted to main, an `eng run --by` that ended, or a manual dispatch.
+  Runs queue one at a time. There is no wait: a PR merges as soon as every condition below holds on its current head
+  SHA, and each one is read again just before the merge call:
   - The head contains main's tip (ancestry check). A behind branch is updated and its new head verified again.
   - The `test` check is green and the `verdict` status is success.
   - **Verification tooling decides, not who ran it** (Matt, 6 Nov 2026). A PASS counts when it carries passing runs on
@@ -28,6 +28,16 @@ run `eng sync` here). Its own settings live in the root `eng.config.yml`.
     under two `--by` names counts as two verifiers. That is the rule: verifiers are tools or lanes, not people.
   - No verdict, a verdict for another head, or a FAIL refuses the merge. Each verifier's latest verdict counts, and
     any FAIL blocks.
+  - **Run guard** (Matt, 14 Nov 2026). A PASS doesn't count while that verifier's own `eng run --by` on the head is
+    in progress. Each run posts its own commit status `eng-run/<id>/<hash>-<run id>`,
+    pending until it ends, so one run's end never clears another's. A run's owner is the account that posted the first
+    pending status on its context; only the owner or a `verifier_logins` login can end it, and any other account's
+    status on that context changes nothing. A run whose `eng` died stops counting at its deadline: the budget timeout
+    its first pending status starts with, plus 5 minutes (30 + 5 minutes by default); a status that states no timeout
+    holds until it is ended. A PASS followed by a newly started probe's FAIL can still merge (Matt, 14 Nov 2026). Every
+    commit status row must parse in one strict shape (an id, a known state, a context, two ISO times, a creator), or
+    the merge is refused, and rows are ordered by GitHub's status id only. How to clear a dead run by hand, and the row
+    shape: [docs/self-merge.md](docs/self-merge.md).
   - No `hold` label and not draft.
 - **Post-merge check.** After each merge self-merge runs `ci.yml` on `main`. When it finishes, `ci.yml` starts
   self-merge again. If it failed, that run opens the merged

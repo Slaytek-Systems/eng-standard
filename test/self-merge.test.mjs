@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import { classifyRisk, versionOnly } from '../lib/risk.mjs';
-import { methodOf } from '../lib/verification.mjs';
+import { methodOf, runStatusContext, runStatusText } from '../lib/verification.mjs';
 import { selfMergeConfig, decide, eventTarget, verdictBody, parseVerdicts, isAutoRevert, trusted, BOT } from '../lib/self-merge.mjs';
 // eng's scratch root and shared caches live under XDG_CACHE_HOME: keep them inside this run, never in the real ~/.cache.
 process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-xdg-'));
@@ -61,15 +61,37 @@ const pr = (o = {}) => ({ number: 1, base: 'main', draft: false, sameRepo: true,
 const V = (o = {}) => { const v = { sha: SHA, patch_id: 'p1', result: 'PASS', by: 'checker-a', login: 'Mattslayga', association: 'OWNER', comment_at: '2026-10-19T04:00:00Z', method: 'verification', ...o }; return { runs: [{ cmd: 'npm test', exit: 0, output: 'ok', sha: v.sha }], ...v }; };
 const OUT = { login: 'unrelated-outsider', association: 'NONE' };
 const V2 = V({ by: 'checker-b' });
-const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, status: { state: 'success', created_at: '2026-10-19T04:30:00Z' }, verdicts: [V()], ...o });
+// A commit-status row in the one shape self-merge parses (lib/self-merge.mjs parseStatuses). The verdict row has the highest id,
+// so it is the latest on its context wherever a test adds it.
+const row = (o = {}) => ({ id: 1, state: 'success', context: 'ci/build', created_at: '2026-10-19T04:30:00Z', updated_at: '2026-10-19T04:30:00Z', creator: { login: 'Mattslayga' }, description: null, target_url: null, ...o });
+const VROW = row({ id: 1e11, context: 'verdict', description: 'verdict: PASS' });
+const withV = rows => [...rows, VROW];
+const st = (o = {}) => ({ risk: 'low', containsBase: true, check: { head_sha: SHA, status: 'completed', conclusion: 'success', completed_at: '2026-10-19T05:00:00Z' }, statuses: [VROW], verdicts: [V()], ...o });
 const hi = (o = {}) => st({ risk: 'high', verdicts: [V(), V2], ...o });
 
+// The run guard (Matt, 14 Nov 2026, decision nd7ebz69qb0c39691a3ab586t58j4qwc): opencode-deepseek posted PASS, then its own
+// FAIL on the same head, 1, 1 and 5.5 minutes later; self-merge fired 33 s after a deciding PASS. A PASS does not count while
+// its verifier still has an eng run in progress on that head. There is no wait otherwise.
+const T0 = Date.parse('2026-11-12T22:00:00Z'), at = min => new Date(T0 + min * 60e3).toISOString();
+const busy = (by, state = 'pending') => row({ id: 100, context: runStatusContext(by, 'npm test', 'r1'), state, created_at: at(0), updated_at: at(0), description: runStatusText(by, { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-a' } });
 test('self-merge: no wait; it merges as soon as every rule holds, and hold_minutes is refused', () => {
   assert.equal('hold_minutes' in C, false);
-  const now = new Date().toISOString(), fresh = st({ check: { ...st().check, completed_at: now }, status: { state: 'success', created_at: now }, verdicts: [V({ comment_at: now })] });
+  const now = new Date().toISOString(), fresh = st({ check: { ...st().check, completed_at: now }, statuses: [{ ...VROW, created_at: now, updated_at: now }], verdicts: [V({ comment_at: now })] });
   assert.equal(decide(pr(), fresh, C).merge, true, 'a verdict posted this second merges');
   for (const hold_minutes of [120, 0, null, '30'])
     assert.throws(() => selfMergeConfig({ ship: { self_merge: { hold_minutes } } }), /ship\.self_merge\.hold_minutes was removed .* Delete it from eng\.config\.yml; add the hold label to stop a PR/, String(hold_minutes));
+});
+test('run guard: a PASS does not count while that same verifier still has an eng run in progress on the head', () => {
+  const s = (statuses, o = {}) => st({ verdicts: [V({ comment_at: at(0) })], statuses: withV(statuses), now: T0 + 30 * 60e3, ...o });
+  let d = decide(pr(), s([busy('checker-a')]), C);
+  assert.equal(d.merge, false); assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:35:00\.000Z unless it ends first\)/);
+  assert.equal(decide(pr(), s([busy('checker-a', 'success')]), C).merge, true, 'a finished run does not hold the PASS back');
+  assert.equal(decide(pr(), s([busy('checker-a', 'failure')]), C).merge, true, 'the verdict, not the run status, says what a run proved');
+  assert.equal(decide(pr(), s([busy('checker-b')]), C).merge, true, 'another verifier\'s run does not hold this PASS back');
+  assert.equal(decide(pr(), s([row({ id: 5, context: 'verdict', state: 'pending' }), row({ id: 6, context: 'ci/other', state: 'pending' })]), C).merge, true, 'other statuses are not runs');
+  assert.match(decide(pr({ labels: ['risk:high'] }), hi({ verdicts: [V({ comment_at: at(0) }), V({ by: 'checker-b', comment_at: at(0) })], statuses: withV([busy('checker-b')]), now: T0 + 30 * 60e3 }), C).reason, /have 1 \(checker-a\); checker-b does not count: a run by checker-b is still in progress/);
+  assert.deepEqual(eventTarget('status', { context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'success', sha: SHA }, C), { sha: SHA }, 'a finished run runs self-merge for its head');
+  assert.ok(eventTarget('status', { context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', sha: SHA }, C).skip, 'a run starting is no reason to run self-merge');
 });
 
 test('self-merge events: each trigger maps to its one PR; ci finished on main or a bare dispatch checks every open PR', () => {
@@ -107,9 +129,11 @@ test('self-merge: every rule must hold', () => {
     [pr(), st({ check: { ...st().check, head_sha: 'b'.repeat(40) } }), /no test check on head/],
     [pr(), st({ check: { ...st().check, conclusion: 'failure' } }), /test is failure/],
     [pr(), st({ check: { ...st().check, status: 'in_progress', conclusion: null } }), /test is in_progress/],
-    [pr(), st({ status: null }), /no verdict status/],
-    [pr(), st({ status: { state: 'failure', created_at: '2026-10-19T04:30:00Z' } }), /verdict is failure/],
-    [pr(), st({ status: { state: 'pending', created_at: '2026-10-19T04:30:00Z' } }), /verdict is pending/],
+    [pr(), st({ statuses: [] }), /no verdict status/],
+    [pr(), st({ statuses: [row({ id: 7 })] }), /no verdict status/],
+    [pr(), st({ statuses: [{ ...VROW, state: 'failure' }] }), /verdict is failure/],
+    [pr(), st({ statuses: [{ ...VROW, state: 'pending' }] }), /verdict is pending/],
+    [pr(), st({ statuses: [VROW, row({ id: VROW.id + 1, context: 'verdict', state: 'failure' })] }), /verdict is failure/],
   ];
   for (const [p, s, re] of cases) { const d = no(p, s); assert.equal(d.merge, false, re.source); assert.match(d.reason, re); }
 });
@@ -295,7 +319,8 @@ test('rule 6 (pure): only the bot\'s single-commit exact inverse of the red tip 
 });
 
 // scripts/pr-gate.mjs merge against a fake gh: routes are "METHOD path" -> JSON, every call is logged.
-// A route value { seq: [a, b, ...] } answers its nth call with the nth item (the last one repeats).
+// A route value { seq: [a, b, ...] } answers its nth call with the nth item (the last one repeats). A route value
+// { pages: [a, b, ...] } is a paginated list: --paginate --slurp gets every page, a plain read only the first.
 function gate(routes, event = null, args = ['merge']) {
   const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-prgate-'));
   fs.writeFileSync(path.join(d, 'routes.json'), JSON.stringify(routes));
@@ -307,7 +332,7 @@ fs.appendFileSync(d + '/calls', JSON.stringify([m, p, body ? JSON.parse(body) : 
 const r = JSON.parse(fs.readFileSync(d + '/routes.json', 'utf8')), k = m + ' ' + p; let v = k in r ? r[k] : r[m + ' ' + p.split('?')[0]];
 if (v && v.seq) { const n = fs.readFileSync(d + '/calls', 'utf8').trim().split('\\n').filter(l => { const [cm, cp] = JSON.parse(l); return cm + ' ' + cp === k; }).length; v = v.seq[Math.min(n - 1, v.seq.length - 1)]; }
 if (v === undefined) { process.stderr.write('HTTP 404: ' + k); process.exit(1); }
-process.stdout.write(JSON.stringify(a.includes('--slurp') ? [v] : v));
+process.stdout.write(JSON.stringify(v && v.pages ? (a.includes('--slurp') ? v.pages : v.pages[0]) : a.includes('--slurp') ? [v] : v));
 `, { mode: 0o755 });
   if (event) fs.writeFileSync(path.join(d, 'event.json'), JSON.stringify(event.payload));
   const ev = event ? { GITHUB_EVENT_NAME: event.name, GITHUB_EVENT_PATH: path.join(d, 'event.json') } : { GITHUB_EVENT_NAME: '', GITHUB_EVENT_PATH: '' };
@@ -385,7 +410,7 @@ const p3 = { number: 3, state: 'open', title: 'fix: gate', draft: false, created
 const routes = {
   [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'success'), ...runs(SHA, 'success'),
   [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [p3], [`GET ${R}/pulls/3`]: { ...p3, changed_files: 1, commits: 1 },
-  [`GET ${R}/commits/${SHA}/status`]: { statuses: [{ context: 'verdict', state: 'success', created_at: '2026-10-19T04:30:00Z' }] },
+  [`GET ${R}/commits/${SHA}/statuses`]: [VROW],
   [`GET ${R}/issues/3/comments?per_page=100`]: comments,
   [`GET ${R}/compare/${TIP}...${SHA}`]: { behind_by: 0 },
   [`GET ${R}/pulls/3/files?per_page=100`]: [{ filename: 'scripts/pr-gate.mjs', status: 'modified' }],
@@ -444,6 +469,44 @@ test('events: each run looks at its event\'s PR only, and reads every rule again
   }
 });
 
+test('run guard: eng run --by marks its run in progress on GitHub, then its result; a clone with no GitHub origin marks nothing', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runstatus-')), log = path.join(root, 'gh.log'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo');
+  try {
+    fs.mkdirSync(bin); fs.mkdirSync(repo);
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\necho '{}'\n`, { mode: 0o755 });
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a');
+    const H = g('rev-parse HEAD'), run = (...c) => spawnSync(process.execPath, [ENG, 'run', '--by', 'checker-a', '--', ...c], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    const calls = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
+    assert.equal(run('true').status, 0); assert.deepEqual(calls(), [], 'no GitHub origin: nothing to mark');
+    g('remote add origin git@github.com:o/r.git');
+    let r = run('true'); assert.equal(r.status, 0, r.stdout + r.stderr);
+    r = run('sh', '-c', 'exit 3'); assert.equal(r.status, 3, r.stdout + r.stderr);
+    const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ctx = cmd => esc(runStatusContext('checker-a', cmd, 'RUNID')).replace('RUNID', '[0-9a-f]{8}');
+    const posted = calls().map(l => l.match(/^api -X POST repos\/o\/r\/statuses\/(\w+) -f state=(\w+) -f context=(\S+) -f description=(.*)$/).slice(1));
+    const want = [['pending', 'true'], ['success', 'true'], ['pending', "sh -c 'exit 3'"], ['failure', "sh -c 'exit 3'"]];
+    assert.equal(posted.length, want.length, calls().join('\n'));
+    posted.forEach(([sha, state, context], i) => { assert.equal(sha, H); assert.equal(state, want[i][0]); assert.match(context, new RegExp(`^${ctx(want[i][1])}$`)); });
+    assert.equal(posted[0][2], posted[1][2], 'a run ends on the context it started'); assert.equal(posted[2][2], posted[3][2]);
+    assert.equal(posted[0][3], 'timeout 1800s; eng run checker-a: running; not a merge check: true', 'a run says it is a verifier run, not a required check');
+    assert.equal(posted[3][3], "eng run checker-a: finished, exit 3; not a merge check: sh -c 'exit 3'", 'its end keeps the honest state and says it is no merge check');
+    r = run('true'); assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.notEqual(calls().at(-1).match(/context=(\S+)/)[1], posted[0][2], 'each run of one command has its own context');
+    fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\necho "HTTP 422: No commit found for SHA" >&2\nexit 1\n', { mode: 0o755 });
+    r = run('true'); assert.equal(r.status, 0, 'a run GitHub cannot mark still runs and records');
+    assert.match(r.stderr, /eng run: could not mark this run in progress on GitHub \(HTTP 422: No commit found for SHA\); self-merge cannot see this run, so it will not hold back checker-a's PASS/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('run guard: a run in progress holds a PASS back, and its own status event runs self-merge again when it ends', () => {
+  const t = new Date().toISOString(), running = [row({ id: 10, context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', created_at: t, updated_at: t, creator: { login: 'lane-b' } }), VROW];
+  let r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: running });
+  assert.match(r.stdout, /skip: risk:high needs counted PASSes .* have 1 \(checker-a\); checker-b does not count: a run by checker-b is still in progress/);
+  assert.equal(r.sent.length, 0, 'the run\'s own status event, when it ends, runs self-merge again');
+  r = gate({ ...routes, [`GET ${R}/commits/${SHA}/pulls`]: [p3] }, { name: 'status', payload: { context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'success', sha: SHA } });
+  assert.ok(r.sent.some(c => c[0] === 'PUT'), `a finished run's status runs self-merge for its head: ${r.stdout}`);
+});
+
 test('self-merge.yml has no schedule; one queued concurrency group; retargets and verdict events only', () => {
   const wf = YAML.parse(fs.readFileSync(new URL('../.github/workflows/self-merge.yml', import.meta.url), 'utf8')), job = wf.jobs['self-merge'];
   assert.deepEqual(Object.keys(wf.on).sort(), ['issue_comment', 'pull_request_target', 'status', 'workflow_dispatch', 'workflow_run']);
@@ -451,6 +514,7 @@ test('self-merge.yml has no schedule; one queued concurrency group; retargets an
   assert.match(job.if, /github\.event\.action != 'edited' \|\| github\.event\.changes\.base/, 'an edit runs only when the base changed');
   assert.match(job.if, /startsWith\(github\.event\.comment\.body, '<!-- eng-verdict\/v1 -->'\)/);
   assert.match(job.if, /github\.event\.context == 'verdict'/);
+  assert.match(job.if, /startsWith\(github\.event\.context, 'eng-run\/'\) && github\.event\.state != 'pending'/, 'a finished eng run status runs self-merge');
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')).jobs['start-self-merge'];
   assert.equal(ci.if, "always() && github.event_name == 'workflow_dispatch'");
   assert.match(ci.steps[0].run, /gh workflow run self-merge\.yml .*--ref main/);
@@ -494,7 +558,7 @@ test('round-1 note (b): an existing unlabelled auto-revert is labelled and decid
     [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
     [`GET ${R}/pulls?state=open&base=main&head=o:${branch}`]: [rv], [`GET ${R}/pulls/9`]: rv,
     [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }], [`POST ${R}/issues/9/labels`]: {},
-    [`GET ${R}/commits/${HEAD}/status`]: { statuses: [] }, [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
+    [`GET ${R}/commits/${HEAD}/statuses`]: [], [`GET ${R}/pulls/9/commits?per_page=100`]: [], [`GET ${R}/issues/9/comments?per_page=100`]: [],
     [`GET ${R}/compare/${TIP}...${HEAD}`]: { behind_by: 0 },
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -519,4 +583,423 @@ test('round-2 P1: an edited verdict comment counts from its edit when ordering a
   assert.equal(edited[0].comment_at, '2026-10-19T14:59:00.000Z');
   const order = parseVerdicts([c(V({ result: 'FAIL' }), '2026-10-19T04:00:00Z', '2026-10-19T04:30:00Z'), c(V(), '2026-10-19T04:10:00Z', '2026-10-19T04:10:00Z')]);
   assert.match(decide(pr(), st({ verdicts: order }), C).reason, /FAIL by checker-a/, 'the verifier\'s most recently edited verdict is its latest');
+});
+
+// Fix round 1 (#80, the two round-1 verifier findings on 2563782e).
+// GitHub's status ids grow with time, so a fixture row's default id does too.
+const runAt = (id, state, min, o = {}) => row({ id: 1000 + Math.round(min * 60), context: runStatusContext('checker-a', 'npm test', id), state, created_at: at(min), updated_at: at(min), description: null, creator: { login: 'lane-a' }, ...o });
+const passAt0 = (statuses, min, c = C, p = pr()) => decide(p, st({ verdicts: [V({ comment_at: at(-60) })], statuses: Array.isArray(statuses) ? withV(statuses) : statuses, now: T0 + min * 60e3 }), c);
+
+test('fix round 1, item 1: two concurrent runs of one command by one verifier each hold its PASS until that run ends', async () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runtwice-')), log = path.join(root, 'statuses.jsonl'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo'), lock = path.join(root, 'first');
+  let a = null;
+  try {
+    fs.mkdirSync(bin); fs.mkdirSync(repo);
+    // A fake GitHub that keeps every posted status the way GitHub's list endpoint returns them: newest first, with its creator.
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'), a = process.argv.slice(2), f = k => (a.find(x => x.startsWith(k + '=')) || '').slice(k.length + 1);
+const n = fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.stringify(log)}, 'utf8').trim().split('\\n').length : 0;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ id: n + 1, state: f('state'), context: f('context'), description: f('description'), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), creator: { login: 'lane-a' } }) + '\\n');
+console.log('{}');
+`, { mode: 0o755 });
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a'); g('remote add origin https://github.com/o/r.git');
+    const statuses = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []).map(JSON.parse).reverse();
+    // One command text for both runs: the first to start waits for a go file; the second finds the first's lock and ends at once.
+    const cmd = ['sh', '-c', 'if mkdir "$0" 2>/dev/null; then while [ ! -e "$0/go" ]; do sleep 0.1; done; fi', lock];
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }, args = [ENG, 'run', '--by', 'checker-a', '--', ...cmd];
+    a = spawn(process.execPath, args, { cwd: repo, env, stdio: 'ignore' });
+    const exited = new Promise(res => a.on('exit', res));
+    for (let i = 0; i < 600 && !(fs.existsSync(lock) && statuses().length); i++) await new Promise(res => setTimeout(res, 100));
+    assert.ok(fs.existsSync(lock), 'run A started and waits');
+    const b = spawnSync(process.execPath, args, { cwd: repo, env, encoding: 'utf8' });
+    assert.equal(b.status, 0, b.stdout + b.stderr);
+    const now = () => decide(pr(), st({ verdicts: [V({ comment_at: new Date(Date.now() - 60e3).toISOString() })], statuses: withV(statuses()), now: Date.now() }), C);
+    const pendings = statuses().filter(s => s.state === 'pending').map(s => s.context);
+    assert.equal(new Set(pendings).size, 2, `each run has its own context: ${pendings}`);
+    let d = now();
+    assert.equal(d.merge, false, 'run B ended, run A still runs: the PASS does not count');
+    assert.match(d.reason, /checker-a does not count: a run by checker-a is still in progress on aaaaaaaa/);
+    fs.writeFileSync(path.join(lock, 'go'), '');
+    assert.equal(await exited, 0);
+    d = now();
+    assert.equal(d.merge, true, `both runs ended: the PASS counts (${d.reason})`);
+  } finally { if (a && a.exitCode === null) a.kill('SIGKILL'); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('fix round 1, item 1: a pending run stops holding its PASS at its deadline: its budget timeout plus 5 minutes', () => {
+  const short = [runAt('r1', 'pending', 0, { description: 'timeout 600s; eng run checker-a: running; not a merge check: npm test' })];
+  let d = passAt0(short, 14.9);
+  assert.equal(d.merge, false); assert.match(d.reason, /still in progress on aaaaaaaa \(eng-run\/checker-a\/[0-9a-f]{8}-r1 pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T22:15:00\.000Z unless it ends first\)/);
+  assert.equal(passAt0(short, 15).merge, true, 'a run past its deadline (600 s + 300 s) holds nothing back: its eng run died without posting an end');
+  const plain = [runAt('r1', 'pending', 0, { description: 'npm test' })];
+  assert.equal(passAt0(plain, 35).merge, false, 'no stated timeout: no default stands in for the run\'s real budget, so it never expires by time');
+  assert.equal(passAt0(plain, 60 * 24 * 30).merge, false, 'it holds until its own account ends it');
+  assert.equal(passAt0([runAt('r2', 'success', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'a later run of the same command that ended does not clear an earlier one still running');
+  assert.equal(passAt0([runAt('r1', 'error', 2), runAt('r2', 'pending', 1), ...plain], 3).merge, false, 'ending one run leaves the other running');
+  assert.equal(passAt0([runAt('r1', 'error', 2, { description: 'cleared by hand' }), ...plain], 3).merge, true, 'the verifier clears a dead run by posting its end on that context');
+});
+
+test('fix round 1, item 3: only the run\'s own account, or a verifier_logins login, can end its hold', () => {
+  const pending = runAt('r1', 'pending', 0);
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), pending], 2).merge, false, 'another account cannot clear a verifier\'s run');
+  assert.equal(passAt0([runAt('r1', 'success', 1), pending], 2).merge, true, 'the account that started the run ends it');
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'Mattslayga' } }), pending], 2).merge, true, 'a listed verifier_logins login may end it');
+  const CN = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, verifier_logins: undefined } } });
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), pending], 2, CN).merge, false, 'with no verifier_logins only the run\'s own account');
+  const anon = runAt('r1', 'pending', 0, { creator: null, description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') });
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: null }), anon], 2, CN).merge, false, 'a run row with no creator refuses the merge (fail closed)');
+  assert.equal(passAt0([runAt('r1', 'success', 1, { creator: { login: 'someone-with-push' } }), anon], 2, CN).merge, false);
+  assert.match(passAt0([anon], 36, CN).reason, /cannot be read \(row 0 \(eng-run\/checker-a\/[0-9a-f]{8}-r1\) has creator null, and a run row needs its creator's login\)/, 'past its deadline too: a run row with no creator never parses');
+});
+
+test('fix round 1, item 2: self-merge reads every page of the head\'s statuses; a run past the first 100 still holds its PASS', () => {
+  const other = Array.from({ length: 99 }, (_, i) => row({ id: 2000 + i, context: `ci/other-${i}`, creator: { login: 'bot' } }));
+  const page1 = [VROW, ...other], t = new Date().toISOString();
+  const page2 = [row({ id: 10, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', created_at: t, updated_at: t, creator: { login: 'lane-a' } })];
+  const r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [page1, page2] }, [`GET ${R}/commits/${SHA}/status`]: { total_count: 101, statuses: page1 } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.sent.some(c => c[0] === 'PUT'), false, r.stdout);
+  assert.match(r.stdout, /have 1 \(checker-b\); checker-a does not count: a run by checker-a is still in progress/);
+  assert.ok(r.calls.some(c => c[1].startsWith(`${R}/commits/${SHA}/statuses`)), 'the paginated list of statuses');
+  const ok = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [page1, [row({ id: 11, context: 'ci/late' })]] } });
+  assert.ok(ok.sent.some(c => c[0] === 'PUT'), `with no run past page 1 it merges: ${ok.stdout}`);
+});
+
+test('fix round 1, item 4: red main\'s auto-revert merges at once, but a run in progress still holds its PASS', () => {
+  const branch = `auto-revert/${TIP.slice(0, 12)}`, recent = new Date(Date.now() - 60e3).toISOString();
+  const rv = { number: 9, state: 'open', title: 'Revert #5', draft: false, created_at: '2026-10-19T03:00:00Z', labels: [{ name: 'risk:high' }], user: { login: BOT }, body: `<!-- eng-auto-revert of=${TIP} -->`, base: { ref: 'main', sha: TIP }, head: { sha: HEAD, ref: branch, repo: { full_name: 'o/r' } }, changed_files: 1, commits: 1 };
+  const red = statuses => gate({
+    [`GET ${R}/commits/main`]: { sha: TIP }, ...runs(TIP, 'failure'), ...runs(HEAD, 'success'),
+    [`GET ${R}/git/commits/${TIP}`]: { message: 'feat: x (#5)', parents: [{ sha: PARENT }], tree: { sha: 'tip-tree' } },
+    [`GET ${R}/git/commits/${PARENT}`]: { tree: { sha: 'parent-tree' } },
+    [`GET ${R}/git/commits/${HEAD}`]: { parents: [{ sha: TIP }], tree: { sha: 'parent-tree' } },
+    [`GET ${R}/commits/${TIP}/pulls`]: [{ number: 5, merged_at: '2026-10-19T04:00:00Z', base: { ref: 'main' } }],
+    [`GET ${R}/pulls?state=open&base=main&head=o:${branch}`]: [rv], [`GET ${R}/pulls/9`]: rv,
+    [`GET ${R}/pulls/9/files?per_page=100`]: [{ filename: 'bin/eng.mjs', status: 'modified' }],
+    [`GET ${R}/commits/${HEAD}/statuses`]: withV(statuses),
+    [`GET ${R}/issues/9/comments?per_page=100`]: [V({ sha: HEAD, comment_at: recent }), V({ sha: HEAD, by: 'checker-b', comment_at: recent })].map(asComment),
+    [`GET ${R}/compare/${TIP}...${HEAD}`]: { behind_by: 0 },
+    [`PUT ${R}/pulls/9/merge`]: {}, [`DELETE ${R}/git/refs/heads/${branch}`]: {}, [`POST ${R}/actions/workflows/ci.yml/dispatches`]: {},
+  });
+  let r = red([]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(r.sent[0], ['PUT', `${R}/pulls/9/merge`, { merge_method: 'squash', sha: HEAD, commit_title: 'Revert #5 (#9)' }], `red main is reverted at once: ${r.stdout}`);
+  r = red([row({ id: 10, context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', created_at: recent, updated_at: recent, creator: { login: 'lane-b' } })]);
+  assert.equal(r.sent.length, 0, r.stdout); assert.match(r.stdout, /checker-b does not count: a run by checker-b is still in progress/);
+});
+
+// Fix round 2 (verify r2, both lanes). A run's hold must survive GitHub's 140-character description limit, and only the run's
+// owner (the creator of its context's first pending status) or a verifier_logins login can change it.
+const own = (id, state, min, o = {}) => runAt(id, state, min, { description: state === 'pending' ? runStatusText('checker-a', { timeoutS: 3600 }, 'npm test') : runStatusText('checker-a', { exit: 0 }, 'npm test'), ...o });
+const CN = selfMergeConfig({ ...cfg, ship: { ...cfg.ship, self_merge: { ...cfg.ship.self_merge, verifier_logins: undefined } } });
+
+test('fix round 2, item 1: the timeout survives truncation; a 200-character --by and a long command keep a 7200 s run\'s hold', () => {
+  const by = 'v'.repeat(200), cmd = `sh -c '${'x'.repeat(300)}'`, text = runStatusText(by, { timeoutS: 7200 }, cmd);
+  assert.ok(text.length <= 140, `GitHub keeps 140 characters (${text.length})`);
+  assert.match(text, /^timeout 7200s; eng run v+/, 'the timeout comes first; only the tail is cut');
+  const run = [row({ id: 1, context: runStatusContext(by, cmd, 'r1'), state: 'pending', created_at: at(0), updated_at: at(0), description: text, creator: { login: 'lane-a' } })];
+  const at0 = (statuses, min) => decide(pr(), st({ verdicts: [V({ by, comment_at: at(-60) })], statuses: withV(statuses), now: T0 + min * 60e3 }), C);
+  for (const min of [36.6, 60, 124.9]) assert.equal(at0(run, min).merge, false, `still held at ${min} min: its budget is 7200 s plus 5 minutes`);
+  assert.equal(at0(run, 125).merge, true, 'released at its own deadline, never at a shorter default');
+  assert.equal(at0([{ ...run[0], state: 'success', id: 2, description: runStatusText(by, { exit: 0 }, cmd), created_at: at(1), updated_at: at(1) }, { ...run[0], id: 1 }], 2).merge, true, 'its end releases it');
+  const cut = [{ ...run[0], description: `eng run ${by}`.slice(0, 140) }];
+  assert.equal(at0(cut, 60 * 24 * 30).merge, false, 'a pending status whose timeout cannot be read never expires by time');
+  assert.equal(at0([{ ...run[0], id: 2, state: 'error', description: 'ended by hand', created_at: at(200), updated_at: at(200) }, { ...cut[0], id: 1 }], 201).merge, true, 'its own account ends it');
+});
+
+test('fix round 2, item 1: eng run states a long --by run\'s timeout first, inside 140 characters', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runlong-')), log = path.join(root, 'gh.log'), bin = path.join(root, 'bin'), repo = path.join(root, 'repo');
+  try {
+    fs.mkdirSync(bin); fs.mkdirSync(repo);
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\necho '{}'\n`, { mode: 0o755 });
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe', encoding: 'utf8' }).trim();
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a'); g('remote add origin git@github.com:o/r.git');
+    const by = 'v'.repeat(200), r = spawnSync(process.execPath, [ENG, 'run', '--by', by, '--budget', 'timeout=7200s', '--', 'true', 'y'.repeat(200)], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const desc = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => l.match(/ -f state=(\w+) .* -f description=(.*)$/).slice(1));
+    assert.equal(desc[0][0], 'pending'); assert.ok(desc[0][1].length <= 140);
+    assert.match(desc[0][1], new RegExp(`^timeout 7200s; eng run ${by.slice(0, 20)}`));
+    assert.equal(desc[1][0], 'success');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('fix round 2, item 2: a foreign pending and a foreign end on a live run\'s context change nothing', () => {
+  const live = own('r1', 'pending', 0, { id: 1 }), foe = { login: 'other-writer' };
+  const attack = [own('r1', 'success', 2, { id: 3, creator: foe }), own('r1', 'pending', 1, { id: 2, creator: foe }), live];
+  for (const c of [C, CN]) {
+    assert.equal(passAt0(attack, 3, c).merge, false, 'the foreign pending does not take ownership; its end ends nothing');
+    assert.match(passAt0(attack, 3, c).reason, /a run by checker-a is still in progress .*pending since 2026-11-12T22:00:00\.000Z; stops counting at 2026-11-12T23:05:00\.000Z/);
+    const short = [own('r1', 'pending', 1, { id: 2, creator: foe, description: runStatusText('checker-a', { timeoutS: 1 }, 'npm test') }), live];
+    assert.equal(passAt0(short, 10, c).merge, false, 'a foreign `timeout 1s` pending does not shorten the deadline');
+    assert.equal(passAt0(short, 64.9, c).merge, false); assert.equal(passAt0(short, 65, c).merge, true, 'the owner\'s first pending sets the deadline');
+    assert.equal(passAt0([own('r1', 'success', 4, { id: 4 }), ...attack], 5, c).merge, true, 'the owner still ends it');
+  }
+  const later = [own('r1', 'pending', 1, { id: 2, description: runStatusText('checker-a', { timeoutS: 1 }, 'npm test') }), live];
+  assert.equal(passAt0(later, 10).merge, false, 'only the owner\'s first pending sets the deadline, not a later one');
+  assert.equal(passAt0([own('r1', 'success', 2, { id: 4, creator: { login: 'Mattslayga' } }), ...attack], 3).merge, true, 'a verifier_logins login may end it');
+});
+
+test('fix round 2, item 2: same-second statuses from two accounts: the first pending by id owns the run', () => {
+  const foe = { login: 'other-writer' }, same = (id, state, o = {}) => own('r1', state, 0, { id, ...o });
+  const held = [same(13, 'success', { creator: foe }), same(12, 'pending', { creator: foe }), same(11, 'pending')];
+  for (const c of [C, CN]) {
+    assert.equal(passAt0(held, 1, c).merge, false, 'the foreign pending posted in the same second, after the owner\'s, owns nothing');
+    assert.equal(passAt0([same(14, 'success'), ...held], 1, c).merge, true, 'the owner\'s end in that second ends it');
+    assert.equal(passAt0([same(10, 'success'), ...held], 1, c).merge, false, 'an end posted before the run started ends nothing');
+  }
+});
+
+// Round 5 (decision nd71xqrdrqemzemfahkpcyvyz18j5gp8): a run row needs its creator's login, so a run whose first pending has no
+// creator no longer holds until a listed login ends it. It refuses every merge on that head, whoever ends it and however late.
+test('fix round 2, item 2: a run whose first pending has no creator refuses the merge, whoever ends it', () => {
+  const anon = own('r1', 'pending', 0, { id: 1, creator: null });
+  for (const c of [C, CN]) {
+    assert.equal(passAt0([own('r1', 'success', 1, { id: 2 }), anon], 2, c).merge, false, 'no owner: its run\'s account cannot be known, so an ordinary end ends nothing');
+    assert.equal(passAt0([own('r1', 'success', 1, { id: 2, creator: { login: 'Mattslayga' } }), anon], 2, c).merge, false, 'a listed login cannot end it either');
+    assert.match(passAt0([anon], 65, c).reason, /cannot be read \(row 0 .* has creator null, and a run row needs its creator's login\)/, 'its stated deadline does not release it');
+  }
+});
+
+// Fix round 3 (independent review FAIL, PR #80 comment 6866341118). A later row on a live run's context whose state is missing, null or
+// garbled passed for the run's end, and a null row in the list was skipped. Self-merge read WOULD MERGE for both. A status row
+// the run rule cannot read now refuses the merge, with the row in the reason.
+test('fix round 3: a malformed status row cannot end a live run or hide one; the merge is refused and the row named', () => {
+  const live = own('r1', 'pending', 0, { id: 10 }), later = o => own('r1', 'success', 1, { id: 11, ...o });
+  const cases = [
+    ['state missing', [later({ state: undefined }), live], /row 0 \(eng-run\/checker-a\/[0-9a-f]{8}-r1\) has no state/],
+    ['state null', [later({ state: null }), live], /row 0 \(eng-run\/checker-a\/[0-9a-f]{8}-r1\) has unknown state null/],
+    ['state garbled', [later({ state: 'garbled' }), live], /has unknown state "garbled"/],
+    ['id garbled', [later({ id: '11' }), live], /row 0 \(.*\) has id "11"/],
+    ['time garbled', [later({ updated_at: 'bad-date', created_at: 'bad-date' }), live], /row 0 \(.*\) has created_at "bad-date"/],
+    ['null row', [null, live], /row 0 is null/],
+    ['null row after the run', [live, null], /row 1 is null/],
+    ['string row', ['eng-run/checker-a/x-r1', live], /row 0 is not an object \(string\)/],
+    ['array row', [[later()], live], /row 0 is not an object/],
+    ['row with no context', [{ ...row({ id: 12, creator: { login: 'lane-a' } }), context: undefined }, live], /row 0 has no context/],
+    ['list not an array', { 0: live }, /the list is not an array/],
+  ];
+  for (const [name, statuses, why] of cases) for (const c of [C, CN]) {
+    const d = passAt0(statuses, 2, c);
+    assert.equal(d.merge, false, name);
+    assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(/, name);
+    assert.match(d.reason, why, name);
+  }
+  assert.equal(passAt0([null], 2).merge, false, 'a null row with no run beside it still refuses: it could be the run');
+  assert.equal(passAt0([later({ state: 'garbled' })], 2).merge, false, 'a garbled row alone on a run context refuses');
+  assert.equal(passAt0([own('r1', 'pending', 0, { id: 10, creator: { login: 'lane-b' } }), ...[later({ state: 'garbled' })].map(s => ({ ...s, context: runStatusContext('checker-b', 'npm test', 'r1') }))], 2).merge, false, 'another verifier\'s malformed run row refuses too');
+  for (const state of ['success', 'failure', 'error']) assert.equal(passAt0([later({ state }), live], 2).merge, true, `the owner's ${state} ends the run`);
+  assert.equal(passAt0([later({ state: 'pending' }), live], 2).merge, false, 'a second pending from the owner ends nothing');
+  assert.equal(passAt0([row({ id: 12, context: 'ci/other', state: 'garbled' })], 2).merge, false, 'a row on a context that is not a run is parsed like every row (decision nd71xqrdrqemzemfahkpcyvyz18j5gp8)');
+});
+
+test('fix round 3: self-merge refuses a null status row before or after the verdict status, and a garbled end of a live run', () => {
+  const verdict = VROW;
+  const live = { id: 10, context: runStatusContext('checker-b', 'npm test', 'r1'), state: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), description: runStatusText('checker-b', { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-b' } };
+  const end = o => ({ ...live, id: 11, ...o });
+  for (const [name, statuses] of [['verdict first', [verdict, null]], ['verdict last', [null, verdict]], ['state missing', [verdict, end({ state: undefined }), live]], ['state garbled', [verdict, end({ state: 'garbled' }), live]], ['state null', [end({ state: null }), live, verdict]]]) {
+    const r = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: statuses });
+    assert.equal(r.status, 0, `${name}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.sent.length, 0, `${name}: nothing merges: ${r.stdout}`);
+    assert.match(r.stdout, /the statuses on head aaaaaaaa cannot be read \(row \d+ /, name);
+  }
+  const ok = gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: [verdict, end({ state: 'success' }), live] });
+  assert.ok(ok.sent.some(c => c[0] === 'PUT'), `a well-formed end still releases the run: ${ok.stdout}`);
+});
+
+// Fix round 4 (independent review FAIL, PR #80 comment 6867018457). A blank context, and a context under eng-run/ that the run
+// rule could not parse, were skipped as unrelated statuses. With the row on page two after 100 statuses, self-merge read WOULD
+// MERGE. A status row is now well-formed or the merge is refused: a context that looks like a run's must parse in full.
+const pagedGate = last => gate({ ...routes, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [
+  [VROW, ...Array.from({ length: 99 }, (_, i) => row({ id: 2000 + i, context: `ci/other-${i}` }))], [last]] } });
+const pendingRun = { id: 10, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', creator: { login: 'lane-a' }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') };
+for (const [name, row] of [
+  ['an empty context', { ...pendingRun, context: '' }],
+  ['a whitespace-only context', { ...pendingRun, context: ' ' }],
+  ['eng-run/ with no verifier', { ...pendingRun, context: 'eng-run/', state: 'garbled', updated_at: 'bad', created_at: 'bad' }],
+  ['eng-run/<verifier> with no suffix, state or readable time', { ...pendingRun, context: 'eng-run/checker-a', state: undefined, updated_at: 'bad', created_at: 'bad' }],
+]) test(`fix round 4: a status row on page two with ${name} refuses the merge`, () => {
+  const r = pagedGate(row);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.sent.length, 0, `nothing merges: ${r.stdout}`);
+  assert.match(r.stdout, /the statuses on head aaaaaaaa cannot be read \(row 100 /);
+});
+
+test('fix round 4: every single mutation of a run row refuses the merge, on page one and page two; well-formed rows behave as before', () => {
+  const ended = { id: 11, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'success', created_at: at(1), updated_at: at(1), creator: { login: 'lane-a' }, description: runStatusText('checker-a', { exit: 0 }, 'npm test') };
+  const ctx = ended.context, [, by, tail] = ctx.split('/'), [hash, id] = tail.split('-');
+  const contexts = [
+    '', ' ', '\t', '\n', ` ${ctx}`, `${ctx} `, ctx.replace('/', ' /'), ctx.replace('-r1', ' -r1'),
+    ctx.toUpperCase(), ctx.replace('eng-run', 'Eng-Run'), ctx.replace('eng-run', 'ENG-RUN'), ctx.replace(hash, hash.toUpperCase()),
+    'eng-run', 'eng-run/', `eng-run/${by}`, `eng-run/${by}/`, `eng-run/${tail}`, `eng-run//${tail}`, `eng-run/${by}/${hash}`, `eng-run/${by}/${hash}-`,
+    `eng-run/${by}/-${id}`, `eng-run/${by}/${id}`, `eng-run/${by}/${hash.slice(1)}-${id}`, `eng-run/x/${by}/${tail}`, `eng-run/${by}/x/${tail}`, `${ctx}/x`, `${ctx}-x`,
+    ctx.replace('eng-run', 'eng_run'), ctx.replace('eng-run', 'eng run'), ctx.replace('eng-run', 'engrun'), ctx.replace('eng-run/', 'eng-run:'), ctx.replace('eng-run', 'ｅｎｇ-run'),
+  ];
+  const mutations = [
+    ...contexts.map(context => [`context ${JSON.stringify(context)}`, { ...ended, context }]),
+    ...[undefined, null, 5, {}, []].map(context => [`context ${JSON.stringify(context)}`, { ...ended, context }]),
+    ...[undefined, null, '', 'garbled', 'SUCCESS', 7].map(state => [`state ${JSON.stringify(state)}`, { ...ended, state }]),
+    ...['11', 1.5, null, NaN, 2 ** 60].map(i => [`id ${JSON.stringify(i)}`, { ...ended, id: i }]),
+    ...[['bad', 'bad'], [undefined, undefined], [null, 'bad'], ['', ''], ['bad', at(1)]].map(([u, c]) => [`time ${u}/${c}`, { ...ended, updated_at: u, created_at: c }]),
+    ...[null, ctx, 42, true, [ended]].map(row => [`row ${JSON.stringify(row)}`, row]),
+  ];
+  const filler = Array.from({ length: 100 }, (_, i) => row({ id: 2000 + i, context: `ci/other-${i}`, creator: { login: 'bot' } }));
+  const placed = r => ({ 'page 1': [r], 'page 2': [...filler, r] });
+  let refused = 0;
+  for (const [name, row] of mutations) for (const [page, statuses] of Object.entries(placed(row))) for (const c of [C, CN]) {
+    const d = passAt0(statuses, 2, c);
+    assert.equal(d.merge, false, `${name} on ${page}: ${d.reason}`);
+    assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(row \d+ /, `${name} on ${page}`);
+    refused++;
+  }
+  assert.ok(mutations.length >= 50 && refused === mutations.length * 4, `${mutations.length} mutations, each refused in 4 placements`);
+  const wellFormed = [
+    ['the unmutated run row', ended, true],
+    ['another run id', { ...ended, context: runStatusContext('checker-a', 'npm test', '89abcdef') }, true],
+    ['a 200-character verifier', { ...ended, context: runStatusContext('v'.repeat(200), 'npm test', 'r1') }, true],
+    ['the run\'s pending start alone', { ...ended, state: 'pending', description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test') }, false],
+    ['a real GitHub run row', { context: 'eng-run/verifier-b/7f2c13f3-c0befd4d', created_at: at(0), creator: { login: 'Mattslayga' }, description: 'timeout 1800s; eng run x: running; not a merge check: npm test', id: 58888968506, state: 'pending', target_url: null, updated_at: at(0) }, true],
+    ['a CI row with null optional fields and a null creator', row({ id: 12, context: 'ci/build', description: null, target_url: null, creator: null }), true],
+    ['a CI row with a null id', row({ id: null, context: 'ci/build', description: null, target_url: null, creator: null }), false],
+    ['a CI row with an unknown state and no time', { ...row({ id: 12, context: 'ci/other', state: 'garbled' }), created_at: undefined, updated_at: undefined }, false],
+    ['a CI context with surrounding spaces', row({ id: 12, context: ' ci/build ' }), true],
+    ['a label-like context', row({ id: 12, context: 'label', state: 'pending' }), true],
+  ];
+  for (const [name, row, merge] of wellFormed) for (const [page, statuses] of Object.entries(placed(row))) for (const c of [C, CN])
+    assert.equal(passAt0(statuses, 2, c).merge, merge, `${name} on ${page}`);
+});
+
+test('fix round 4: eng run refuses a --by its run status could not carry, before it runs anything', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-runby-')), repo = path.join(root, 'repo');
+  try {
+    fs.mkdirSync(repo);
+    const g = c => execSync(`git ${c}`, { cwd: repo, stdio: 'pipe' });
+    g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(repo, 'a'), 'a\n'); g('add -A'); g('commit -qm a');
+    const run = (by, mark) => spawnSync(process.execPath, [ENG, 'run', '--by', by, '--', 'touch', mark], { cwd: repo, encoding: 'utf8' });
+    for (const [i, by] of ['a/b', 'two words', ' lead', 'tab\there', ''].entries()) {
+      const mark = path.join(root, `ran-${i}`), r = run(by, mark);
+      assert.notEqual(r.status, 0, JSON.stringify(by));
+      assert.equal(fs.existsSync(mark), false, `${JSON.stringify(by)}: the command never ran`);
+      if (by) assert.match(r.stderr, /--by .*eng-run\/<verifier>\/<8 hex>-<run id>/, JSON.stringify(by));
+    }
+    const ok = run('lane-a', path.join(root, 'ran-ok'));
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(fs.existsSync(path.join(root, 'ran-ok')), 'a --by the run status can carry runs');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// Fix round 5 (decision nd71xqrdrqemzemfahkpcyvyz18j5gp8). A run row with no id passed the row check, and the run rule then
+// ordered it by whole-second time, so an earlier end cleared a later pending run and self-merge read WOULD MERGE. Every row now
+// parses into one strict shape or the merge is refused, and rows are ordered by GitHub's status id only.
+const recent5 = () => new Date(Date.now() - 60e3).toISOString();
+const start5 = (t = recent5()) => row({ id: 10, context: runStatusContext('checker-a', 'npm test', 'r1'), state: 'pending', created_at: t, updated_at: t, description: runStatusText('checker-a', { timeoutS: 1800 }, 'npm test'), creator: { login: 'lane-a' } });
+const noId = r => { const { id, ...rest } = r; return rest; };
+const lowRoutes = { ...routes, [`GET ${R}/pulls?state=open&base=main&per_page=100`]: [{ ...p3, labels: [{ name: 'risk:low' }] }], [`GET ${R}/pulls/3`]: { ...p3, labels: [{ name: 'risk:low' }], changed_files: 1, commits: 1 },
+  [`GET ${R}/issues/3/labels`]: [{ name: 'risk:low' }], [`GET ${R}/issues/3/comments?per_page=100`]: comments.slice(0, 1), [`GET ${R}/pulls/3/files?per_page=100`]: [{ filename: 'src/a.mjs', status: 'modified' }] };
+
+test('fix round 5: a status with no id refuses the merge', () => {
+  for (const [name, statuses] of [['the verdict row', [noId(VROW)]], ['a CI row', withV([noId(row({ id: 12 }))])], ['a run row', withV([noId(start5())])]]) {
+    const d = decide(pr(), st({ statuses, now: Date.now() }), C);
+    assert.equal(d.merge, false, name);
+    assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(row 0 \(.+\) has no id\): merging nothing$/, name);
+  }
+});
+
+test('fix round 5: a success with no id never admits a merge: risk low and high, both verifier_logins configs, both orders', () => {
+  const start = start5(), later = { ...start, id: 11, state: 'success' }, earlier = { ...start, id: 9, state: 'success' };
+  const scenarios = [['a run end with no id', [start, noId(later), VROW]], ['the verdict status with no id', [start, later, noId(VROW)]], ['a CI success with no id', [noId(row({ id: 12 })), VROW]]];
+  const cases = [['low', pr(), st({ now: Date.now() })], ['high', pr({ labels: ['risk:high'] }), hi({ now: Date.now() })]];
+  let n = 0;
+  for (const [risk, p, s] of cases) for (const c of [C, CN]) for (const reverse of [false, true]) {
+    const ordered = rows => reverse ? [...rows].reverse() : rows, run = rows => decide(p, { ...s, statuses: ordered(rows) }, c);
+    for (const [name, rows] of scenarios) {
+      const d = run(rows);
+      assert.equal(d.merge, false, `${name}, risk:${risk}, reverse ${reverse}`);
+      assert.match(d.reason, /cannot be read \(row \d+ \(.+\) has no id\)/, `${name}, risk:${risk}, reverse ${reverse}`); n++;
+    }
+    assert.equal(run([start, later, VROW]).merge, true, `control: the same end with a later id releases the run (risk:${risk}, reverse ${reverse})`);
+    assert.match(run([start, earlier, VROW]).reason, /a run by checker-a is still in progress/, `control: an end with an earlier id does not (risk:${risk}, reverse ${reverse})`);
+  }
+  assert.equal(n, 24);
+});
+
+test('fix round 5: through the paged CLI, a success with no id on page one or the last page never merges', () => {
+  const start = start5(), later = { ...start, id: 11, state: 'success' };
+  const filler = Array.from({ length: 98 }, (_, i) => row({ id: 2000 + i, context: `ci/other-${i}` }));
+  let n = 0;
+  for (const [risk, base] of [['high', routes], ['low', lowRoutes]]) for (const reverse of [false, true]) {
+    const ordered = rows => reverse ? [...rows].reverse() : rows;
+    const placements = {
+      'a run end on page one': [[...ordered([start, noId(later)]), VROW, ...filler], [row({ id: 3000, context: 'ci/late' })]],
+      'a run end on the last page': [[VROW, ...filler, row({ id: 3000, context: 'ci/late' })], ordered([start, noId(later)])],
+      'the verdict status on page one': [[...ordered([start, later]), noId(VROW), ...filler], [row({ id: 3000, context: 'ci/late' })]],
+      'the verdict status on the last page': [[...ordered([start, later]), ...filler, row({ id: 3000, context: 'ci/late' })], [noId(VROW)]],
+    };
+    for (const [name, pages] of Object.entries(placements)) {
+      const r = gate({ ...base, [`GET ${R}/commits/${SHA}/statuses`]: { pages } });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      assert.equal(r.sent.length, 0, `${name}, risk:${risk}, reverse ${reverse}: ${r.stdout}`);
+      assert.match(r.stdout, /cannot be read \(row \d+ \(.+\) has no id\)/, `${name}, risk:${risk}, reverse ${reverse}`); n++;
+    }
+    const ok = gate({ ...base, [`GET ${R}/commits/${SHA}/statuses`]: { pages: [[VROW, ...filler, row({ id: 3000, context: 'ci/late' })], ordered([start, later])] } });
+    assert.ok(ok.sent.some(c => c[0] === 'PUT'), `control: with ids it merges (risk:${risk}, reverse ${reverse}): ${ok.stdout}`);
+  }
+  assert.equal(n, 16);
+});
+
+test('fix round 5: rows are ordered by GitHub status id only, never by time; a repeated id refuses', () => {
+  const start = (min, id) => runAt('r1', 'pending', min, { id, description: runStatusText('checker-a', { timeoutS: 3600 }, 'npm test') });
+  assert.equal(passAt0([runAt('r1', 'success', 1, { id: 11 }), start(5, 10)], 6).merge, true, 'an end with a higher id ends the run, though its time is earlier');
+  assert.match(passAt0([runAt('r1', 'success', 5, { id: 9 }), start(0, 10)], 6).reason, /a run by checker-a is still in progress/, 'an end with a lower id ends nothing, though its time is later');
+  assert.match(passAt0([runAt('r1', 'success', 0, { id: 11 }), start(0, 10)], 1).reason, /PASS by checker-a/, 'the same second: the id decides');
+  assert.match(passAt0([runAt('r1', 'success', 0, { id: 9 }), start(0, 10)], 1).reason, /still in progress/, 'the same second: the id decides');
+  assert.match(passAt0([row({ id: 12 }), row({ id: 12, context: 'ci/other' })], 1).reason, /cannot be read \(row 1 \(ci\/other\) repeats id 12\)/);
+  assert.match(passAt0([start(0, 10), runAt('r1', 'success', 1, { id: 10 })], 2).reason, /repeats id 10/, 'a run end that shares its start\'s id refuses');
+  for (const statuses of [[{ ...VROW, state: 'failure' }, { ...VROW, id: VROW.id - 1 }], [{ ...VROW, id: VROW.id - 1 }, { ...VROW, state: 'failure' }]])
+    assert.match(decide(pr(), st({ statuses }), C).reason, /verdict is failure/, 'the verdict status is the row with the highest id, wherever it is listed');
+});
+
+test('fix round 5: generated from the row schema, every missing, null or wrongly typed field refuses; real-shape rows merge', () => {
+  const t = at(0), ISO_BAD = ['', 'bad', '2026-11-12', 'Thu, 12 Nov 2026 22:00:00 GMT', '2026-11-12 22:00:00', T0, true, {}, []];
+  const schema = {
+    id: { bad: ['12', 0, -1, 1.5, NaN, Infinity, 2 ** 60, true, {}, []] },
+    state: { bad: ['', 'SUCCESS', 'garbled', 7, true, {}, []] },
+    context: { bad: ['', ' ', '\t', 5, true, {}, []] },
+    created_at: { bad: ISO_BAD },
+    updated_at: { bad: ISO_BAD },
+    creator: { bad: ['lane-a', 5, true, [], {}, { login: '' }, { login: ' ' }, { login: null }, { login: 5 }, { login: ['lane-a'] }], nullOk: 'off a run' },
+    description: { bad: [5, true, {}, []], nullOk: 'always' },
+  };
+  const subjects = [
+    ['a run row', row({ id: 50, context: runStatusContext('lane-z', 'npm test', 'r1'), state: 'success', created_at: t, updated_at: t, description: runStatusText('lane-z', { exit: 0 }, 'npm test'), creator: { login: 'lane-z' } }), true],
+    ['a CI row', row({ id: 50, context: 'ci/build', created_at: t, updated_at: t, description: 'Build passed', target_url: 'https://ci.example/1', creator: { login: 'ci-app[bot]' } }), false],
+    ['an older verdict row', row({ id: 50, context: 'verdict', state: 'failure', created_at: t, updated_at: t, description: 'verdict: FAIL', creator: { login: 'Mattslayga' } }), false],
+  ];
+  let n = 0;
+  for (const [subject, base, isRun] of subjects) {
+    for (const c of [C, CN]) assert.equal(passAt0([base], 1, c).merge, true, `${subject} unmutated merges`);
+    for (const [field, { bad, nullOk }] of Object.entries(schema)) {
+      const nullAllowed = nullOk === 'always' || (nullOk === 'off a run' && !isRun);
+      const variants = [['dropped', (({ [field]: _, ...rest }) => rest)(base)], ...(nullAllowed ? [] : [['null', { ...base, [field]: null }]]), ...bad.map(v => [`= ${JSON.stringify(v)}`, { ...base, [field]: v }])];
+      for (const [how, mutated] of variants) for (const c of [C, CN]) for (const statuses of [[mutated], [...Array.from({ length: 100 }, (_, i) => row({ id: 2000 + i, context: `ci/other-${i}` })), mutated]]) {
+        const d = passAt0(statuses, 1, c);
+        assert.equal(d.merge, false, `${subject}: ${field} ${how}`);
+        assert.match(d.reason, /^the statuses on head aaaaaaaa cannot be read \(row \d+ /, `${subject}: ${field} ${how}`); n++;
+      }
+    }
+    if (!isRun) assert.equal(passAt0([{ ...base, creator: null }], 1).merge, true, `${subject}: a null creator (a deleted account) is fine off a run context`);
+    assert.equal(passAt0([{ ...base, description: null, target_url: null }], 1).merge, true, `${subject}: null optional fields are fine`);
+  }
+  assert.ok(n >= 400, `${n} mutated rows refused`);
+  const real = [
+    ['a verdict row as GitHub sends it (PR #82)', { url: 'https://api.github.com/repos/o/r/statuses/' + SHA, avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4', id: 58878460938, node_id: 'SC_kwDOexample', state: 'success', description: 'verdict: PASS (risk:high, 2 of 2 verifiers: PASS v', target_url: null, context: 'verdict', created_at: '2026-11-13T20:33:08Z', updated_at: '2026-11-13T20:33:08Z', creator: { login: 'Mattslayga', id: 1, type: 'User' } }],
+    ['a CI row', row({ id: 58878460001, context: 'ci/build', description: 'Build passed', target_url: 'https://ci.example/1', creator: { login: 'ci-app[bot]', type: 'Bot' } })],
+    ['a risk-label row', row({ id: 58878460002, context: 'risk-label', state: 'success', description: 'risk:high', creator: { login: 'github-actions[bot]', type: 'Bot' } })],
+    ['a third-party row with null optional fields and a deleted creator', row({ id: 58878460003, context: 'deploy/preview', state: 'pending', description: null, target_url: null, creator: null })],
+    ['a finished run by another verifier', row({ id: 58878460004, context: 'eng-run/verifier-b/7f2c13f3-c0befd4d', state: 'failure', description: 'eng run verifier-b: finished, exit 1; not a merge check: npm test', creator: { login: 'Mattslayga' } })],
+  ];
+  for (const [name, r] of real) for (const c of [C, CN]) {
+    assert.equal(passAt0([r], 1, c).merge, true, name);
+    assert.equal(passAt0(real.map(([, x]) => x), 1, c).merge, true, 'all of them together');
+  }
 });

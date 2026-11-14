@@ -59,13 +59,17 @@ function label(n) {
 const testRun = sha => get(`repos/${R}/commits/${sha}/check-runs?check_name=${encodeURIComponent(C.check)}&filter=latest&per_page=100`).check_runs
   .filter(r => r.app?.slug === 'github-actions').sort((x, y) => (y.started_at || '').localeCompare(x.started_at || ''))[0] || null;
 
-// Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's.
+// Everything decide() reads, for the PR's current head. Verdict comments are data; the rules are main's. The statuses are the
+// head's full list, every page, as GitHub sends them: each eng run posts its own context, so a head can carry more than the
+// 100 contexts the combined-status endpoint returns, and the run rule needs who posted each one. decide() parses them once
+// (parseStatuses) and takes the verdict status from them. A page GitHub refuses fails the read, and an unreadable state
+// merges nothing.
 function prState(pr, tip) {
   const sha = pr.head.sha;
-  const st = get(`repos/${R}/commits/${sha}/status`).statuses.find(s => s.context === C.status) || null;
+  const statuses = pages(`repos/${R}/commits/${sha}/statuses?per_page=100`);
   const { risk, files } = riskFor(pr);
   return {
-    risk, files, check: testRun(sha), status: st,
+    risk, files, check: testRun(sha), statuses, now: Date.now(),
     containsBase: get(`repos/${R}/compare/${tip}...${sha}`).behind_by === 0,
     verdicts: parseVerdicts(pages(`repos/${R}/issues/${pr.number}/comments?per_page=100`)),
   };
