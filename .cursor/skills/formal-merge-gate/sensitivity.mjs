@@ -36,6 +36,15 @@ const FAULTS = [
     from: 'if (state.containsBase !== true)', to: 'if (false)' },
   { name: 'the hold label is ignored', rule: 'no hold label', scenario: 'hold-label',
     from: 'if (pr.labels.includes(c.hold_label)) return no', to: 'if (false) return no' },
+  { name: 'no isolation record needed', rule: 'a risk:high change to an isolation_record path needs an isolation record', scenario: 'isolation-record',
+    from: 'if (touched && !iso.size) return no', to: 'if (false) return no' },
+  { name: 'the isolation record counts as a verifier', rule: 'the isolation record is not one of the N verifiers', scenario: 'isolation-record',
+    from: 'verdictGate(verdicts.filter(v => !iso.has(v.key)), ', to: 'verdictGate(verdicts, ' },
+  { name: 'a running isolation record counts', rule: "an isolation record does not count while its verifier's run is in progress", scenario: 'isolation-record',
+    from: ' && !running.has(v.by)).map(v => v.key));', to: ').map(v => v.key));' },
+  { name: "a verifier's first isolation record counts", rule: "each verifier's latest verdict decides whether it is the isolation record", scenario: 'isolation-record',
+    from: 'const latest = [...new Map(verdicts.filter(v => v.sha === headSha).map(v => [v.key, v])).values()];',
+    to: 'const latest = [...new Map(verdicts.filter(v => v.sha === headSha).toReversed().map(v => [v.key, v])).values()];' },
 ];
 
 const only = opt('--only'), faults = only ? FAULTS.filter(f => f.name === only) : FAULTS;

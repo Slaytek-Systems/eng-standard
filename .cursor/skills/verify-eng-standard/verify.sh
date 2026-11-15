@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drive the eng CLI the way a consuming repo does: the package as npm packs it, installed into a scratch project, run with
-# npx --no-install eng inside a fresh git repo. Usage is in SKILL.md beside this file.
+# Drive the eng CLI the way a consuming repo does: the package as npm packs it, installed into a scratch project, run as
+# eng inside a fresh git repo that has the install as its node_modules. Usage is in SKILL.md beside this file.
 set -euo pipefail
 
 SKILL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -45,11 +45,12 @@ cmd_doctor() {
   return $ok
 }
 
-# A fresh git repo for one journey, inside the scratch project so npx finds the install.
+# A fresh git repo for one journey. Its node_modules is the scratch install, untracked as a consumer's is, because the
+# pre-commit hook runs node_modules/@slayteksystems/eng-standard/bin/eng.mjs from the repo root (0.23.2).
 cmd_repo() {
   local r; r=$(run_dir "${1:-}"); local name=${2:?repo name}
   local d=$r/proj/$name; [ -e "$d" ] && die "$d exists: pick another name"
-  mkdir -p "$d" && drive_env "$r" git -C "$d" init -q && echo "$d"
+  mkdir -p "$d" && drive_env "$r" git -C "$d" init -q && ln -s ../node_modules "$d/node_modules" && echo /node_modules >> "$d/.git/info/exclude" && echo "$d"
 }
 
 # Run a command in a journey repo with the drive environment, like a user typing it there.
@@ -61,7 +62,7 @@ cmd_sh() {
 
 cmd_journey() {
   local id=${1:-}; run_dir "$id" >/dev/null; shift
-  local names=("$@"); [ ${#names[@]} -gt 0 ] && [ "${names[0]}" != all ] || names=(init-sync doctor guard run-verdict gate gate-affected)
+  local names=("$@"); [ ${#names[@]} -gt 0 ] && [ "${names[0]}" != all ] || names=(init-sync doctor guard run-verdict gate gate-affected self-merge)
   local fail=0
   for j in "${names[@]}"; do
     local f=$SKILL/journeys/$j.sh log=$EVIDENCE/$id/$j.log
