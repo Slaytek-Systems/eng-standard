@@ -29,5 +29,6 @@ This directory is the maintained source for verifying what a consuming repo sees
 - [Run and verdict](./run-and-verdict.md) covers `eng run --by`, `eng verdict PASS` and `eng verdict check` on the exact head.
 - [Gate](./gate.md) covers `eng gate` with a check script and a required verdict.
 - [Gate on a pull request](./gate-affected.md) covers `eng gate --event pr` with `verification.pr_checks: affected`.
+- [Self-merge decision](./self-merge.md) covers `scripts/pr-gate.mjs merge --dry-run` on a fake GitHub that the packed `eng run --by` and `eng verdict --pr` post into.
 
 Not reached yet: `../coverage.md`.

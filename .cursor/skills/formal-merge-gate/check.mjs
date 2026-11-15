@@ -39,15 +39,22 @@ const iso = s => new Date(s * 1000).toISOString().replace('.000Z', 'Z');
 
 // Each scenario bounds how many of each environment event one behavior may hold (events: all of them together), which
 // verifier names and accounts act, and whether h1 starts with a green test and a success verdict status.
-const S = { runs: 0, verdicts: 0, verdictStatus: 0, foreign: 0, deaths: 0, jumps: 0, holds: 0, pushes: 0, mainMoves: 0, bys: ['V1'], runAccts: [VERIFIER, COLLAB], preset: true };
+// files: the PR's changed files. results: the verdicts an account may post; ISO is a PASS whose one run is the isolation
+// record (ship.self_merge.isolation_record), passing exactly its tests.
+const RESULTS = [[VERIFIER, 'PASS'], [VERIFIER, 'FAIL'], [COLLAB, 'PASS']];
+const S = { runs: 0, verdicts: 0, verdictStatus: 0, foreign: 0, deaths: 0, jumps: 0, holds: 0, pushes: 0, mainMoves: 0, bys: ['V1'], runAccts: [VERIFIER, COLLAB], preset: true, files: ['lib/example.mjs'], results: RESULTS };
+const ISO = C.isolation_record;
+if (!ISO) { console.error('eng.config.yml sets no ship.self_merge.isolation_record; the isolation-record scenario assumes it does'); process.exit(2); }
 const SCENARIOS = {
   'run-ownership': { ...S, risk: 'low', events: 6, runs: 1, verdicts: 2, foreign: 2, jumps: 1 },
   'dead-runs': { ...S, risk: 'low', events: 6, runs: 2, verdicts: 1, deaths: 1, jumps: 1, runAccts: [VERIFIER] },
   'two-verifiers': { ...S, risk: 'high', events: 5, runs: 1, verdicts: 3, bys: ['V1', 'V2'], runAccts: [VERIFIER] },
   'heads': { ...S, risk: 'low', events: 6, verdicts: 2, verdictStatus: 2, pushes: 1, mainMoves: 1, preset: false },
   'hold-label': { ...S, risk: 'low', events: 4, verdicts: 2, holds: 2 },
-  'f1-replay': { ...S, risk: 'low', events: 6, runs: 2, verdicts: 3, runAccts: [VERIFIER], verdictAccts: [VERIFIER], firstPass: true },
+  'f1-replay': { ...S, risk: 'low', events: 6, runs: 2, verdicts: 3, runAccts: [VERIFIER], results: RESULTS.filter(([a]) => a === VERIFIER), firstPass: true },
+  'isolation-record': { ...S, risk: 'high', events: 6, runs: 1, verdicts: 4, bys: ['V1', 'V2', 'I'], runBys: ['I'], runAccts: [VERIFIER], files: [ISO.paths[0]], results: [[VERIFIER, 'PASS'], [VERIFIER, 'FAIL'], [VERIFIER, 'ISO']] },
 };
+const needsIso = b => b.risk === 'high' && b.files.some(f => ISO.paths.includes(f));
 const WITNESSES = {
   'a merge': w => w.merged,
   'a merge after a push': w => w.merged && w.head === 1,
@@ -60,6 +67,12 @@ const WITNESSES = {
     && w.runs.some(r => r.owner === VERIFIER && r.endId === null && !r.died && readPass(w, r.by) && w.statuses.some(s => s.id <= w.ctrl.statusesUpto && s.context === r.ctx && s.login === COLLAB && s.state === 'success')),
   'a merge whose first decide() pass ran read by read': w => w.merged && w.ctrl.firstPassRan,
   'a merge with two distinct verifiers': w => w.merged && new Set(w.comments.filter(c => c.login === VERIFIER).map(c => c.by)).size === 2,
+  'a merge with an isolation record': w => w.merged && w.comments.some(c => c.n <= w.ctrl.commentsUpto && c.iso),
+  'a refusal with two verifiers and no isolation record': w => w.ctrl.pc === 'done' && !w.merged && w.ctrl.commentsUpto !== undefined && w.ctrl.check === 'success'
+    && ['V1', 'V2'].every(by => readPass(w, by)) && !w.comments.some(c => c.n <= w.ctrl.commentsUpto && c.iso),
+  'a refusal while the isolation record\'s verifier had a run in progress': w => w.ctrl.pc === 'done' && !w.merged && w.ctrl.commentsUpto !== undefined && w.ctrl.check === 'success'
+    && ['V1', 'V2'].every(by => readPass(w, by)) && w.runs.some(r => r.by === 'I' && r.startId <= w.ctrl.statusesUpto && r.endId === null)
+    && w.comments.filter(c => c.n <= w.ctrl.commentsUpto && c.by === 'I').at(-1)?.iso === true,
 };
 // The latest verdict by the given verifier among the comments self-merge read is the login's PASS.
 const readPass = (w, by) => w.comments.filter(c => c.n <= w.ctrl.commentsUpto && c.sha === w.ctrl.sha && c.login === VERIFIER && c.by === by).at(-1)?.result === 'PASS';
@@ -68,6 +81,7 @@ const EXPECT = {
   'dead-runs': ['a merge', 'a merge after a dead run reached its deadline'],
   'two-verifiers': ['a merge', 'a merge with two distinct verifiers'],
   'f1-replay': ['a merge', 'a merge whose first decide() pass ran read by read'],
+  'isolation-record': ['a merge with an isolation record', 'a refusal with two verifiers and no isolation record', 'a refusal while the isolation record\'s verifier had a run in progress'],
   'heads': ['a merge', 'a merge after a push', 'a merge after main moved and the builder updated the branch'],
   'hold-label': ['a merge', 'a refusal on a hold label', 'a merge after the hold label was removed'],
 };
@@ -89,38 +103,48 @@ const spend = (w, k) => { w.used[k] = (w.used[k] || 0) + 1; w.used.events = (w.u
 // ---------- the spec: every merge rule, judged from what happened ----------
 // v: what one judgment sees. sha: the head being merged; head, hold, main, ci, now: the PR's head, its hold label, main's
 // tip, the test result on sha and the clock; statusesUpto, commentsUpto: the status ids and comments that existed.
+// isoRule: a risk:high change to an isolation_record path. Then one verifier whose latest verdict is a PASS whose runs passed
+// exactly the isolation tests, with no run in progress, is the isolation record, and the other verifiers must still reach
+// need (AGENTS.md "Isolation record": it is not one of the N verifiers).
 const deadline = r => r.start + TIMEOUT_S + GRACE_S;
-function rulesHold(w, v, need) {
+function rulesHold(w, v, need, isoRule) {
   if (v.sha !== v.head || v.hold || w.heads[v.sha].base < v.main || v.ci !== 'success') return false;
   if (w.statuses.filter(s => s.sha === v.sha && s.context === C.status && s.id <= v.statusesUpto).at(-1)?.state !== 'success') return false;
   const latest = new Map();
-  for (const c of w.comments) if (c.n <= v.commentsUpto && c.sha === v.sha && c.login === VERIFIER) latest.set(c.by, c.result);
-  if ([...latest.values()].some(r => r !== 'PASS')) return false;
+  for (const c of w.comments) if (c.n <= v.commentsUpto && c.sha === v.sha && c.login === VERIFIER) latest.set(c.by, c);
+  if ([...latest.values()].some(c => c.result !== 'PASS')) return false;
   const running = by => w.runs.some(r => r.by === by && r.sha === v.sha && r.startId <= v.statusesUpto && !(r.endId !== null && r.endId <= v.statusesUpto) && v.now < deadline(r));
-  return [...latest.keys()].filter(by => !running(by)).length >= need;
+  const counted = [...latest.keys()].filter(by => !running(by));
+  if (!isoRule) return counted.length >= need;
+  const records = counted.filter(by => latest.get(by).iso);
+  return records.length >= 1 && counted.length - records.length >= need;
 }
 const nowView = (w, sha) => ({ sha, head: w.head, hold: w.hold, main: w.main, ci: w.ci[sha], now: w.clock, statusesUpto: Infinity, commentsUpto: Infinity });
 const readView = c => ({ sha: c.sha, head: c.sha, hold: c.hold, main: c.tip, ci: c.check, now: c.now, statusesUpto: c.statusesUpto, commentsUpto: c.commentsUpto });
 
 // ---------- what GitHub returns, built with the product's own encoders ----------
+// The isolation record's run, as node --test's spec reporter prints it (docs/self-merge.md "Isolation record").
+const ISO_CMD = 'node --test test/ephemeral.test.mjs';
+const ISO_OUTPUT = [...ISO.tests.map(t => `✔ ${t} (12.3ms)`), `ℹ tests ${ISO.tests.length}`, `ℹ pass ${ISO.tests.length}`, 'ℹ fail 0', 'ℹ cancelled 0', 'ℹ skipped 0', 'ℹ todo 0'].join('\n');
 const statusRows = (w, sha, upto) => w.statuses.filter(s => s.sha === sha && s.id <= upto).reverse()
   .map(s => ({ id: s.id, state: s.state, context: s.context, description: s.description, creator: { login: s.login }, created_at: iso(s.at), updated_at: iso(s.at) }));
 const commentRows = (w, upto) => w.comments.filter(c => c.n <= upto).map(c => {
   const sha = SHAS[c.sha];
-  const rec = { sha, result: c.result, by: c.by, method: 'verification', runs: [{ cmd: CMD, exit: 0, output: 'ok', sha }], patch_id: 'f'.repeat(40), at: iso(c.at) };
+  const run = c.iso ? { cmd: ISO_CMD, exit: 0, output: ISO_OUTPUT, sha } : { cmd: CMD, exit: 0, output: 'ok', sha };
+  const rec = { sha, result: c.result, by: c.by, method: 'verification', runs: [run], patch_id: 'f'.repeat(40), at: iso(c.at) };
   return { body: verdictBody(rec), user: { login: c.login }, author_association: c.login === VERIFIER ? 'OWNER' : 'COLLABORATOR', created_at: iso(c.at), updated_at: iso(c.at) };
 });
-function evaluate(w, c, risk) {
+function evaluate(w, c, risk, files) {
   const pr = { number: 1, base: C.base, draft: false, sameRepo: true, headSha: SHAS[c.sha], labels: [risk === 'high' ? C.high_label : C.low_label, ...(c.hold ? [C.hold_label] : [])] };
   const check = c.check ? { head_sha: SHAS[c.sha], status: 'completed', conclusion: c.check } : null;
-  return decide(pr, { risk, files: ['lib/example.mjs'], check, statuses: statusRows(w, c.sha, c.statusesUpto), now: c.now * 1000, containsBase: c.containsBase, verdicts: parseVerdicts(commentRows(w, c.commentsUpto)) }, C);
+  return decide(pr, { risk, files, check, statuses: statusRows(w, c.sha, c.statusesUpto), now: c.now * 1000, containsBase: c.containsBase, verdicts: parseVerdicts(commentRows(w, c.commentsUpto)) }, C);
 }
 
 // ---------- environment events: one GitHub write (or one change in the world) each ----------
 function envMoves(w, b) {
   const out = [], m = (label, f) => { const n = clone(w); f(n); out.push([label, n]); };
   const h = w.head, hs = `h${h + 1}`;
-  if (use(w, 'runs', b)) for (const by of b.bys) for (const a of b.runAccts) m(`${a} starts eng run --by ${by} on ${hs}: run r${w.runs.length + 1} posts pending on its eng-run/${by}/... context (timeout ${TIMEOUT_S}s)`, n => {
+  if (use(w, 'runs', b)) for (const by of b.runBys ?? b.bys) for (const a of b.runAccts) m(`${a} starts eng run --by ${by} on ${hs}: run r${w.runs.length + 1} posts pending on its eng-run/${by}/... context (timeout ${TIMEOUT_S}s)`, n => {
     spend(n, 'runs'); const id = `r${n.runs.length + 1}`, ctx = runStatusContext(by, CMD, id);
     const startId = postStatus(n, h, ctx, 'pending', runStatusText(by, { timeoutS: TIMEOUT_S }, CMD), a, TIMEOUT_S);
     n.runs.push({ id, by, owner: a, sha: h, ctx, start: n.clock, startId, endId: null, how: null, died: false });
@@ -135,8 +159,10 @@ function envMoves(w, b) {
     m(`${COLLAB} posts success on run ${r.id}'s context`, n => { spend(n, 'foreign'); postStatus(n, r.sha, r.ctx, 'success', runStatusText(r.by, { exit: 0 }, CMD), COLLAB); });
     m(`${COLLAB} posts pending (timeout 0s) on run ${r.id}'s context`, n => { spend(n, 'foreign'); postStatus(n, r.sha, r.ctx, 'pending', runStatusText(r.by, { timeoutS: 0 }, CMD), COLLAB, 0); });
   }
-  if (use(w, 'verdicts', b)) for (const by of b.bys) for (const [a, result] of [[VERIFIER, 'PASS'], [VERIFIER, 'FAIL'], [COLLAB, 'PASS']].filter(([a]) => (b.verdictAccts ?? [VERIFIER, COLLAB]).includes(a)))
-    m(`${a} posts eng verdict ${result} --by ${by} for ${hs}`, n => { spend(n, 'verdicts'); n.comments.push({ n: n.comments.length + 1, sha: h, by, result, login: a, at: n.clock }); });
+  if (use(w, 'verdicts', b)) for (const by of b.bys) for (const [a, kind] of b.results)
+    m(kind === 'ISO' ? `${a} posts eng verdict PASS --by ${by} for ${hs}, its one run the isolation record` : `${a} posts eng verdict ${kind} --by ${by} for ${hs}`, n => {
+      spend(n, 'verdicts'); n.comments.push({ n: n.comments.length + 1, sha: h, by, result: kind === 'ISO' ? 'PASS' : kind, iso: kind === 'ISO', login: a, at: n.clock });
+    });
   if (use(w, 'verdictStatus', b)) m(`${VERIFIER} sets the verdict status on ${hs} to success`, n => { spend(n, 'verdictStatus'); postStatus(n, h, C.status, 'success', 'eng verdict check', VERIFIER); });
   if (w.ci[h] === null && room(w, b)) m(`ci finishes on ${hs}: ${C.check} success`, n => { n.ci[h] = 'success'; n.used.events = (n.used.events || 0) + 1; });
   if (use(w, 'mainMoves', b) && w.ctrl.pc === 'idle') m(`another PR merges: main moves to m${w.main + 2}`, n => { spend(n, 'mainMoves'); n.main++; });
@@ -155,7 +181,7 @@ function envMoves(w, b) {
 // gates the re-check, so the model lets it pass every time: more behaviors than the code has, never fewer. The re-check
 // (the PR and main again, then prState: statuses, test check, compare, comments, then the labels, the statuses and the
 // comments again) and the merge call go read by read.
-function ctrlMoves(w, need, risk, firstPass) {
+function ctrlMoves(w, { risk, firstPass, files }) {
   const n = clone(w), c = n.ctrl, one = s => [[s, n]];
   switch (c.pc) {
     case 'idle': c.tip = n.main; c.pc = 'pr'; return one(`self-merge starts and reads main's tip (m${n.main + 1})`);
@@ -172,7 +198,7 @@ function ctrlMoves(w, need, risk, firstPass) {
     case 'b': c.containsBase = n.heads[c.sha].base >= c.tip; c.pc = 'v'; return one(`self-merge compares m${c.tip + 1}...h${c.sha + 1}: ${c.containsBase ? 'contains' : 'behind'}`);
     case 'v': {
       c.commentsUpto = n.comments.length;
-      const d = evaluate(n, c, risk);
+      const d = evaluate(n, c, risk, files);
       const first = c.first;
       if (first) { delete c.first; c.firstPassRan = true; }
       c.pc = d.merge ? (first ? 'again' : 'l2') : 'done';
@@ -199,7 +225,7 @@ function ctrlMoves(w, need, risk, firstPass) {
 const inWindow = c => !c.first && ['s', 'k', 'b', 'v', 'l2', 's2', 'c2', 'put'].includes(c.pc);
 
 function check(name) {
-  const b = SCENARIOS[name], risk = b.risk, need = risk === 'high' ? C.high_verifiers : 1;
+  const b = SCENARIOS[name], need = b.risk === 'high' ? C.high_verifiers : 1, isoRule = needsIso(b);
   const key = w => createHash('sha1').update(JSON.stringify(w)).digest('base64');
   const start = init(b), seen = new Map([[key(start), null]]), found = new Set();
   const labels = [], ids = new Map(), intern = a => { if (!ids.has(a)) { ids.set(a, labels.length); labels.push(a); } return ids.get(a); };
@@ -210,8 +236,8 @@ function check(name) {
     for (const w of frontier) {
       if (w.ctrl.pc === 'done') continue;
       const wk = key(w);
-      for (const [a, n] of [...ctrlMoves(w, need, risk, b.firstPass), ...envMoves(w, b)]) {
-        if (PROPERTY === 'moment' && !n.ok && (inWindow(n.ctrl) || n.merged)) n.ok = rulesHold(n, nowView(n, n.ctrl.sha), need);
+      for (const [a, n] of [...ctrlMoves(w, b), ...envMoves(w, b)]) {
+        if (PROPERTY === 'moment' && !n.ok && (inWindow(n.ctrl) || n.merged)) n.ok = rulesHold(n, nowView(n, n.ctrl.sha), need, isoRule);
         const nk = key(n);
         if (seen.has(nk)) continue;
         seen.set(nk, { p: wk, a: intern(a) });
@@ -219,7 +245,7 @@ function check(name) {
         for (const k of EXPECT[name]) if (!found.has(k) && WITNESSES[k](n)) found.add(k);
         if (n.merged) {
           merges++;
-          if (!(PROPERTY === 'moment' ? n.ok : rulesHold(n, readView(n.ctrl), need))) return { ok: false, states, trace: trace(nk) };
+          if (!(PROPERTY === 'moment' ? n.ok : rulesHold(n, readView(n.ctrl), need, isoRule))) return { ok: false, states, trace: trace(nk) };
         }
         next.push(n);
       }

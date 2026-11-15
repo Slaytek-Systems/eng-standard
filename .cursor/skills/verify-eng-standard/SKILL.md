@@ -34,7 +34,7 @@ It checks that the installed version matches the source `package.json`, that the
 Run the mapped journeys:
 
 ```sh
-$V journey $ID all                    # or name them: init-sync doctor guard run-verdict gate gate-affected
+$V journey $ID all                    # or name them: init-sync doctor guard run-verdict gate gate-affected self-merge
 ```
 
 It prints `PASS <journey>` or `FAIL <journey>` with the log path, and exits 1 if any journey failed. Each journey is a script in `journeys/` that makes its own fresh repo, so journeys can run again in the same run.
@@ -47,7 +47,7 @@ $V sh $ID try1 -- eng init            # any command, in that repo, with the run'
 $V sh $ID try1 -- git commit -qm base
 ```
 
-`$V sh` puts the scratch install's `node_modules/.bin` first on PATH, which is what `npx --no-install eng` resolves to, and drops the CI and gate variables (`ENG_TMP`, `GITHUB_ACTIONS`, `ENG_PR` and others) that change what eng does. The git hooks that `eng init` installs run on `git commit` and use the same install. The feature map in `features/README.md` lists each feature, its entry points and the end state that proves it.
+`$V repo` links the scratch install as the repo's untracked `node_modules`, where a consumer's install sits and where the pre-commit hook looks for `bin/eng.mjs`. `$V sh` puts that install's `node_modules/.bin` first on PATH, so `eng` runs the same `bin/eng.mjs`, and drops the CI and gate variables (`ENG_TMP`, `GITHUB_ACTIONS`, `ENG_PR` and others) that change what eng does. The git hooks that `eng init` installs run on `git commit` and use the same install. The feature map in `features/README.md` lists each feature, its entry points and the end state that proves it.
 
 To add a journey, write `journeys/<name>.sh`, source `lib.sh`, and use its helpers: `init_repo <name>` (fresh repo, `eng init`, first commit), `expect <exit-code> <cmd...>`, `has <text>` (on the last command's output), `IN=<json> expect ...` (stdin), and `yaml_set '<js on c>'` (edit `eng.config.yml` as a user would). Add it to the default list in `verify.sh` and to the feature map.
 
@@ -60,7 +60,7 @@ Proof standards:
 - Drive the packed CLI and the files it renders (the git hooks, `.eng/guard/hook.mjs` through the exact command in `.claude/settings.json`). Never import `lib/` or call internal functions.
 - Assert the action and the end state: the exit code, the line eng prints, and the file or git state it changed (a commit that did or did not land, a file restored).
 - A journey that fails on main is a bug finding. Report it with the log. Never weaken the journey to make it pass.
-- `eng doctor` reads the latest version from `ENG_STANDARD_SOURCE`, which `verify.sh` points at the source checkout. Nothing in the journeys calls GitHub. `eng verdict` without `--pr` writes only to the scratch repo, and `eng run --by` posts its `eng-run/...` commit status only when `origin` is on github.com, which a scratch repo never has.
+- `eng doctor` reads the latest version from `ENG_STANDARD_SOURCE`, which `verify.sh` points at the source checkout. Nothing in the journeys calls GitHub. The self-merge journey puts `journeys/fake-gh.mjs` first on PATH as `gh`; it serves one fake repo from a JSON file and refuses any call it does not know. `eng verdict` without `--pr` writes only to the scratch repo, and `eng run --by` posts its `eng-run/...` commit status only when `origin` is on github.com, which a scratch repo never has.
 
 ## Cleanup
 
