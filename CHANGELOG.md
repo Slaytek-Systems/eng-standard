@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.8 (15 Nov 2026)
+
+**Self-merge's re-check reads the labels, the statuses and the verdict comments again after its first read, and refuses the merge if any changed** (bug p571wk5x4dpjwem54zx5nxkvts8j7pa3, finding F1). A verifier could start an `eng run` and post a PASS between the re-check's status read and its comment read, and self-merge counted that PASS with no run in progress. Now an unchanged second read means every rule held at one moment. A status on another context, whose event never starts self-merge, does not count as a change. `test/self-merge.test.mjs` replays the formal 16-step path through `scripts/pr-gate.mjs merge`, and the formal check's `--property moment` passes every scenario. **Upgrade:** nothing to do.
+
 ## 0.23.7 (15 Nov 2026)
 
 **Self-merge refuses a risk:high PR that changes `lib/run.mjs`, `lib/ephemeral.mjs` or `test/ephemeral.test.mjs` until a verifier records the two run-isolation tests that CI and the verifier lanes skip** (Eng Manager, sweep F1; Core task p571q852a6sx6e45qvav6j2n458j6t6m). They were skipped everywhere on risk:high #86 and #88.

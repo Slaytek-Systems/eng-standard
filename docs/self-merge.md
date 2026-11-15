@@ -44,7 +44,7 @@ risk:high and every file counts as testable. An incomplete list is never evidenc
 There is no wait (Matt, 26 Oct 2026: "Merge as soon as it's verified; post-merge checks roll back breakage"). A PR
 merges in the first run after its last rule goes green. A new push gives a new head SHA, so everything must go green
 again for it. Just before the merge call the run reads the PR, main's tip and its `test` run, and every rule again. If
-the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict, a run in progress), it merges nothing. The merge call pins the head SHA. `ship.self_merge.hold_minutes` no
+the head or main moved, or any rule now fails (a `hold` label, a FAIL verdict, a run in progress), it merges nothing. After it reads the comments it reads the labels, the statuses and the comments again. A change to the labels, the verdicts, or a `verdict` or `eng-run/` status merges nothing, and that change's own event runs self-merge again. A status list that does not parse merges nothing, as it does everywhere. The merge call pins the head SHA. `ship.self_merge.hold_minutes` no
 longer exists, and a config that sets it fails with a message saying so.
 
 ## Run guard (14 Nov 2026)
