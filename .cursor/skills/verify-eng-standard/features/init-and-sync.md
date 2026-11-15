@@ -9,6 +9,7 @@
 - `sync-check-drift` fails and names the file after a hand edit.
 - `sync-restore` rewrites the edited file.
 - `pre-commit` runs `sync --check` and `eng lint` on `git commit`, and blocks a commit with a drifted file.
+- `pre-commit-eng` (0.23.2) runs `$ENG`, else `node node_modules/@slayteksystems/eng-standard/bin/eng.mjs` from the repo root, never npx. It fails the commit with one line when `$ENG` is not an executable file path with a slash, or when neither exists.
 
 ## How to get to it (user POV)
 
@@ -28,9 +29,11 @@ Preconditions:
 - **Restore.** Run `eng sync`. Output has `wrote SHIPPING.md`, and `eng sync --check` exits 0.
 - **Hook passes.** `git add -A && git commit -m base`. Exit 0, output has `eng sync --check: PASS` and `eng lint: PASS`.
 - **Hook blocks.** Append to `SHIPPING.md`, stage it, and commit. Exit 1 with `SHIPPING.md: differs`, and `git log` still shows only `base`.
+- **Hook's eng.** Restore `SHIPPING.md` and stage a new file. `ENG=eng git commit` exits 1 with `ENG=eng is not an executable file path`. With `node_modules` moved aside, `git commit` exits 1 with `pre-commit cannot find node_modules/@slayteksystems/eng-standard/bin/eng.mjs`. Put it back, and `ENG=./node_modules/@slayteksystems/eng-standard/bin/eng.mjs git commit` exits 0 with `eng lint: PASS`. Only that commit lands.
 - **Journey.** `verify.sh journey <id> init-sync`.
 
 ## Gotchas
 
 - `eng init` already runs `eng sync`. Its output lists about 290 files.
+- `verify.sh repo` links the scratch install as the repo's `node_modules` and lists it in `.git/info/exclude`. Without it, every `git commit` fails at the hook.
 - `eng sync` warns that Claude Code sees none of the skills. That is expected in a fresh repo: eng never makes the `.claude/skills` link.
