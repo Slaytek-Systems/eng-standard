@@ -15,13 +15,13 @@ All commands run from the repo root after `npm ci`. `F=.cursor/skills/formal-mer
 
 `rulesHold()` in `check.mjs` judges this from what happened: who started which run, who ended or cleared it, and which comments exist. It never reads status rows, so a bug in how `decide()` reads rows shows up as a disagreement.
 
-**MergeMatchesAMoment** (`--property moment`): one moment existed, between the re-check's PR read and the merge call, when every rule held at once. It failed on finding F1 below until 0.23.6.
+**MergeMatchesAMoment** (`--property moment`): one moment existed, between the re-check's PR read and the merge call, when every rule held at once. It failed on finding F1 below until 0.23.8.
 
 ## Run it
 
 ```sh
 node --max-old-space-size=1500 $F/check.mjs                      # RulesHeldWhenRead, all 6 scenarios: about 15 s, under 1 GB
-node --max-old-space-size=1500 $F/check.mjs --property moment    # passes every scenario since 0.23.6
+node --max-old-space-size=1500 $F/check.mjs --property moment    # passes every scenario since 0.23.8
 node $F/sensitivity.mjs                                          # every seeded fault must be CAUGHT: about 15 s
 ```
 
@@ -63,7 +63,7 @@ Verdicts are a PASS or FAIL by the login, or a PASS by `collab`. Each scenario m
 
 ## Findings
 
-- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the full replay, with the first pass read by read (`--property moment --scenario f1-replay`, 16 steps). V1 posts PASS. Self-merge's first pass reads it and says merge. V1 posts FAIL. Self-merge re-reads the PR and the statuses, and no run is pending. V1 starts `eng run --by V1`, which posts pending, and then V1 posts PASS while that run is still going. Self-merge reads the comments, counts the latest PASS, sees no run, and merges. After the FAIL, there was no moment when the latest verdict was a PASS and V1 had no run in progress. This is the #73 pattern (PASS, then FAIL, then a re-run) that the run guard exists for. A hold label added just before a late PASS is missed the same way. Before 0.23.6, `--property moment` failed in `run-ownership`, `dead-runs`, `two-verifiers`, `hold-label` and `f1-replay`, and passed `heads`. Fixed in 0.23.6: after `decide()` says merge, the re-check reads the labels, the statuses and the comments again and skips on any change (`l2`, `s2`, `c2`), so the label read is one moment when every rule held. `--property moment` passes every scenario, so it can become the default and this entry can go (not done here).
+- **F1: the re-check is not a snapshot** (Core task p571wk5x4dpjwem54zx5nxkvts8j7pa3, needs Matt: the fix is in `scripts/pr-gate.mjs`). `prState()` reads the statuses first and the comments last, seconds apart, and the PR's labels before both. Here is the full replay, with the first pass read by read (`--property moment --scenario f1-replay`, 16 steps). V1 posts PASS. Self-merge's first pass reads it and says merge. V1 posts FAIL. Self-merge re-reads the PR and the statuses, and no run is pending. V1 starts `eng run --by V1`, which posts pending, and then V1 posts PASS while that run is still going. Self-merge reads the comments, counts the latest PASS, sees no run, and merges. After the FAIL, there was no moment when the latest verdict was a PASS and V1 had no run in progress. This is the #73 pattern (PASS, then FAIL, then a re-run) that the run guard exists for. A hold label added just before a late PASS is missed the same way. Before 0.23.8, `--property moment` failed in `run-ownership`, `dead-runs`, `two-verifiers`, `hold-label` and `f1-replay`, and passed `heads`. Fixed in 0.23.8: after `decide()` says merge, the re-check reads the labels, the statuses and the comments again and skips on any change (`l2`, `s2`, `c2`), so the label read is one moment when every rule held. `--property moment` passes every scenario, so it can become the default and this entry can go (not done here).
 
 ## Reading a result
 

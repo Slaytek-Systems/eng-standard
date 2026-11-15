@@ -19,7 +19,7 @@ const run = (by, o = {}) => row({ id: 10, context: runStatusContext(by, 'npm tes
 test('self-merge config: no ship block means the documented defaults, and the gate runs on them', () => {
   for (const cfg of [undefined, {}, { ship: {} }]) {
     const c = selfMergeConfig(cfg);
-    assert.deepEqual({ ...c, review_only_paths: undefined }, { ...DEFAULTS, verifier_logins: null, review_only_paths: undefined }, JSON.stringify(cfg));
+    assert.deepEqual({ ...c, review_only_paths: undefined }, { ...DEFAULTS, verifier_logins: null, isolation_record: null, review_only_paths: undefined }, JSON.stringify(cfg));
     assert.deepEqual([c.base, c.low_label, c.high_label, c.hold_label, c.check, c.status, c.high_verifiers], ['main', 'risk:low', 'risk:high', 'hold', 'test', 'verdict', 2]);
     assert.equal(decide(pr(), st(), c).merge, true);
     assert.match(decide(pr({ labels: ['risk:low', 'hold'] }), st(), c).reason, /^hold label$/);
