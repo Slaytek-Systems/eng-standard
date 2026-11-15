@@ -2,6 +2,15 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.7 (15 Nov 2026)
+
+**Self-merge refuses a risk:high PR that changes `lib/run.mjs`, `lib/ephemeral.mjs` or `test/ephemeral.test.mjs` until a verifier records the two run-isolation tests that CI and the verifier lanes skip** (Eng Manager, sweep F1; Core task p571q852a6sx6e45qvav6j2n458j6t6m). They were skipped everywhere on risk:high #86 and #88.
+
+- `ship.self_merge.isolation_record` in `eng.config.yml` names the paths and the two test titles. On such a PR, some verifier's latest PASS on the head must hold only runs that exited 0 and whose node spec output shows exactly those two tests passing, none skipped. That record is not one of the N verifiers. An unknown file list needs it too. risk:low PRs and PRs that change none of the paths are unchanged.
+- Make the record with Node 22 or later: Node 20 lists filtered tests as skipped, which the record refuses. The host (bwrap, outside the heavy lane) is what the record states; self-merge cannot see it. The tests skip without bwrap and docker, which the record refuses. Command and limits: `docs/self-merge.md`, "Isolation record".
+- The p57es40c exclusion is narrowed: only a heavy-lane verifier may skip, by exact name, those two tests and the anonymous-volume one. The earlier allowance for one verifier lane's sandbox is withdrawn.
+- **Upgrade:** nothing to do. This is eng-standard's own merge rule.
+
 ## 0.23.5 (14 Nov 2026)
 
 **The recorder test reports an `eng run` that ended before it recorded, with eng's exit and output, instead of an ENOENT** (Core task p57aqqsrnj1p2cqhjpj7916yqn8j7d6d). main's post-merge CI run 43598304842 failed `test/pass-integrity.test.mjs` on a missing `.git/eng/verdict-runs.jsonl`. One of the four parallel `eng run --by` calls ended 539 ms in, before it recorded anything. The test's read of the run log threw, so eng's exit code and output were lost. The other three runs kept going and wrote into the repo after the test removed it, which the same run reported as a leftover.
