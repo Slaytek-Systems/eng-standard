@@ -914,12 +914,12 @@ function verdictRecord(result) {
 // GITHUB_REPOSITORY. With none of those, refuse in one line before gh runs, instead of gh's stack trace. check and status
 // take only a plain number (else a usage error); the record route sends any other value to gh. check on an empty diff
 // reads no PR. A remote counts when its URL's host is github.com.
-const githubHost = u => (/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?([^/:]+)/i.exec(u) || /^(?:[^@/:]*@)?([^/:]+):/.exec(u))?.[1].toLowerCase() === 'github.com';
+const githubHost = u => { try { return (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? new URL(u).hostname : /^(?:[^@/:]*@)?([^/:]+):/.exec(u)?.[1])?.toLowerCase() === 'github.com'; } catch { return false; } };
 function needGitHub(sub, n) {
   const check = sub === 'check';
   if (check || sub === 'status' ? !/^\d+$/.test(n || '') : !n || n.startsWith('-')) return;
   if (process.env.GH_REPO || (check && process.env.GITHUB_REPOSITORY)) return;
-  try { if (check && patchId(loadConfig({ quiet: true })) === 'empty') return; } catch {}
+  try { if (check && CONFIG_TEXT !== false && patchId(loadConfig({ quiet: true })) === 'empty') return; } catch {}
   const r = spawnSync('git', ['remote', '-v'], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0 || r.stdout.split('\n').some(l => githubHost(l.split(/\s+/)[1] || ''))) return;
   die(`verdict: PR #${n} needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr`);
