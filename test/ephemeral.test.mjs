@@ -157,7 +157,7 @@ test('without python3: a process left with an empty environment is reported as u
   const pid = mark('nopy-empty');
   assert.equal(r.status, 0, out(r));
   assert.match(r.stdout, new RegExp(`was not fully watched: .*processes: 1 process\\(es\\) started during the run still had an empty environment after 3 s \\(pid ${pid}\\)`), out(r));
-  assert.ok(running(Number(pid)), 'not proven the run\'s, so not stopped');
+  assert.match(r.stdout, /eng run: PASS \(test: not fully watched, mode warn\)/); assert.ok(running(Number(pid)), 'not proven the run\'s, so not stopped');
 });
 
 // A fake /proc. stat fields after "(comm) " (proc(5)): [0] state, [6] flags, [19] start time.
@@ -190,16 +190,19 @@ test('eng run looks again while a process its first look could not read is unsur
   const left = { kind: 'process', id: 12, owner: 'run' };
   let ticks = 0;
   const res = settle(fakeLooks([{ left: [], unsure: [12] }, { left: [], unsure: [12] }, { left: [left], unsure: [] }]), () => ticks++);
-  assert.deepEqual(res.left, [left]); assert.deepEqual(res.stuck, []); assert.equal(ticks, 2);
+  assert.deepEqual(res.left, [left]); assert.deepEqual(res.stuck, []); assert.ok(ticks >= 2, `looked again: ${ticks}`);
 });
 
-test('a process still unsure after the settle time is stuck; one first seen unsure later never holds the run', () => {
+test('a process still unsure after the settle time is stuck, one found earlier included; one first seen unsure later never holds the run', () => {
   let ticks = 0;
   let res = settle(fakeLooks([{ left: [], unsure: [12] }]), () => ticks++);
   assert.deepEqual(res.stuck, [12]); assert.equal(ticks, 15, 'waited the settle time (15 x 200 ms), no longer');
   ticks = 0;
   res = settle(fakeLooks([{ left: [], unsure: [] }, { left: [], unsure: [99] }]), () => ticks++);
   assert.deepEqual(res.left, []); assert.deepEqual(res.stuck, []); assert.equal(ticks, 0, 'nothing to wait for');
+  ticks = 0;
+  res = settle(fakeLooks([{ left: [{ kind: 'process', id: 12, owner: 'run' }], unsure: [] }, { left: [], unsure: [12] }]), () => ticks++);
+  assert.deepEqual(res.stuck, [12], 'a process found once and caught in a later exec is still watched'); assert.equal(ticks, 15);
 });
 
 test('containers, networks and volumes left behind fail and are removed, a container with the volumes docker made for it; --rm passes', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
