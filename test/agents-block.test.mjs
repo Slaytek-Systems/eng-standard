@@ -171,6 +171,17 @@ test('a marker pair in a fenced example is repo text, above or below the real bl
   assert.equal(agentsOf(`# AGENTS.md\n\n${FENCED}`), `# AGENTS.md\n\n${FENCED}\n${BLOCK}\n`, 'only a fenced example: the block is appended after it');
 });
 
+test('a fence keeps the block quote and list item it opened in (review round 1 on #104)', () => {
+  const quoted = '# AGENTS.md\n\n```markdown\n> ```\n<!-- eng:begin -->\n<!-- eng:end -->\n```\n\n';
+  assert.equal(agentsOf(`${quoted}${OLD}\n`), `${quoted}${BLOCK}\n`, 'a quoted ``` does not close a top-level fence');
+  const inQuote = '> ```md\n> <!-- eng:begin -->\n> <!-- eng:end -->\n> ```\n\n';
+  assert.equal(agentsOf(`${inQuote}${OLD}\n`), `${inQuote}${BLOCK}\n`, 'a closed fence in a block quote');
+  const inList = '1. Example:\n   ```md\n   <!-- eng:begin -->\n   <!-- eng:end -->\n   ```\n\n';
+  assert.equal(agentsOf(`${inList}${OLD}\n`), `${inList}${BLOCK}\n`, 'a closed fence in a list item');
+  for (const open of ['> ```markdown\n> Example inside a block quote.\n\n', '- ```md\n  example\n\n'])
+    assert.throws(() => agentsOf(`${OLD}\n\n${open}<!-- eng:end -->\n`), /1 <!-- eng:begin --> or <!-- eng:end --> line\(s\) outside eng's block/, `a fence ends with its container: ${JSON.stringify(open)}`);
+});
+
 test('eng refuses what it cannot place, and names why', () => {
   for (const [bad, why] of [
     [`${OLD}\n\n${OLD}\n`, /2 signed <!-- eng:begin --> lines/],
