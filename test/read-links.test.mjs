@@ -82,6 +82,19 @@ test('a linked .github/pull_request_template.md eng did not render is the repo\'
   check();
 });
 
+// Review round 1: with the repo's own template at the root, eng renders nothing in a linked .github, so sync goes ahead.
+test('sync with .github linked and the repo\'s own root template renders nothing there and does not read the link', () => {
+  const r = repo(), outside = tmp('eng-outside-');
+  fs.writeFileSync(path.join(outside, 'pull_request_template.md'), 'not the repo\'s\n');
+  fs.symlinkSync(outside, r.file('.github'));
+  fs.writeFileSync(r.file('PULL_REQUEST_TEMPLATE.md'), 'the repo\'s own\n');
+  const check = untouched(outside);
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
+  assert.equal(r.eng('sync', '--check').status, 0);
+  check();
+  assert.deepEqual(fs.readdirSync(outside), ['pull_request_template.md']);
+});
+
 // The lock a real sync wrote, moved outside the repo: through a linked .eng, or as a linked lock file.
 for (const link of ['.eng', '.eng/lock.json']) {
   test(`sync, sync --check and init with ${link} linked outside the repo exit 1 before reading the lock`, () => {

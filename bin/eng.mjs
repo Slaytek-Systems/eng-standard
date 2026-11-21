@@ -166,13 +166,14 @@ function render(cfg) {
 // folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
 // A linked .github or docs is not listed: GitHub reads the repo's tree, where a link holds no template, and eng never reads
-// through a link (a linked .github is then refused by the write check, which renders ours there). A linked template file
-// eng did not render is the repo's own (eng writes regular files), and its target is not read.
+// through a link (a linked .github is then refused by the write check when eng renders ours there). A linked template file
+// eng did not render is the repo's own (eng writes regular files), and its target is not read. One gone since the listing
+// is skipped.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
-  const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || (!fs.lstatSync(path.join(ROOT, p)).isSymbolicLink() && readOr(p) === rendered));
+  const ours = (p, st) => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || (!st.isSymbolicLink() && readOr(p) === rendered));
   return ['.github', '.', 'docs'].flatMap(d => { if (folderProblem(`${d}/x`)) return []; try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
-    .filter(p => !ours(p));
+    .filter(p => { const st = fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false }); return st && !ours(p, st); });
 }
 const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
 
