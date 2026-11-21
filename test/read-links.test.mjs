@@ -115,6 +115,21 @@ for (const link of ['.eng', '.eng/lock.json']) {
   });
 }
 
+// The PR template listing only reads: a docs folder eng cannot list or enter is skipped, not refused (Core task
+// p5795pctqs8d84n0chwgx0ah1x8jnqsy, item 1), so sync renders its own template and leaves docs as it was.
+for (const mode of [0o444, 0o333]) {
+  test(`sync with a mode ${mode.toString(8)} docs folder skips it and renders its own PR template`, { skip: process.getuid?.() === 0 && 'root ignores folder modes' }, () => {
+    const r = repo();
+    fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/pull_request_template.md'), 'mine\n');
+    fs.chmodSync(r.file('docs'), mode);
+    let s; try { s = r.eng('sync'); } finally { fs.chmodSync(r.file('docs'), 0o755); }
+    assert.equal(s.status, 0, s.stdout + s.stderr);
+    assert.ok(fs.existsSync(r.file('.github/pull_request_template.md')));
+    assert.deepEqual(fs.readdirSync(r.file('docs')), ['pull_request_template.md']);
+    assert.equal(fs.readFileSync(r.file('docs/pull_request_template.md'), 'utf8'), 'mine\n');
+  });
+}
+
 test('a repo with no links still syncs, and sync --check agrees', () => {
   const r = repo();
   const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
