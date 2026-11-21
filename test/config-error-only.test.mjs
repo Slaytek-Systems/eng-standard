@@ -173,3 +173,23 @@ test('eng run in a private worktree still runs with no eng.config.yml, and with 
     assert.doesNotMatch(x.stderr, /config invalid|no eng\.config\.yml/, x.stderr);
   }
 });
+
+// Review round 1 on #126: a value of the wrong type in a list the shared validator walks is a config error, not a stack trace.
+test('a wrong-typed constraints.rules or stack.exceptions is one config invalid error, for eng run and eng lint alike', async () => {
+  const YAML = (await import('yaml')).default;
+  const shaped = f => { const c = YAML.parse(TPL); f(c); return YAML.stringify(c); };
+  const cases = [
+    ['constraints.rules a mapping', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: {} }; }), /^ {2}constraints\.rules must be a list of rules$/m],
+    ['constraints.rules holding null', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: [null] }; }), /^ {2}constraints\.rules must be a list of rules$/m],
+    ['stack.exceptions a number', shaped(c => { c.stack = { ...(c.stack || {}), exceptions: 5 }; }), /^ {2}stack\.exceptions must be a list of exceptions$/m],
+  ];
+  for (const [what, config, detail] of cases) for (const args of [['run', '--', 'true'], ['lint']]) {
+    const r = repo(config), x = r.eng(args), name = `${what}: eng ${args.join(' ')}`;
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.equal(x.stdout, '', name);
+    assert.match(x.stderr, /^eng: FAIL config invalid:\n/, `${name}: ${x.stderr}`);
+    assert.match(x.stderr, detail, `${name}: ${x.stderr}`);
+    assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${name}: only the error: ${x.stderr}`);
+    assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME`);
+  }
+});
