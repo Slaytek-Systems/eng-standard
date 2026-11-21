@@ -74,15 +74,30 @@ test('a lock entry whose own folder is a deeper symlink is refused too', () => {
   assert.ok(fs.existsSync(path.join(outside, 'OLD.md')));
 });
 
-test('once the stale file is gone, eng sync runs and drops the entry', () => {
+// Review round 2 on #108: eng never reads through the link, so it cannot tell the file is gone behind it. It refuses the
+// entry even when the linked folder is empty, and once the link is replaced with a real folder, sync drops the entry.
+test('a lock entry under a symlinked folder is refused even when the file is not behind it; with a real folder, sync drops it', () => {
   const outside = tmp('eng-outside-');
   const r = repo('docs/OLD.md');
   fs.symlinkSync(outside, r.file('docs'));
+  const before = snapshot(r.dir);
+  const s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  assert.match(s.stderr, /docs\/OLD\.md \(docs is a symlink\)/);
+  assert.deepEqual(snapshot(r.dir), before);
+  fs.unlinkSync(r.file('docs')); fs.mkdirSync(r.file('docs'));
+  const t = r.eng('sync');
+  assert.equal(t.status, 0, t.stdout + t.stderr);
+  assert.doesNotMatch(t.stdout, /removed/);
+  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('docs/OLD.md'));
+});
+
+// A folder on the path that is not there means the entry is gone: skipped, and sync drops it.
+test('a stale entry whose folder is not there is skipped, and sync drops it', () => {
+  const r = repo('gone/sub/OLD.md');
   const s = r.eng('sync');
   assert.equal(s.status, 0, s.stdout + s.stderr);
-  assert.doesNotMatch(s.stdout, /removed/);
-  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('docs/OLD.md'));
-  assert.equal(fs.readlinkSync(r.file('docs')), outside);
+  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('gone/sub/OLD.md'));
 });
 
 test('a managed path that is itself a symlink is left alone: neither the link nor its target is deleted', () => {

@@ -192,31 +192,36 @@ function syncPlan(seed = null) {
 }
 // The files a previous sync generated that the config no longer renders and that are on disk, each once. Never in
 // .claude/skills or .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the
-// developer. An entry is refused when a folder on its path, below the repo root, is a symlink (the delete could land
-// outside the repo or on another repo file), or when eng cannot read its folder, so cannot tell what it would delete.
-// eng writes regular files, so anything else at a stale path is the developer's and stays: a symlink (neither it nor
-// its target goes), a folder or a FIFO.
+// developer. eng never reads through a symlink here. An entry is refused when a folder on its path, below the repo root,
+// is a symlink (a delete could land outside the repo or on another repo file), whether or not the file is there, or when
+// eng cannot read a folder on its path, so cannot tell what it would delete. A folder that is not there means the entry
+// is gone: skipped. eng writes regular files, so anything else at a stale path is the developer's and stays: a symlink
+// (neither it nor its target goes), a folder or a FIFO.
 function prunePlan(lockFiles, files) {
   const prune = [], refused = [];
   for (const p of new Set(lockFiles)) {
     if (p in files || harnessOut(p)) continue;
+    const why = folderProblem(p);
+    if (why === null) continue;
+    if (why) { refused.push(`${p} (${why})`); continue; }
     // The exact name in its folder's listing: on a case-insensitive disk lstat would also find another file.
-    let listed; try { listed = fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch (e) { listed = e.code === 'ENOENT' || e.code === 'ENOTDIR' ? false : null; }
-    if (listed === false) continue;
-    const why = linkedFolder(p) || (listed === null && `${path.dirname(p)} cannot be read`);
-    if (why) refused.push(`${p} (${why})`);
-    else if (fs.lstatSync(path.join(ROOT, p)).isFile()) prune.push(p);
+    const dir = path.dirname(p);
+    let names; try { names = fs.readdirSync(path.join(ROOT, dir)); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') refused.push(`${p} (${dir} cannot be read (${e.code}))`); continue; }
+    if (names.includes(path.basename(p)) && fs.lstatSync(path.join(ROOT, p)).isFile()) prune.push(p);
   }
-  if (refused.length) die(`.eng/lock.json: eng sync would delete ${refused.length} file(s) the config no longer renders through a symlinked folder, or in a folder eng cannot read: ${refused.join(', ')}. eng writes and deletes nothing. Fix: delete each file yourself if it should go (or make its folder readable), then run eng sync.`);
+  if (refused.length) die(`.eng/lock.json: eng sync would prune ${refused.length} file(s) the config no longer renders through a symlinked folder, or in a folder eng cannot read: ${refused.join(', ')}. eng reads nothing through the link, and writes and deletes nothing. Fix: delete each file yourself if it should go, then replace the linked folder with a real one (or make the folder readable), or remove the entry from .eng/lock.json; then run eng sync.`);
   return prune;
 }
-// false, or why a folder on the repo-relative path p, below the repo root, is a symlink or cannot be read. lstat never
+// For each folder on the repo-relative path p, below the repo root, from the top down: why it is a symlink or cannot be
+// read; null when one is not there (the entry is gone); false when every folder is a real, readable folder. lstat never
 // follows a link.
-function linkedFolder(p) {
+function folderProblem(p) {
   const parts = p.split('/').slice(0, -1);
   for (let i = 1; i <= parts.length; i++) {
     const d = parts.slice(0, i).join('/');
-    try { if (fs.lstatSync(path.join(ROOT, d)).isSymbolicLink()) return `${d} is a symlink`; } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
+    let st; try { st = fs.lstatSync(path.join(ROOT, d)); } catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${d} cannot be read (${e.code || e.message})`; }
+    if (st.isSymbolicLink()) return `${d} is a symlink`;
+    if (!st.isDirectory()) return null;
   }
   return false;
 }
