@@ -141,3 +141,35 @@ test('with no eng.config.yml at the start, one created while the notice waits is
     assert.equal(code, 1); assert.match(err, /no eng\.config\.yml/, err); assert.doesNotMatch(err, /config invalid/, err);
   } finally { srv.close(); }
 });
+
+// eng run in a private worktree reads eng.config.yml too (Core task p5719k8k2sp8aww7vj2rx8ety18jnj8f): an invalid one is
+// refused like every other command's, before the update notice, and nothing starts: no worktree, no scratch folder, no command.
+test('eng run in a private worktree refuses an invalid eng.config.yml with only the error, and starts nothing', () => {
+  for (const [what, config, error] of INVALID) {
+    for (const args of [['run', '--', 'true'], ['run', '--by', 'probe', '--', 'true'], ['run', '--keep'], ['run', '--ref', 'HEAD', '--', 'true']]) {
+      const r = repo(config), x = r.eng(args), name = `${what}: eng ${args.join(' ')}`;
+      assert.equal(x.signal, null, `${name} did not hang`);
+      assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+      assert.equal(x.stdout, '', `${name} printed nothing to stdout`);
+      assert.match(x.stderr, error, `${name}: ${x.stderr}`);
+      assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${name}: only the error: ${x.stderr}`);
+      assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME (no update cache, no scratch round)`);
+    }
+    const r = repo(config), mark = path.join(tmp('eng-mark-'), 'started');
+    const x = r.eng(['run', '--', 'sh', '-c', `touch '${mark}'`]);
+    assert.equal(x.status, 1, x.stdout + x.stderr);
+    assert.ok(!fs.existsSync(mark), `${what}: the command never started`);
+    assert.equal(execSync('git worktree list --porcelain', { cwd: r.dir, encoding: 'utf8' }).match(/^worktree /gm).length, 1, `${what}: no worktree was added`);
+  }
+});
+
+test('eng run in a private worktree still runs with no eng.config.yml, and with a valid one', () => {
+  for (const config of [null, TPL]) {
+    const r = repo(TPL), mark = path.join(tmp('eng-mark-'), 'started');
+    if (config === null) { fs.rmSync(path.join(r.dir, 'eng.config.yml')); execSync('git commit -qam "no config"', { cwd: r.dir }); }
+    const x = r.eng(['run', '--', 'sh', '-c', `touch '${mark}'`]);
+    assert.equal(x.status, 0, `${config === null ? 'no config' : 'valid config'}: ${x.stdout}${x.stderr}`);
+    assert.ok(fs.existsSync(mark), 'the command ran');
+    assert.doesNotMatch(x.stderr, /config invalid|no eng\.config\.yml/, x.stderr);
+  }
+});
