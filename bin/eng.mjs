@@ -189,7 +189,22 @@ function syncPlan(seed = null) {
   if (added) changes.push(added);
   const cfg = YAML.parse(added?.text ?? text);
   validate(cfg);
-  return { old, cfg, migrated: changes.length ? added?.text ?? text : null, changes, files: render(cfg), exec: renderedExecutables(cfg) };
+  const files = render(cfg);
+  // Files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents, even
+  // when an earlier agents.skills_dir rendered there: those files now belong to the developer.
+  const prune = old.files.filter(p => !(p in files) && !harnessOut(p) && onDisk(p));
+  const through = prune.flatMap(p => { const why = linkedFolder(p); return why ? [`${p} (${why})`] : []; });
+  if (through.length) die(`.eng/lock.json: eng sync would delete ${through.length} file(s) the config no longer renders through a symlinked folder, which can land outside the repo or on another repo file: ${through.join(', ')}. eng deletes nothing. Fix: delete each file yourself if it should go, then run eng sync.`);
+  return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune, exec: renderedExecutables(cfg) };
+}
+// false, or why a folder on the repo-relative path p, below the repo root, is a symlink. lstat never follows a link.
+function linkedFolder(p) {
+  const parts = p.split('/').slice(0, -1);
+  for (let i = 1; i <= parts.length; i++) {
+    const d = parts.slice(0, i).join('/');
+    try { if (fs.lstatSync(path.join(ROOT, d)).isSymbolicLink()) return `${d} is a symlink`; } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
+  }
+  return false;
 }
 // Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
 function graphiteRepo() {
@@ -201,7 +216,7 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
 function sync(plan = syncPlan()) {
-  const { old, cfg, files, exec, changes } = plan;
+  const { cfg, files, prune, exec, changes } = plan;
   if (plan.migrated !== null) {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), plan.migrated);
     for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
@@ -215,9 +230,9 @@ function sync(plan = syncPlan()) {
     if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
-  // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
-  // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
-  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
+  // Prune (syncPlan checked no folder on the way is a symlink). A managed path that is itself a symlink is the
+  // developer's (eng writes regular files), so neither it nor its target is deleted.
+  for (const p of prune) if (!fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
