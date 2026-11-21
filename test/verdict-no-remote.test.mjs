@@ -58,9 +58,15 @@ test('another gh failure, or no gh at all, is one plain FAIL line with no gh tex
     assert.match(x.stderr, /^eng: FAIL verdict: gh is not installed, so PR #5 cannot be read; install gh and run gh auth login, or record the verdict without --pr\n$/, `${name}: ${x.stderr}`);
   }
   fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho "HTTP 401: Bad credentials SECRET-GH-TEXT" >&2\nexit 4\n', { mode: 0o755 });
+  // gh checks its login before the remotes: with no remote at all, the line still names the missing remote.
+  for (const args of COMMANDS) {
+    const name = `eng ${args.join(' ')}`, x = repo(null, noGh)(args);
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; .*\n$/, `${name}: ${x.stderr}`);
+  }
   for (const args of COMMANDS) {
     const name = `eng ${args.join(' ')}`;
-    const x = repo(null, noGh)(args);
+    const x = repo('https://github.com/a/b.git', noGh)(args);
     assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
     assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5 \(exit 4\); run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
     assert.doesNotMatch(x.stdout + x.stderr, /SECRET-GH-TEXT|\n\s+at /, `${name}: no gh or Node text`);
@@ -72,7 +78,35 @@ test('another gh failure, or no gh at all, is one plain FAIL line with no gh tex
     assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
     assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5; run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
   }
-  // A --pr that is not a plain number is a usage error before gh runs.
+  // gh exits 0 with a state that is not a plain word, or comment pages holding a non-object: one plain line.
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\ncase "$*" in *comments*) echo "[[null]]";; *) printf \'{"headRefOid":"abc","state":"OPEN\\\\nSECOND"}\\n\';; esac\n', { mode: 0o755 });
+  for (const args of COMMANDS) {
+    const name = `eng ${args.join(' ')}`, x = repo(null, noGh)(args);
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5; run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
+  }
+  // A --pr that is not a plain number, or a bare --pr, is a usage error before gh runs, and records nothing.
   const x = repo(null, noGh)(['verdict', 'PASS', '--by', 'probe', '--pr', '1e2']);
   assert.equal(x.status, 1); assert.match(x.stderr, /^eng: FAIL usage: eng verdict .*--pr <n>, where <n> is the PR number\n$/, x.stderr);
+  for (const args of [['verdict', 'FAIL', '--by', 'probe', '--pr'], ['verdict', 'PASS', '--by', 'probe', '--pr'], ['verdict', 'check', '--pr']]) {
+    const name = `eng ${args.join(' ')}`, x = repo(null, noGh, false)(args);
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.match(x.stderr, /^eng: FAIL usage: eng verdict .*--pr <n>/, `${name}: ${x.stderr}`);
+    assert.doesNotMatch(x.stdout, /PASS|recorded/, name);
+  }
+});
+
+// A configured repo with no commit yet: check --pr reads the PR first and never reaches git rev-parse HEAD's error.
+test('check --pr in a repo with no commits and no remote is one plain FAIL line', () => {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-no-commit-')); dirs.push(dir);
+  execSync('git init -q -b main', { cwd: dir }); fs.writeFileSync(path.join(dir, 'eng.config.yml'), TPL);
+  const bin = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-fake-gh-')); dirs.push(bin);
+  fs.symlinkSync(execSync('command -v git', { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho "no git remotes found" >&2\nexit 1\n', { mode: 0o755 });
+  const env = { ...process.env, PATH: bin, ENG_NO_UPDATE_CHECK: '1' };
+  for (const k of ['GITHUB_REPOSITORY', 'GH_REPO', 'NODE_TEST_CONTEXT']) delete env[k];
+  const x = spawnSync(process.execPath, [ENG, 'verdict', 'check', '--pr', '5'], { cwd: dir, encoding: 'utf8', env, timeout: 60_000 });
+  assert.equal(x.status, 1, x.stdout + x.stderr);
+  assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; .*\n$/, x.stderr);
+  assert.doesNotMatch(x.stdout + x.stderr, /\n\s+at |node:internal|rev-parse/);
 });

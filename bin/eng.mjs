@@ -912,9 +912,11 @@ function verdictRecord(result) {
 }
 // gh failed reading PR #n: one plain line, never gh's own text. No GitHub remote gh can use is the common case, named with its fix.
 function ghFailed(n, r) {
-  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one under an unused remote name (such as git remote add github https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
-  die(r.error?.code === 'ENOENT' ? `verdict: gh is not installed, so PR #${n} cannot be read; install gh and run gh auth login, or record the verdict without --pr`
-    : `verdict: gh could not read PR #${n}${r.status ? ` (exit ${r.status})` : r.error ? ` (${r.error.code})` : ''}; run gh auth status and gh pr view ${n} to see why`);
+  if (r.error?.code === 'ENOENT') die(`verdict: gh is not installed, so PR #${n} cannot be read; install gh and run gh auth login, or record the verdict without --pr`);
+  // gh may check its login before the remotes, so a repo with no remotes at all is named from git itself.
+  const noRemote = r.status !== 0 && spawnSync('git', ['remote'], { cwd: ROOT, encoding: 'utf8' }).stdout === '';
+  if (noRemote || /no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one under an unused remote name (such as git remote add github https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
+  die(`verdict: gh could not read PR #${n}${r.status ? ` (exit ${r.status})` : r.error ? ` (${r.error.code})` : ''}; run gh auth status and gh pr view ${n} to see why`);
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
 // ruleset and the self-merge workflow can see it. success only when `eng verdict check --pr <n>` passes (a counted PASS
@@ -924,7 +926,7 @@ function prHead(n) {
   if (!/^\d+$/.test(n || '')) die('usage: eng verdict PASS|PASS+NOTES|FAIL|status ... --pr <n>, where <n> is the PR number');
   const r = spawnSync('gh', ['pr', 'view', String(Number(n)), '--json', 'headRefOid,state'], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
   let pr = null; try { pr = JSON.parse(r.stdout); } catch {}
-  if (r.status !== 0 || typeof pr?.headRefOid !== 'string') ghFailed(n, r);
+  if (r.status !== 0 || typeof pr?.headRefOid !== 'string' || !/^[A-Z_]+$/.test(pr.state)) ghFailed(n, r);
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
   if (pr.headRefOid !== head()) die(`verdict status: local HEAD ${head().slice(0, 8)} is not PR #${n} head ${pr.headRefOid.slice(0, 8)}; run gh pr checkout ${n} && git pull --ff-only`);
 }
@@ -942,22 +944,22 @@ function verdictStatus(n) {
 }
 // The PR's eng-verdict/v1 comments for exact head H, through self-merge's parse and trust rules (verifier_logins). git notes
 // do not travel with fetch or clone, so verifiers in separate clones share their verdicts only through these comments.
-function prVerdicts(cfg, n, H) {
+function prVerdicts(cfg, n) {
   if (!/^\d+$/.test(n)) die('usage: eng verdict check [--pr <n>]');
   const logins = cfg.ship?.self_merge?.verifier_logins ?? cfg.merge?.auto?.verifier_logins ?? null;
   if (logins !== null && !validLogins(logins)) die('verdict: verifier_logins lists the GitHub logins whose verdict comments count');
   const r = spawnSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY || '{owner}/{repo}'}/issues/${n}/comments?per_page=100`], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
   let pages = null; try { pages = JSON.parse(r.stdout); } catch {}
-  if (r.status !== 0 || !Array.isArray(pages)) ghFailed(n, r);
-  return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
+  if (r.status !== 0 || !Array.isArray(pages) || !pages.every(p => Array.isArray(p) && p.every(c => c && typeof c === 'object'))) ghFailed(n, r);
+  return trusted(parseVerdicts(pages.flat()), logins);
 }
 function verdictCheck() {
-  const cfg = loadConfig(), pr = arg('--pr');
-  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line. Without
-  // --pr HEAD is read after the evidence check, so a repo with no commits still gets its evidence check first.
-  const posted = pr ? prVerdicts(cfg, pr, head()) : [];
+  const cfg = loadConfig(), pr = process.argv.includes('--pr') ? arg('--pr') ?? '' : null;
+  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line. HEAD is
+  // read after the evidence check, so a repo with no commits still gets its evidence check first.
+  const prComments = pr !== null ? prVerdicts(cfg, pr) : [];
   evidenceCheck(cfg);
-  const H = head(), pid = patchId(cfg);
+  const H = head(), pid = patchId(cfg), posted = prComments.filter(v => v.sha === H);
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
@@ -1298,7 +1300,7 @@ const COMMANDS = [
   ['sync', 'sync [--check]', 'render AGENTS.md, SHIPPING.md, hooks and skills from eng.config.yml; --check fails on drift instead of writing', () => a.includes('--check') ? syncCheck() : sync()],
   ['lint', 'lint', 'fast fit: built-in and repo lint rules, and new credential-looking filenames where eng init baselined them; baselined findings pass', lint],
   ['run', 'run [--by <id>] [--ref <ref>] -- <cmd> | run --keep [--ref <ref>] | run down <dir> | run <name> | run --here -- <cmd>', 'run a command on the exact commit in a private worktree (--by: record it as verdict evidence), or a declared run in this checkout that must leave nothing behind', runCmd],
-  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (arg('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), arg('--pr') && verdictStatus(arg('--pr')))],
+  ['verdict', 'verdict PASS|PASS+NOTES|FAIL --by <id> [--review] [--evidence <p>] [--pr <n>] | verdict check [--pr <n>] | verdict status --pr <n>', 'record the verdict for HEAD from its runs; check that a PASS counts for this exact commit (risk:high: ship.high_risk.verifiers distinct verifiers)', () => a[0] === 'check' ? verdictCheck() : a[0] === 'status' ? verdictStatus(arg('--pr')) : (a.includes('--pr') && prHead(arg('--pr')), verdictRecord(a[0]), a.includes('--pr') && verdictStatus(arg('--pr')))],
   ['e2e', 'e2e [--if-required | --required [--json] [--exit-code]] [--event pr|main|nightly] [--base <ref>] [--files a,b] [--labels a,b] | e2e --flake-check [--runs N] [--results pass,fail,...]', 'the e2e verifier; --required only says whether this change needs it', e2e],
   ['rules', 'rules prove', 'prove each lint rule fails on its recorded mistake, and the Bend proofs when laws.enabled', () => a[0] === 'prove' ? rulesProve() : die('usage: eng rules prove')],
   ['gate', 'gate [--heavy] [--event pr|main [--base <ref>]] [<step>...]', 'run every script in verification.checks_dir under its budget, then every verifier in gates.required; skipped or missing = failed. Heavy checks run in CI or with --heavy; a gate that deferred one exits 3 (incomplete), and only exit 0 is a pass. Named steps run only those (checks = the scripts). --event pr: each check runs verification.flake_runs_pr times, and with verification.pr_checks: affected only the checks whose # covers: paths changed against the pull request target run (the CI PR base branch, else project.default_branch; a --base or ENG_BASE that is not that commit runs every check)', gate],
