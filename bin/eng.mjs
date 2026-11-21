@@ -58,11 +58,11 @@ function loadConfig() {
 // file, the line and a repeated key, never a stack trace.
 function parseConfig(text) {
   const doc = YAML.parseDocument(text), [e] = doc.errors;
-  if (!e) return doc.toJS();
+  if (!e) { try { return doc.toJS(); } catch (x) { die(`config invalid: eng.config.yml: the YAML does not parse (${x.message.split('\n')[0]})`); } }
   const at = e.linePos ? ` line ${e.linePos[0].line}` : '';
   if (e.code !== 'DUPLICATE_KEY') die(`config invalid: eng.config.yml${at}: the YAML does not parse (${e.message.split('\n')[0].replace(/ at line \d+, column \d+:$/, '')})`);
   let key = ''; // the repeated key is the one that starts where the error does
-  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { key = ` ${YAML.isScalar(p.key) ? p.key.value : p.key}`; return YAML.visit.BREAK; } } });
+  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { const k = String(YAML.isScalar(p.key) ? p.key.value : p.key); key = ` ${/^[\w./-]+$/.test(k) ? k : JSON.stringify(k)}`; return YAML.visit.BREAK; } } });
   die(`config invalid: eng.config.yml${at}: the key${key} is given twice`);
 }
 
