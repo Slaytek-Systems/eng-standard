@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, agentsBlockErrors, renderedValueErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, agentsBlockErrors, renderedValueErrors, LINE_BREAK, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -401,7 +401,10 @@ const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/rem
 function seedShipping(owner) {
   const doc = YAML.parseDocument(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
   const pj = JSON.parse(readOr('package.json', 'null')), pm = sh('git ls-files').split('\n').some(f => /^bun\.lockb?$/.test(f)) ? 'bun' : 'npm', base = defaultBranch();
-  doc.setIn(['project', 'name'], repoName() || path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir')))));
+  // project.name is rendered into the AGENTS.md block, so it must be one line: a package or folder name that holds a line
+  // break is passed over, and init never seeds a config it then refuses.
+  const names = [repoName(), path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir'))))];
+  doc.setIn(['project', 'name'], names.find(n => typeof n === 'string' && n && !LINE_BREAK.test(n)) ?? 'repo');
   doc.setIn(['project', 'default_branch'], base);
   doc.setIn(['project', 'protected_branches'], [base]);
   doc.setIn(['project', 'commands'], doc.createNode({ test: pj?.scripts?.test ? `${pm} run test` : "echo 'set project.commands.test in eng.config.yml' && exit 1" }));
