@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.17 (21 Nov 2026)
+
+**`eng init` creates its checks folder only through real folders** (Core task p571c2rmb8g236rq5hh6d5ra518jnef8, item 3). Since 0.23.15, `eng init` refuses a symlink, dangling or not, on the `verification.checks_dir` path before its first write, because it renders `<checks_dir>/.gitkeep`; tests now pin that. Two gaps are closed. First, `eng sync`, `sync --check` and `init` check the checks folder's path before render lists it for its check ids, so a linked checks folder is refused by name and never read through. Before, render listed the link's target first, and a target eng cannot list failed with EACCES. Second, a file where a rendered path needs a folder (such as a file named `.eng`) is refused before the first write, naming it (`.eng is not a folder`). Before, `eng init` wrote `eng.config.yml` and then failed with ENOTDIR, and `eng sync` failed partway through. eng assumes no other process changes the repo while it runs (decision note nd77zck0afcn1v9065ck8a6e018jmgg2).
+
 ## 0.23.16 (21 Nov 2026)
 
 **`eng sync`'s empty-folder cleanup never enters a symlink** (Core task p571c2rmb8g236rq5hh6d5ra518jnef8, item 2). After prune, `eng sync` removes empty folders under `agents.skills_dir`. It now looks up each folder with lstat before it enters or removes it. Before, it trusted the folder listing's file type, and Node decodes a name that is not UTF-8 to the same text another entry may have: a real folder named with the byte FF beside a symlink named U+FFFD made sync follow the symlink and remove empty folders outside the repo. A symlinked `skills_dir`, or a symlinked or unreadable folder on its path, was already refused before any write since 0.23.15, because every skill renders there. eng assumes no other process changes the repo while it runs (decision note nd77zck0afcn1v9065ck8a6e018jmgg2).

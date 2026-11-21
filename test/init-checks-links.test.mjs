@@ -1,7 +1,8 @@
 // eng init creates its checks folder (verification.checks_dir) only through real folders (Core task
 // p571c2rmb8g236rq5hh6d5ra518jnef8, item 3). init renders <checks_dir>/.gitkeep, so the write check from item 1 (#109)
-// looks up every folder on the checks folder's path before init's first write: a symlink there, dangling or not, is
-// refused, and init creates nothing, inside the repo or out. These tests pin that; init itself needed no change.
+// looks up every folder on the checks folder's path before init's first write: a symlink there, dangling or not, or a
+// file in a folder's place, is refused, and init creates nothing, inside the repo or out. The path is checked before
+// render lists the checks folder for its check ids, so a link there is never read through.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
