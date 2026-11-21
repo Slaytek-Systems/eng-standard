@@ -122,7 +122,7 @@ test('a dropped command is not a command: it prints the help and exits 1', () =>
 
 test('sync --check names the route: eng sync for a new check, and moving a hand edit out of the markers first', () => {
   assert.equal(eng('sync').status, 0);
-  const fix = /Fix: run eng sync and commit what it writes\. It overwrites hand edits to generated files, so move any first: into eng\.config\.yml, or for AGENTS\.md outside the <!-- eng:begin --> and <!-- eng:end --> markers\./;
+  const fix = /eng sync overwrites hand edits to generated files, so move any first: into eng\.config\.yml, or for AGENTS\.md outside the <!-- eng:begin --> and <!-- eng:end --> markers\.\nGenerated eng files are out of date\. Edit eng\.config\.yml if needed, then run eng sync and commit what it writes\.\n$/;
   fs.writeFileSync(path.join(dir, '.eng/checks/route.sh'), '#!/bin/sh\n# covers: README.md\nexit 0\n', { mode: 0o755 });
   let c = eng('sync', '--check');
   assert.equal(c.status, 1); assert.match(c.stderr, fix);
