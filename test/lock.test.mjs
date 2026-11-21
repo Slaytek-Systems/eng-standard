@@ -147,3 +147,70 @@ test('sync --check fails with no lock', () => {
   assert.notEqual(d.status, 0);
   assert.match(d.stderr, /\.eng\/lock\.json: config changed since last sync/);
 });
+
+// A lock eng must not act on is refused before any write or delete (B-lock, 21 Nov 2026). Until 0.23.10, {"files":"x"}
+// read as ["0"] (Object.keys of a string), so eng sync deleted a repo file named 0.
+const state = r => ({ status: r.git('status --porcelain --untracked-files=all'), lock: r.read('.eng/lock.json'), config: r.read('eng.config.yml') });
+function badLockRepo(lock) {
+  const r = repo();
+  fs.writeFileSync(r.file('0'), 'mine\n');
+  fs.rmSync(r.file('SHIPPING.md')); // a sync that ran would write it back
+  r.git('add -A'); r.git('commit -qm "a repo file named 0; SHIPPING.md gone"');
+  fs.writeFileSync(r.file('.eng/lock.json'), lock);
+  return r;
+}
+
+test('{"files":"x"} is refused: eng sync deletes no repo file named 0 and writes nothing', () => {
+  const r = badLockRepo('{"package":"0.23.9","files":"x"}\n'), before = state(r);
+  const s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  assert.match(s.stderr, /^eng: FAIL \.eng\/lock\.json: files must be a list of repo paths, not "x"\. Fix: /m);
+  assert.doesNotMatch(s.stdout, /wrote|removed|migrated/);
+  assert.equal(r.read('0'), 'mine\n');
+  assert.deepEqual(state(r), before);
+});
+
+const outside = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-lock-outside-')); dirs.push(outside);
+fs.writeFileSync(path.join(outside, 'keep'), 'not the repo\'s\n');
+for (const [what, lock, why] of [
+  ['an absolute path', { files: [path.join(outside, 'keep')] }, /\(absolute\)/],
+  ['a path that leaves the repo', { files: [`../${path.basename(outside)}/keep`] }, /\(leaves the repo \(\.\.\)\)/],
+  ['.. inside a path', { files: ['docs/../0'] }, /leaves the repo/],
+  ['a path with ./', { files: ['./0'] }, /\(not normalised\)/],
+  ['a path with //', { files: ['docs//0'] }, /\(not normalised\)/],
+  ['a trailing slash', { files: ['docs/'] }, /\(not normalised\)/],
+  ['a path inside .git', { files: ['.git/config'] }, /\(inside \.git\)/],
+  ['a backslash', { files: ['..\\0'] }, /\(contains a backslash\)/],
+  ['an empty path', { files: [''] }, /\(empty\)/],
+  ['a number', { files: [0] }, /0 \(not a string\)/],
+  ['null in the list', { files: ['AGENTS.md', null] }, /null \(not a string\)/],
+  ['a legacy { path: sha } key that leaves the repo', { files: { [`../${path.basename(outside)}/keep`]: 'x' } }, /leaves the repo/],
+  ['files a number', { files: 5 }, /files must be a list of repo paths, not 5/],
+  ['files null', { files: null }, /files must be a list of repo paths, not null/],
+  ['no files field', {}, /files must be a list of repo paths, not null/],
+  ['a list at the top', ['0'], /not a JSON object/],
+  ['not JSON', '{"files": [', /not valid JSON/],
+]) test(`a lock with ${what} is refused by sync, sync --check and init before any write or delete`, () => {
+  const r = badLockRepo(typeof lock === 'string' ? lock : JSON.stringify({ package: '0.23.9', ...(Array.isArray(lock) ? {} : lock) }) + '\n');
+  if (Array.isArray(lock)) fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(lock) + '\n');
+  const before = state(r);
+  for (const args of [['sync'], ['sync', '--check'], ['init']]) {
+    const s = r.eng(...args);
+    assert.equal(s.status, 1, `${args.join(' ')}: ${s.stdout}${s.stderr}`);
+    assert.match(s.stderr, /^eng: FAIL \.eng\/lock\.json: /m, args.join(' '));
+    assert.match(s.stderr, why, args.join(' '));
+    assert.doesNotMatch(s.stdout, /wrote|removed|migrated|seeded/, args.join(' '));
+    assert.deepEqual(state(r), before, args.join(' '));
+  }
+  assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'not the repo\'s\n');
+});
+
+test('a valid lock still prunes: a listed file the config no longer renders is removed', () => {
+  const r = repo();
+  const lock = JSON.parse(r.read('.eng/lock.json')); lock.files.push('docs/OLD.md');
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/OLD.md'), 'old render\n');
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /removed docs\/OLD\.md/);
+  assert.ok(!fs.existsSync(r.file('docs/OLD.md')));
+});
