@@ -50,9 +50,20 @@ const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 function loadConfig() {
   const p = path.join(ROOT, 'eng.config.yml');
   if (!fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
-  const cfg = YAML.parse(fs.readFileSync(p, 'utf8'));
+  const cfg = parseConfig(fs.readFileSync(p, 'utf8'));
   validate(cfg);
   return cfg;
+}
+// eng.config.yml text as data. YAML the parser refuses (a key given twice, broken syntax) is one plain line naming the
+// file, the line and a repeated key, never a stack trace.
+function parseConfig(text) {
+  const doc = YAML.parseDocument(text), [e] = doc.errors;
+  if (!e) return doc.toJS();
+  const at = e.linePos ? ` line ${e.linePos[0].line}` : '';
+  if (e.code !== 'DUPLICATE_KEY') die(`config invalid: eng.config.yml${at}: the YAML does not parse (${e.message.split('\n')[0].replace(/ at line \d+, column \d+:$/, '')})`);
+  let key = ''; // the repeated key is the one that starts where the error does
+  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { key = ` ${YAML.isScalar(p.key) ? p.key.value : p.key}`; return YAML.visit.BREAK; } } });
+  die(`config invalid: eng.config.yml${at}: the key${key} is given twice`);
 }
 
 // Cross-field rules that stop loosening (design §1.2, the parts v0 implements).
@@ -197,6 +208,7 @@ function syncPlan(seed = null, initFiles = () => []) {
   if (cfgWhy) die(`eng.config.yml: ${cfgWhy}. eng reads nothing through it and writes nothing. Fix: replace it with a real file in the repo, then run eng sync.`);
   const cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
+  parseConfig(cur);
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
