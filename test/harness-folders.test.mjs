@@ -265,7 +265,7 @@ test('a path that leaves the repo and comes back in (../<repo>/.claude/skills) i
   }
 });
 
-test('an old lock entry that names .claude/skills through ../<repo> is never pruned', () => {
+test('an old lock entry that names .claude/skills through ../<repo> is never pruned: the lock is refused (0.23.10)', () => {
   const r = repo(), back = `../${path.basename(r.dir)}`;
   const lock = JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8'));
   lock.files.push(`${back}/.claude/skills/developer.md`, `${back}/.claude/agents/developer.md`);
@@ -273,7 +273,8 @@ test('an old lock entry that names .claude/skills through ../<repo> is never pru
   fs.mkdirSync(r.file('.claude/skills'), { recursive: true }); fs.writeFileSync(r.file('.claude/skills/developer.md'), 'mine\n');
   fs.mkdirSync(r.file('.claude/agents'), { recursive: true }); fs.writeFileSync(r.file('.claude/agents/developer.md'), 'mine\n');
   const before = claudeFolders(r);
-  const res = r.eng(['sync']); assert.equal(res.status, 0, out(res));
+  const res = r.eng(['sync']); assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /\.eng\/lock\.json: files lists 2 entries that are not relative repo file paths: .*\(has a \. or \.\. segment\)/);
   assert.deepEqual(claudeFolders(r), before);
 });
 

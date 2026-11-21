@@ -139,10 +139,13 @@ const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json
 const readLock = () => { try { return parseLock(readOr('.eng/lock.json')); } catch (e) { return die(e.message); } };
 const standardProblems = () => lifecycleProblems({ lockVersion: readLock().package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
+const repoKey = p => path.posix.normalize(p.replace(/^\/+/, ''));
+const renderedExecutables = cfg => new Set([...executables(cfg)].map(repoKey));
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
-  const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
+  // Keyed by the repo path eng writes, so the lock never records ./agents/x (skills_dir .claude) or /x, which it refuses.
+  const files = Object.fromEntries(Object.entries(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'))).map(([p, c]) => [repoKey(p), c]));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
@@ -198,7 +201,7 @@ function sync() {
   const old = readLock();
   const migrated = migrateConfig();
   const cfg = loadConfig();
-  const files = render(cfg), exec = executables(cfg);
+  const files = render(cfg), exec = renderedExecutables(cfg);
   let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
@@ -295,7 +298,7 @@ function syncCheck() {
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
-  for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
+  for (const p of renderedExecutables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');

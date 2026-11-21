@@ -217,3 +217,14 @@ test('with the update notice on, a bad lock is refused before the notice writes 
     assert.deepEqual(fs.readdirSync(xdg), [], `eng ${cmd.join(' ')} wrote the update cache before refusing`);
   }
 });
+
+test('eng never locks a path it would refuse: skills_dir .claude and checks_dir ./ or / sync twice and pass sync --check', () => {
+  for (const [from, to] of [['skills_dir: .agents/skills', 'skills_dir: .claude'], ['checks_dir: .eng/checks', 'checks_dir: ./.eng/checks'], ['checks_dir: .eng/checks', 'checks_dir: /.eng/checks']]) {
+    const r = repo();
+    r.edit('eng.config.yml', s => { assert.ok(s.includes(from), from); return s.replace(from, to); });
+    for (const args of [['sync'], ['sync'], ['sync', '--check']]) { const d = r.eng(...args); assert.equal(d.status, 0, `${to}: eng ${args.join(' ')}: ${d.stderr}`); }
+    const files = JSON.parse(r.read('.eng/lock.json')).files;
+    assert.ok(files.includes('.eng/checks/.gitkeep'), `${to}: ${files.filter(f => f.includes('checks'))}`);
+    if (to === 'skills_dir: .claude') assert.ok(files.includes('agents/poteto-agent.md'), files.filter(f => f.includes('agents/')).slice(0, 3));
+  }
+});
