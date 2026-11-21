@@ -910,6 +910,14 @@ function verdictRecord(result) {
   try { postVerdict(engCtx(), arg('--pr'), rec, cfg); } catch (e) { die(`verdict: could not post the verdict comment: ${e.message}`); }
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
+// --pr <n> reaches GitHub through gh, which finds the repo from GH_REPO or a git remote (GITHUB_REPOSITORY names it for
+// the comments). With none pointing at GitHub, refuse in one line before gh runs, instead of gh's stack trace.
+function needGitHub(n) {
+  if (!/^\d+$/.test(n || '') || process.env.GH_REPO || process.env.GITHUB_REPOSITORY) return;
+  const r = spawnSync('git', ['remote', '-v'], { cwd: ROOT, encoding: 'utf8' });
+  if (r.status !== 0 || /[@/]github\.com[:/]/i.test(r.stdout)) return;
+  die(`verdict: PR #${n} needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr`);
+}
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
 // ruleset and the self-merge workflow can see it. success only when `eng verdict check --pr <n>` passes (a counted PASS
 // for this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers, counting the PR's verdict
@@ -1337,6 +1345,7 @@ if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 else if (found) {
   const late = cmd === 'sync' || cmd === 'init', cfgPath = path.join(ROOT, 'eng.config.yml');
   if (READS_CONFIG_FIRST[cmd]?.()) { CONFIG_TEXT = fs.existsSync(cfgPath) && fs.readFileSync(cfgPath, 'utf8'); if (CONFIG_TEXT !== false) loadConfig({ quiet: true }); }
+  if (cmd === 'verdict') needGitHub(arg('--pr')); // before the update notice: its one line is the only output
   if (cmd !== 'doctor' && !late) await updateNotice();
   found[3]();
   if (late) await updateNotice();
