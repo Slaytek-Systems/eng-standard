@@ -106,11 +106,18 @@ test('eng init in a repo that already ships refuses a seeded config that cannot 
   assert.deepEqual(snapshot(dir), before, 'init wrote neither eng.config.yml nor CODEOWNERS');
 });
 
-test('a checks folder init creates that is named like a PR template renders as it did, and sync --check then passes', () => {
+// Since 0.23.24 a checks folder GitHub reads as a PR template folder is a config error (Core task p57daqhz): eng's check
+// scripts would be offered as PR templates. Before, init created it and rendered no template, and sync --check passed.
+test('a checks folder named like a PR template folder is refused by init and sync --check before any write', () => {
   const r = repo(t => t.replace(/^( {2}checks_dir: ).*$/m, '$1.github/PULL_REQUEST_TEMPLATE')); noChecksDir(r);
   fs.rmSync(path.join(r.dir, '.github/PULL_REQUEST_TEMPLATE'), { recursive: true, force: true });
-  const i = r.eng(['init']); assert.equal(i.status, 0, i.stderr);
-  const c = r.eng(['sync', '--check']); assert.equal(c.status, 0, c.stderr);
+  const before = snapshot(r.dir);
+  for (const args of [['init'], ['sync', '--check']]) {
+    const s = r.eng(args);
+    assert.equal(s.status, 1, s.stdout + s.stderr);
+    assert.match(s.stderr, /^ {2}verification\.checks_dir \("\.github\/PULL_REQUEST_TEMPLATE"\) is in \.github\/PULL_REQUEST_TEMPLATE, which GitHub reads as a PR template folder/m);
+    assert.deepEqual(snapshot(r.dir), before, `${args.join(' ')} wrote nothing`);
+  }
 });
 
 test('sync --check reads the lock before the config, so a bad lock is the refusal it reports (review round 2)', () => {

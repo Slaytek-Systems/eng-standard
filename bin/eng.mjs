@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
@@ -88,11 +88,32 @@ function harnessConfigErrors(c) {
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
   return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
 }
+// GitHub reads a PULL_REQUEST_TEMPLATE/ folder (any case) at the root, in .github or in docs, and ownPrTemplates counts it
+// as the repo's own PR template. A skills or checks folder there would turn eng's own output into the repo's template:
+// the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
+// (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
+// template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
+// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted with every character outside
+// printable ASCII as \\uXXXX (U+2028 ends a line for many readers), so it stays on one line.
+const asciiQuoted = v => JSON.stringify(v).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+const PR_TEMPLATE_DIR = /^pull_request_template$/i;
+const prTemplateDirOf = p => {
+  const [a, b = ''] = (repoRel(p) ?? '').split('/');
+  return PR_TEMPLATE_DIR.test(a) ? a : /^(\.github|docs)$/i.test(a) && PR_TEMPLATE_DIR.test(b) ? `${a}/${b}` : null;
+};
+function prTemplateDirErrors(c) {
+  const dirs = [[c?.agents?.skills_dir, 'agents.skills_dir', '.agents/skills'], [checksDir(c), 'verification.checks_dir', '.eng/checks']];
+  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what, dflt]) => {
+    const t = prTemplateDirOf(d);
+    return t ? [`${what} (${asciiQuoted(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
+  });
+}
 function configErrors(c) {
   const errs = [];
   if (!c || typeof c !== 'object') return ['eng.config.yml is not a mapping'];
   errs.push(...dirValueErrors(c));
   errs.push(...harnessConfigErrors(c));
+  errs.push(...prTemplateDirErrors(c));
   if (c.version !== 1) errs.push('version must be 1');
   if (!c.merge?.owner || !c.merge?.command) errs.push('merge.owner and merge.command are required (no global merge rule)');
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
@@ -326,8 +347,9 @@ function sync(plan = syncPlan()) {
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read. syncPlan refused a symlink on skills_dir's path (every skill
   // renders there). Each path is looked up with lstat, not the listing's type: a name that is not UTF-8 decodes to one
-  // another entry may have, so the listing's type can belong to a different file. A symlink is never entered.
-  const walk = x => { let ns; try { ns = fs.readdirSync(x); } catch { return; } for (const n of ns) { const c = path.join(x, n); let st; try { st = fs.lstatSync(c); } catch { continue; } if (!st.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
+  // another entry may have, so the listing's type can belong to a different file. A symlink is never entered. Nor is a PR
+  // template folder (skills_dir docs or .github): it is the repo's, and removing an empty one would change the next plan.
+  const walk = x => { let ns; try { ns = fs.readdirSync(x); } catch { return; } for (const n of ns) { const c = path.join(x, n); let st; try { st = fs.lstatSync(c); } catch { continue; } if (!st.isDirectory() || harnessOut(path.relative(ROOT, c)) || prTemplateDirOf(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
   walk(path.join(ROOT, cfg.agents.skills_dir));
   const lock = lockText(pkgVersion(), Object.keys(files));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
@@ -1194,9 +1216,10 @@ async function upgradeInfo() {
   const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
   return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
 }
-// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
+// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root. It stops at
+// a PR template folder: the plan counted it as the repo's own template, so removing it would change the next plan.
 function rmEmptyParents(p) {
-  for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
+  for (let d = path.dirname(p); d !== '.' && !harnessOut(d) && prTemplateDirOf(d) !== d; d = path.dirname(d)) {
     try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
     console.log(`  removed ${d}/`);
   }
