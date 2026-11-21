@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, agentsBlockErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, agentsBlockErrors, agentsBlockSpan, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -140,6 +140,8 @@ const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
+  const span = agentsBlockSpan(readOr('AGENTS.md') ?? '');
+  if (span.error) die(span.error);
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
@@ -170,18 +172,15 @@ function skillVisibilityOf(cfg) {
 const claudeVisibility = cfg => cfg.agents.harnesses.includes('claude-code') ? claudeLine(skillVisibilityOf(cfg)) : null;
 const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
-// Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
-function migrateConfig() {
-  const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
-  if (cur === null) return 0;
+// What this release migrates in eng.config.yml (lib/migrate.mjs): the new text, keeping every other byte, and each change.
+// null when nothing is due. It writes nothing: eng sync writes it only after every check that could refuse has passed.
+function configMigration() {
+  const cur = readOr('eng.config.yml');
+  if (cur === null) return null;
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
-  if (!changes.length) return 0;
-  validate(YAML.parse(added?.text ?? text));
-  fs.writeFileSync(p, added?.text ?? text);
-  for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
-  return changes.length;
+  return changes.length ? { text: added?.text ?? text, changes } : null;
 }
 // Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
 function graphiteRepo() {
@@ -193,10 +192,16 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
 function sync() {
-  const migrated = migrateConfig();
-  const cfg = loadConfig();
+  // Everything that can refuse runs before the first write, so a refusal leaves the repo as it was (config included).
+  const mig = configMigration();
+  const cfg = mig ? YAML.parse(mig.text) : loadConfig();
+  if (mig) validate(cfg);
   const files = render(cfg), exec = executables(cfg);
-  let changed = migrated;
+  if (mig) {
+    fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), mig.text);
+    for (const m of mig.changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
+  }
+  let changed = mig?.changes.length ?? 0;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
     if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;

@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.10 (21 Nov 2026)
+
+**`eng sync` finds the AGENTS.md block only by whole marker lines outside fenced code, and a refusal writes nothing** (Core task p57dd5k4fvwcf37hbc4a1hbwjh8jnq77, found in review of #98; the bugs predate it). Before, eng found the block by substring.
+
+- Repo text that quoted `<!-- eng:begin -->` inline was taken for the block start, and eng sync deleted the repo text between the quote and the real block. Now a marker counts only as a whole line (up to three spaces of indent, trailing spaces allowed).
+- A marker pair in a fenced example (```` ``` ```` or `~~~`) was taken for the block, and eng sync overwrote the example. Fenced code is now repo text, above or below the real block. An example and no block: eng appends the block after it.
+- Marker lines that are not one begin then one end, or a fence that never closes when eng must append the block, make `eng sync`, `eng sync --check` and `eng doctor` stop with the fix.
+- With such markers, eng sync used to write the `git.rewrite_pushed` migration to `eng.config.yml` before it refused. It now checks everything before its first write, so a refusal leaves every file as it was.
+- **Upgrade:** move the pin, install and run `eng sync`. Nothing rendered changes for an AGENTS.md with one block and no markers elsewhere.
+
 ## 0.23.9 (21 Nov 2026)
 
 **The rendered AGENTS.md block is a short router, a practice catalogue starts, and the README opens with why eng exists** (decision 21 Nov 2026, Core task p57cskzqr04wnkb56rdr0vsr1h8jmnem). A three-repo audit found the repo without eng easier for agents than the one with it: its 138-line rendered AGENTS.md (v0.18.0) and 266-line SHIPPING.md contradicted the repo's own rules in 6 places.
