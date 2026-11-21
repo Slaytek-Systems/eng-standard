@@ -47,20 +47,21 @@ const run = (c, cwd = ROOT) => spawnSync('bash', ['-c', c], { cwd, encoding: 'ut
 function withTmp(cfg) { const t = engTmp(cfg); RUN_ENV = t.env; if (t.owned) console.log(`  ENG_TMP=${t.dir} (removed on exit)`); return t; }
 const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 
-function loadConfig() {
+// quiet: parse and validate only, without YAML warnings (the command prints them when it loads the config itself).
+function loadConfig({ quiet = false } = {}) {
   const p = path.join(ROOT, 'eng.config.yml');
   if (!fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
-  const cfg = parseConfig(fs.readFileSync(p, 'utf8'));
+  const cfg = parseConfig(fs.readFileSync(p, 'utf8'), quiet);
   validate(cfg);
   return cfg;
 }
 // eng.config.yml text as data. YAML the parser refuses is one line built only from text eng controls: the file, the line
 // and a repeated key, JSON-escaped and cut to 40 characters. The parser's own reason is never printed, so nothing from the
 // file can break the line.
-function parseConfig(text) {
+function parseConfig(text, quiet = false) {
   const doc = YAML.parseDocument(text), [e] = doc.errors;
   const bad = 'config invalid: eng.config.yml';
-  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
+  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } if (!quiet) doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
   const at = e.linePos ? `${bad} line ${e.linePos[0].line}` : bad;
   if (e.code !== 'DUPLICATE_KEY') die(`${at}: the YAML does not parse`);
   let k = ''; // the repeated key is the one that starts where the error does
@@ -529,8 +530,8 @@ function lintHits(cfg) {
 }
 function lint() {
   // Lint gates on this checkout's own config, so a PR's own gate level applies in that PR (Matt, 10 Nov 2026).
-  if (process.argv.includes('--config-from')) console.log('  --config-from is ignored since 0.18.2: lint uses this checkout\'s eng.config.yml');
   const cfg = loadConfig();
+  if (process.argv.includes('--config-from')) console.log('  --config-from is ignored since 0.18.2: lint uses this checkout\'s eng.config.yml');
   let hits = lintHits(cfg);
   // A repo that adopted the standard while shipping (eng init): findings in renovation/baselines/ pass; only new ones fail. warn mode reports only.
   const bl = readOr(baselinePath('lint'));
@@ -1231,10 +1232,12 @@ function rmEmptyParents(p) {
   }
 }
 async function doctor() {
+  // The config is read first, so a config error is doctor's only output (no version line before it).
+  const cfg = loadConfig();
   if (a.includes('--launch')) launchCheck();
   const up = await upgradeInfo();
   console.log(up.line);
-  const cfg = loadConfig(), merges = mergeDoctor(cfg);
+  const merges = mergeDoctor(cfg);
   // Toolchain detection counts the product: what eng itself installs (rendered skills and their lockfiles, or the eng
   // package vendored inside the repo) is not the repo's tooling.
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
@@ -1276,13 +1279,24 @@ const COMMANDS = [
   ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
-function runCmd() {
+// Which eng run this is: here (--here), scratch (a private worktree), named (a declared run), or null (usage).
+function runRoute() {
   const dd = a.indexOf('--'), opts = dd >= 0 ? a.slice(0, dd) : a;
-  if (opts.includes('--here')) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a.slice(dd));
-  if (dd >= 0 || opts.includes('--keep') || opts[0] === 'down') return scratchRun(engCtx(), a);
-  if (opts.length === 1) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', opts[0]]);
+  return opts.includes('--here') ? 'here' : dd >= 0 || opts.includes('--keep') || opts[0] === 'down' ? 'scratch' : opts.length === 1 ? 'named' : null;
+}
+function runCmd() {
+  const route = runRoute(), dd = a.indexOf('--');
+  if (route === 'here') return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a.slice(dd));
+  if (route === 'scratch') return scratchRun(engCtx(), a);
+  if (route === 'named') return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', a[0]]);
   die(RUN_USAGE);
 }
+// The commands whose first step is reading this checkout's eng.config.yml. They read it before the update notice, so a
+// config error is their only output and the notice writes no cache. Not here: sync and init (their notice prints after
+// they run), doctor (it reads the config first itself), merge gate (its settings may come from the merge queue's base, and
+// it reads them only once it has a PR) and eng run in a private worktree.
+const READS_CONFIG_FIRST = { lint: () => true, gate: () => true, e2e: () => true, verdict: () => true, rules: () => a[0] === 'prove',
+  merge: () => a[0] === 'post', run: () => runRoute() === 'here' || runRoute() === 'named' };
 // One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
 async function updateNotice() {
   try {
@@ -1300,7 +1314,14 @@ const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 // sync and init print the update notice after they run, so a refusal never lets it write its cache.
-else if (found) { const late = cmd === 'sync' || cmd === 'init'; if (cmd !== 'doctor' && !late) await updateNotice(); found[3](); if (late) await updateNotice(); }
+// A command that reads the config first validates it before the notice (a missing eng.config.yml keeps the notice first).
+else if (found) {
+  const late = cmd === 'sync' || cmd === 'init';
+  if (READS_CONFIG_FIRST[cmd]?.() && fs.existsSync(path.join(ROOT, 'eng.config.yml'))) loadConfig({ quiet: true });
+  if (cmd !== 'doctor' && !late) await updateNotice();
+  found[3]();
+  if (late) await updateNotice();
+}
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);

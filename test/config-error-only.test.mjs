@@ -33,8 +33,8 @@ function repo(config) {
 
 const INVALID = [
   ['a rule the config breaks', TPL.replace(/^version: 1$/m, 'version: 2'), /^eng: FAIL config invalid:\n {2}version must be 1$/m],
-  ['YAML that does not parse', `${TPL}\nbroken: [\n`, /^eng: FAIL config invalid: eng\.config\.yml line \d+: the YAML does not parse$/],
-  ['a key given twice', `${TPL}\nversion: 1\n`, /^eng: FAIL config invalid: eng\.config\.yml line \d+: a key is given twice: "version"$/],
+  ['YAML that does not parse', `${TPL}\nbroken: [\n`, /^eng: FAIL config invalid: eng\.config\.yml line \d+: the YAML does not parse$/m],
+  ['a key given twice', `${TPL}\nversion: 1\n`, /^eng: FAIL config invalid: eng\.config\.yml line \d+: a key is given twice: "version"$/m],
 ];
 // Every command whose first step is reading this checkout's eng.config.yml.
 const COMMANDS = [
