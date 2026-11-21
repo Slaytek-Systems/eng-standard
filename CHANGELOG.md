@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.11 (21 Nov 2026)
+
+**`eng sync`, `sync --check` and `init` refuse a `.eng/lock.json` whose `files` is not a list of relative repo file paths, before they write or delete anything** (Core task p57fyte3f4p0p305bjjkzmzbwh8jmj6m, piece B-lock): a lock that is not a JSON object, `files` that is not a list (`{"files":"x"}` read as `["0"]`, so `eng sync` deleted a repo file named `0`), and any entry that is not a string, is empty or absolute, has a `.`, `..` or empty segment, a trailing slash, a backslash or a NUL byte, or a `.git` segment anywhere (`sub/.git/config`); the 0.11.0 `{path: sha256}` object is still read when every value is a sha256 hash, and its paths pass the same checks; the refusal names each entry and why, and exits 1. eng now locks the path it writes, so `skills_dir: .claude` (subagents in `agents/`, locked as `./agents/...` before) never gives a lock it refuses, and `checks_dir: ./.eng/checks` or `/.eng/checks` is a config error since 0.23.10, so sync writes no lock for it; a lock an earlier version wrote that way is refused once: correct those entries.
+
 ## 0.23.10 (21 Nov 2026)
 
 **Config validation refuses a `*_dir` value that is not a normalised relative repo path, or that holds `<!--`** (piece B-values, Core task p576xqexf3yb2xmgmzx3hh6fq58jnwgx). `verification.checks_dir`, `agents.skills_dir`, `e2e.evidence_dir` and every other `*_dir` key build repo paths, and some are rendered into the AGENTS.md block. An empty, absolute (`/.eng/checks`), `./` or `../<repo>/` value, a `.` or `..` segment, an empty segment, a backslash, a NUL, `<!--` or a set value that is not a string is now a config error: `eng sync`, `sync --check`, `init` and the gate exit 1 before writing anything. Before, sync wrote such a value into the lock and the block, and the gate ran the raw path.
