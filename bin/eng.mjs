@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, agentsBlockErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, agentsBlockErrors, agentsBlockSpan, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -140,6 +140,8 @@ const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
+  const span = agentsBlockSpan(readOr('AGENTS.md'));
+  if (span?.error) die(span.error);
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
@@ -1072,7 +1074,7 @@ async function doctor() {
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
   const ownPkg = f => pkgRel && !pkgRel.startsWith('..') && !path.isAbsolute(pkgRel) && (f === pkgRel || f.startsWith(`${pkgRel}/`));
   const files = repoFiles().filter(f => f && !installed.has(f) && !ownPkg(f));
-  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
+  const checks = [rewriteModeLine(cfg), ...hookCommandChecks(cfg), ...(renderErrors(cfg).length || agentsBlockSpan(readOr('AGENTS.md'))?.error ? [] : [prTemplateLine(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))]), ...doctorConfig(cfg, files, readOr), ...merges, ...unenforced(cfg).map(what => ({ ok: false, what, fix: 'name the enforcer in agents.rules or eng.config.yml constraints' })),
     ...standardProblems().map(p => { const [what, fix] = p.split('. Fix: '); return { ok: false, what, fix }; })];
   for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}${c.ok ? '' : `  (fix: ${c.fix})`}`);
   console.log(`  NOTE ${PASS_PROVES}`);
