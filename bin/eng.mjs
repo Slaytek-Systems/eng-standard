@@ -62,7 +62,7 @@ function parseConfig(text) {
   const at = e.linePos ? ` line ${e.linePos[0].line}` : '';
   if (e.code !== 'DUPLICATE_KEY') die(`config invalid: eng.config.yml${at}: the YAML does not parse (${e.message.split('\n')[0].replace(/ at line \d+, column \d+:$/, '')})`);
   let key = ''; // the repeated key is the one that starts where the error does
-  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { const k = String(YAML.isScalar(p.key) ? p.key.value : p.key); key = ` ${/^[\w./-]+$/.test(k) ? k : JSON.stringify(k)}`; return YAML.visit.BREAK; } } });
+  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { const k = String(YAML.isScalar(p.key) ? p.key.value : p.key); key = ` ${/^[\w./-]+$/.test(k) ? k : JSON.stringify(k).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}`; return YAML.visit.BREAK; } } });
   die(`config invalid: eng.config.yml${at}: the key${key} is given twice`);
 }
 
