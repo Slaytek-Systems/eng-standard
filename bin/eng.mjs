@@ -48,10 +48,13 @@ function withTmp(cfg) { const t = engTmp(cfg); RUN_ENV = t.env; if (t.owned) con
 const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 
 // quiet: parse and validate only, without YAML warnings (the command prints them when it loads the config itself).
+// CONFIG_TEXT: the text dispatch checked before the update notice. The command parses that same text, so a file saved
+// while the notice waited cannot slip a different config past the check.
+let CONFIG_TEXT = null;
 function loadConfig({ quiet = false } = {}) {
   const p = path.join(ROOT, 'eng.config.yml');
-  if (!fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
-  const cfg = parseConfig(fs.readFileSync(p, 'utf8'), quiet);
+  if (CONFIG_TEXT === null && !fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
+  const cfg = parseConfig(CONFIG_TEXT ?? fs.readFileSync(p, 'utf8'), quiet);
   validate(cfg);
   return cfg;
 }
@@ -530,8 +533,8 @@ function lintHits(cfg) {
 }
 function lint() {
   // Lint gates on this checkout's own config, so a PR's own gate level applies in that PR (Matt, 10 Nov 2026).
-  const cfg = loadConfig();
   if (process.argv.includes('--config-from')) console.log('  --config-from is ignored since 0.18.2: lint uses this checkout\'s eng.config.yml');
+  const cfg = loadConfig();
   let hits = lintHits(cfg);
   // A repo that adopted the standard while shipping (eng init): findings in renovation/baselines/ pass; only new ones fail. warn mode reports only.
   const bl = readOr(baselinePath('lint'));
@@ -1232,12 +1235,10 @@ function rmEmptyParents(p) {
   }
 }
 async function doctor() {
-  // The config is read first, so a config error is doctor's only output (no version line before it).
-  const cfg = loadConfig();
   if (a.includes('--launch')) launchCheck();
   const up = await upgradeInfo();
   console.log(up.line);
-  const merges = mergeDoctor(cfg);
+  const cfg = loadConfig(), merges = mergeDoctor(cfg);
   // Toolchain detection counts the product: what eng itself installs (rendered skills and their lockfiles, or the eng
   // package vendored inside the repo) is not the repo's tooling.
   const installed = new Set(renderErrors(cfg).length ? [] : Object.keys(render(cfg))), pkgRel = path.relative(ROOT, PKG);
@@ -1291,12 +1292,14 @@ function runCmd() {
   if (route === 'named') return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', a[0]]);
   die(RUN_USAGE);
 }
-// The commands whose first step is reading this checkout's eng.config.yml. They read it before the update notice, so a
-// config error is their only output and the notice writes no cache. Not here: sync and init (their notice prints after
-// they run), doctor (it reads the config first itself), merge gate (its settings may come from the merge queue's base, and
-// it reads them only once it has a PR) and eng run in a private worktree.
-const READS_CONFIG_FIRST = { lint: () => true, gate: () => true, e2e: () => true, verdict: () => true, rules: () => a[0] === 'prove',
-  merge: () => a[0] === 'post', run: () => runRoute() === 'here' || runRoute() === 'named' };
+// The commands that read this checkout's eng.config.yml before any other refusal. When the file exists, dispatch checks it
+// before the update notice, doctor's version line and lint's --config-from advisory, so a config error is their only
+// output and the notice writes no cache. Each command still prints its own output, warnings included, where it did. Not
+// here: sync and init (their notice prints after they run), merge gate (its settings may come from the merge queue's base,
+// and it reads them only once it has a PR), eng run in a private worktree, and verdict status without a numeric --pr
+// (a usage error, before any config).
+const READS_CONFIG_FIRST = { lint: () => true, doctor: () => true, gate: () => true, e2e: () => true, rules: () => a[0] === 'prove',
+  verdict: () => a[0] !== 'status' || /^\d+$/.test(arg('--pr') || ''), merge: () => a[0] === 'post', run: () => runRoute() === 'here' || runRoute() === 'named' };
 // One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
 async function updateNotice() {
   try {
@@ -1314,10 +1317,10 @@ const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 // sync and init print the update notice after they run, so a refusal never lets it write its cache.
-// A command that reads the config first validates it before the notice (a missing eng.config.yml keeps the notice first).
+// A command that reads the config first checks it before the notice (a missing eng.config.yml keeps the old order).
 else if (found) {
-  const late = cmd === 'sync' || cmd === 'init';
-  if (READS_CONFIG_FIRST[cmd]?.() && fs.existsSync(path.join(ROOT, 'eng.config.yml'))) loadConfig({ quiet: true });
+  const late = cmd === 'sync' || cmd === 'init', cfgPath = path.join(ROOT, 'eng.config.yml');
+  if (READS_CONFIG_FIRST[cmd]?.() && fs.existsSync(cfgPath)) { CONFIG_TEXT = fs.readFileSync(cfgPath, 'utf8'); loadConfig({ quiet: true }); }
   if (cmd !== 'doctor' && !late) await updateNotice();
   found[3]();
   if (late) await updateNotice();
