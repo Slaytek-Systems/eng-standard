@@ -190,9 +190,10 @@ const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
 // Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
 // what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
-// their first write, so a refusal writes nothing. init passes the config it is about to seed.
-function syncPlan(seed = null) {
-  const old = readLock(), cfgWhy = seed === null && writeProblem('eng.config.yml');
+// their first write, so a refusal writes nothing. init passes the config it is about to seed and the other files it
+// writes (initFiles(cfg): the seed's files, and the renovation baselines), so those are checked before the first write too.
+function syncPlan(seed = null, initFiles = () => []) {
+  const old = readLock(), cfgWhy = writeProblem('eng.config.yml');
   if (cfgWhy) die(`eng.config.yml: ${cfgWhy}. eng reads nothing through it and writes nothing. Fix: replace it with a real file in the repo, then run eng sync.`);
   const cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
@@ -203,9 +204,9 @@ function syncPlan(seed = null) {
   validate(cfg);
   // render reads AGENTS.md and SHIPPING.md to keep the repo's own text, and lists the checks folder for its check ids,
   // so a link there is refused before it is read.
-  const always = ['eng.config.yml', '.eng/lock.json', 'AGENTS.md', 'SHIPPING.md'];
+  const always = ['eng.config.yml', '.eng/lock.json', 'AGENTS.md', 'SHIPPING.md', ...initFiles(cfg)];
   refuseClashes([...always, repoKey(`${checksDir(cfg)}/.gitkeep`)]);
-  refuseWrites(['AGENTS.md', 'SHIPPING.md', `${checksDir(cfg)}/.gitkeep`]);
+  refuseWrites(['AGENTS.md', 'SHIPPING.md', `${checksDir(cfg)}/.gitkeep`, ...initFiles(cfg)]);
   const files = render(cfg);
   refuseClashes([...always, ...Object.keys(files)]);
   refuseWrites(Object.keys(files));
@@ -330,18 +331,21 @@ function init() {
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   let seed = null;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), write() {
+    const proofs = path.join(PKG, 'templates/rule-proofs');
+    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), files: fs.readdirSync(proofs, { recursive: true }).filter(f => fs.statSync(path.join(proofs, f)).isFile()).map(f => path.posix.join('.eng/rule-proofs', f.split(path.sep).join('/'))), write() {
       fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), this.text); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
       // The starter config's example lint rule names this fixture as its proof; eng doctor and eng rules prove need it on disk.
       fs.cpSync(path.join(PKG, 'templates/rule-proofs'), path.join(ROOT, '.eng/rule-proofs'), { recursive: true }); console.log('  seeded .eng/rule-proofs/no-focused-tests (the example rule\'s proof)');
     } };
     else seed = seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
-  let plan = syncPlan(seed?.text);
+  // Every file init writes besides the render: the seed's, and each renovation baseline (written only when missing).
+  const initFiles = cfg => [...(seed?.files ?? []), ...(cfg.renovation ? BASELINE_KINDS.map(baselinePath) : [])];
+  let plan = syncPlan(seed?.text, initFiles);
   seed?.write();
   // A new checks folder can change what renders (one named like a PR template), so the plan is made again once it exists.
   const checks = path.join(ROOT, checksDir(plan.cfg));
-  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(); }
+  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(null, initFiles); }
   const cfg = plan.cfg;
   sync(plan);
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
@@ -368,10 +372,12 @@ function seedShipping(owner) {
   doc.setIn(['renovation'], doc.createNode({ version: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version, policy_owner: owner }));
   const text = String(doc), errs = configErrors(YAML.parse(text));
   if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
-  // init writes it only after the sync plan for this text passes.
-  return { text, write() {
+  // init writes it only after the sync plan for this text passes. CODEOWNERS is the first one there, looked up without
+  // reading it, so the plan's write check refuses a folder or link there before the first write.
+  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => folderProblem(p) === false && fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false })) || '.github/CODEOWNERS';
+  return { text, files: [co], write() {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
-    const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
+    const cur = readOr(co, '');
     if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
       fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
       fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
