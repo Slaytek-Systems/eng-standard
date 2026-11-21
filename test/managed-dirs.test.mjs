@@ -102,3 +102,45 @@ test('a real file at each managed path still syncs, as before', () => {
   assert.match(s.stdout, /wrote STACK\.md/);
   assert.equal(r.eng('sync', '--check').status, 0);
 });
+
+// init's other writes (review round 1): the starter config's rule proof, CODEOWNERS and the renovation baselines are
+// checked with the render, before init seeds eng.config.yml or writes anything else.
+const shipping = () => {
+  const r = repo(null);
+  fs.writeFileSync(r.file('README.md'), 'hi\n');
+  execSync('git add README.md && git commit -qm init', { cwd: r.dir, stdio: 'pipe' });
+  return r;
+};
+
+test('init refuses a folder where the starter config\'s rule proof goes, before seeding eng.config.yml', () => {
+  const r = repo(null);
+  fs.mkdirSync(r.file('.eng/rule-proofs/no-focused-tests/src/cart.test.ts.fixture'), { recursive: true });
+  refuses(r, /\.eng\/rule-proofs\/no-focused-tests\/src\/cart\.test\.ts\.fixture is a folder/, [['init']]);
+  assert.equal(fs.existsSync(r.file('eng.config.yml')), false);
+});
+
+test('init refuses a folder at .github/CODEOWNERS in a repo that already ships, before seeding eng.config.yml', () => {
+  const r = shipping();
+  fs.mkdirSync(r.file('.github/CODEOWNERS'), { recursive: true });
+  refuses(r, /\.github\/CODEOWNERS is a folder/, [['init', '--owner', '@o']]);
+  assert.equal(fs.existsSync(r.file('eng.config.yml')), false);
+});
+
+test('init refuses a folder at a renovation baseline before writing anything', () => {
+  const r = shipping();
+  fs.mkdirSync(r.file('renovation/baselines/lint.json'), { recursive: true });
+  refuses(r, /renovation\/baselines\/lint\.json is a folder/, [['init', '--owner', '@o']]);
+});
+
+test('init refuses a checks_dir through a renovation baseline it writes', () => {
+  const r = repo(TPL.replace(/^(\s*)checks_dir:.*$/m, '$1checks_dir: renovation/baselines/lint.json/checks') + '\nrenovation:\n  version: 0.0.0\n  policy_owner: "@o"\n');
+  refuses(r, /renovation\/baselines\/lint\.json is a file eng writes, so it cannot be a folder on the way to/, [['init']]);
+});
+
+test('init in a repo that already ships still seeds and writes CODEOWNERS and baselines, as before', () => {
+  const r = shipping();
+  const s = r.eng('init', '--owner', '@o');
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, /wrote \.github\/CODEOWNERS/);
+  assert.match(s.stdout, /wrote renovation\/baselines\/lint\.json/);
+});
