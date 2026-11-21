@@ -111,6 +111,7 @@ function prTemplateDirErrors(c) {
   });
 }
 // A list the checks below walk must be a list of mappings, or they would throw a stack trace instead of the config error.
+// An entry whose id or name is not a string is named by its place in the list (a mapping may not convert to text).
 const listOf = (v, ok) => v === undefined || v === null || (Array.isArray(v) && v.every(ok));
 const isMap = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 function configErrors(c) {
@@ -125,9 +126,9 @@ function configErrors(c) {
   if (c.gates?.skipped_is_failed !== true) errs.push('gates.skipped_is_failed must be true');
   for (const m of retired(c)) if (m.index !== undefined) errs.push(`${m.what} is not an eng gate any more: ${m.why}. Fix: ${FIX}`);
   if (!listOf(c.constraints?.rules, isMap)) errs.push('constraints.rules must be a list of rules');
-  else for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
+  else (c.constraints?.rules || []).forEach((r, i) => { if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`${typeof r.id === 'string' ? `rule ${r.id}` : `constraints.rules[${i}]`} needs proven_by.incident and proven_by.fixture`); });
   if (!listOf(c.stack?.exceptions, isMap)) errs.push('stack.exceptions must be a list of exceptions');
-  else for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
+  else (c.stack?.exceptions || []).forEach((e, i) => { if (!e.reason) errs.push(`${typeof e.name === 'string' ? `stack exception ${e.name}` : `stack.exceptions[${i}]`} needs a reason`); });
   for (const k of HOOK_KEYS) {
     const v = c.hooks?.[k];
     if (v !== undefined && !(Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim()))) errs.push(`hooks.${k} must be a list of non-empty commands`);
