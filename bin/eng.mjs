@@ -187,20 +187,24 @@ function syncPlan(seed = null) {
   if (added) changes.push(added);
   const cfg = YAML.parse(added?.text ?? text);
   validate(cfg);
+  // render reads AGENTS.md and SHIPPING.md to keep the repo's own text, so a link there is refused before it is read.
+  refuseWrites(['AGENTS.md', 'SHIPPING.md']);
   const files = render(cfg);
-  writePlan(files);
+  refuseWrites(Object.keys(files));
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune: prunePlan(old.files, files), exec: renderedExecutables(cfg) };
 }
 // eng writes each rendered file through the repo only. A file is refused when a folder on its path, below the repo root,
-// is a symlink or cannot be read, or when the file is itself a symlink (render already dropped CLAUDE.md -> AGENTS.md), so
-// a write never follows a link out of the repo or onto another repo file. A folder that is not there is created by sync.
-function writePlan(files) {
-  const refused = Object.keys(files).flatMap(p => {
-    const why = folderProblem(p);
-    if (why) return [`${p} (${why})`];
-    try { if (fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) return [`${p} (${p} is a symlink)`]; } catch {}
-    return [];
-  });
+// is a symlink or one eng cannot list and enter, or when the file is itself a symlink or cannot be looked up (render
+// already dropped CLAUDE.md -> AGENTS.md), so a write never follows a link out of the repo or onto another repo file, or
+// fails partway. A folder or file that is not there is created by sync.
+function writeProblem(p) {
+  const why = folderProblem(p);
+  if (why) return why;
+  try { return fs.lstatSync(path.join(ROOT, p)).isSymbolicLink() ? `${p} is a symlink` : null; }
+  catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${p} cannot be read (${e.code || e.message})`; }
+}
+function refuseWrites(paths) {
+  const refused = paths.flatMap(p => { const why = writeProblem(p); return why ? [`${p} (${why})`] : []; });
   if (refused.length) die(`eng sync would write ${refused.length} file(s) through a symlink, or in a folder eng cannot read: ${refused.slice(0, 5).join(', ')}${refused.length > 5 ? `, and ${refused.length - 5} more` : ''}. eng writes nothing. Fix: replace each linked folder or file with a real one (or make the folder readable), or change the config so it renders nothing there; then run eng sync.`);
 }
 // The files a previous sync generated that the config no longer renders and that are on disk, each once. Never in
@@ -228,8 +232,8 @@ function prunePlan(lockFiles, files) {
   return prune;
 }
 // For each folder on the repo-relative path p, below the repo root, from the top down: why it is a symlink or cannot be
-// read; null when one is not there (the entry is gone); false when every folder is a real folder eng can list. lstat never
-// follows a link, and access runs only on a real folder.
+// read; null when one is not there (the entry is gone); false when every folder is a real folder eng can list and enter.
+// lstat never follows a link, and access runs only on a real folder.
 function folderProblem(p) {
   const parts = p.split('/').slice(0, -1);
   for (let i = 1; i <= parts.length; i++) {
@@ -237,7 +241,7 @@ function folderProblem(p) {
     let st; try { st = fs.lstatSync(path.join(ROOT, d)); } catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${d} cannot be read (${e.code || e.message})`; }
     if (st.isSymbolicLink()) return `${d} is a symlink`;
     if (!st.isDirectory()) return null;
-    try { fs.accessSync(path.join(ROOT, d), fs.constants.R_OK); } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
+    try { fs.accessSync(path.join(ROOT, d), fs.constants.R_OK | fs.constants.X_OK); } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
   }
   return false;
 }
