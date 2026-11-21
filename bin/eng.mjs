@@ -118,6 +118,8 @@ function prTemplateDirErrors(c) {
     return t ? [`${what} (${asciiQuoted(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
   });
 }
+// A rule id or exception name in a refusal: plain when it is a short plain word, else JSON-quoted in printable ASCII and cut.
+const shownName = n => n === undefined ? '(no name)' : /^[\w.:-]{1,40}$/.test(n) ? n : `${asciiQuoted(String(n).slice(0, 40))}${String(n).length > 40 ? '...' : ''}`;
 function configErrors(c) {
   const errs = [];
   if (!c || typeof c !== 'object') return ['eng.config.yml is not a mapping'];
@@ -132,8 +134,8 @@ function configErrors(c) {
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');
   if (c.gates?.skipped_is_failed !== true) errs.push('gates.skipped_is_failed must be true');
   for (const m of retired(c)) if (m.index !== undefined) errs.push(`${m.what} is not an eng gate any more: ${m.why}. Fix: ${FIX}`);
-  for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${r.id} needs proven_by.incident and proven_by.fixture`);
-  for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${e.name} needs a reason`);
+  for (const r of c.constraints?.rules || []) if (!r.proven_by?.incident || !r.proven_by?.fixture) errs.push(`rule ${shownName(r.id)} needs proven_by.incident and proven_by.fixture`);
+  for (const e of c.stack?.exceptions || []) if (!e.reason) errs.push(`stack exception ${shownName(e.name)} needs a reason`);
   for (const k of HOOK_KEYS) {
     const v = c.hooks?.[k];
     if (v !== undefined && !(Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim()))) errs.push(`hooks.${k} must be a list of non-empty commands`);

@@ -32,6 +32,8 @@ const TEXT_LISTS = [
   ['ship.manager_also', ['releases']], ['ship.high_risk.reasons', ['auth']], ['ship.high_risk.paths', ['**/auth/**']],
   ['ship.high_risk.version_only', ['package.json']],
   ['merge.auto.high_risk_paths', ['bin/**']], ['merge.auto.verifier_logins', ['someone']],
+  ['ship.self_merge.verifier_logins', ['someone']], ['ship.self_merge.isolation_record.paths', ['lib/run.mjs']],
+  ['ship.self_merge.isolation_record.tests', ['a test']],
   ['verification.review_only_paths', ['**/*.md']],
   ['e2e.policy.labels', ['risk:high']], ['e2e.policy.run_on.app', ['src/**']], ['e2e.policy.skip_on.docs', ['**/*.md']],
   ['hygiene.evidence_roots', ['.eng/evidence']], ['hygiene.disk_rules.no_cache_in_evidence.markers', ['CACHEDIR.TAG']],
@@ -54,8 +56,12 @@ test('the template has a valid value at every list the check covers', () => {
   assert.deepEqual(listTypeErrors(TPL), []);
   for (const [k, ok] of TEXT_LISTS) assert.deepEqual(listTypeErrors(withValue(k.split('.'), ok)), [], k);
   for (const [k, ok] of MAP_LISTS) assert.deepEqual(listTypeErrors(withValue(k.split('.'), [ok])), [], k);
-  // A key the config leaves out, or sets to null (a bare `key:`), is not checked here.
-  for (const [k] of [...TEXT_LISTS, ...MAP_LISTS]) assert.deepEqual(listTypeErrors(withValue(k.split('.'), null)), [], k);
+  // A list the config leaves out, or sets to null (a bare `key:`), is not checked here. Under a mapping of lists
+  // (run_on, skip_on, models.pstack) every key names a list eng reads, so null there is refused.
+  for (const [k] of [...TEXT_LISTS, ...MAP_LISTS]) {
+    const keyed = /^(e2e\.policy\.(run_on|skip_on)|models\.pstack)\./.test(k);
+    assert.deepEqual(listTypeErrors(withValue(k.split('.'), null)), keyed ? [`${k} must be ${k.startsWith('models') ? 'a model, or a list of models' : 'a list of globs'}; it is null`] : [], k);
+  }
 });
 
 for (const [k, ok] of TEXT_LISTS) test(`${k}: an entry that is not text is a config error naming its position and type`, () => {
@@ -78,7 +84,8 @@ for (const [k, ok, fields] of MAP_LISTS) test(`${k}: an entry that is not a mapp
     assert.deepEqual(errs.length, 1, String(errs));
     assert.ok(errs[0].startsWith(`${k} must be a list of mappings`) && errs[0].endsWith(`; [1] is ${kind}`), errs[0]);
   }
-  for (const f of fields) for (const [bad, kind] of [[NO_TEXT, 'a mapping'], [['x'], 'a list'], [3, 'a number']]) {
+  // A field that is set must have its type: eng reads it (constraints.rules paths: null broke eng lint).
+  for (const f of fields) for (const [bad, kind] of [[NO_TEXT, 'a mapping'], [['x'], 'a list'], [3, 'a number'], [null, 'null']]) {
     const errs = listTypeErrors(withValue(k.split('.'), [{ ...ok, [f]: bad }]));
     assert.deepEqual(errs, [`${k}[0].${f} must be text; it is ${kind}`]);
   }
@@ -89,6 +96,7 @@ test('constraints.rules: paths and exclude are text or a list of text, proven_by
   const rule = MAP_LISTS[2][1], at = r => listTypeErrors(withValue(['constraints', 'rules'], [r]));
   assert.deepEqual(at({ ...rule, paths: 'src/**', exclude: ['x/**'] }), []);
   assert.deepEqual(at({ ...rule, paths: ['ok', NO_TEXT] }), ['constraints.rules[0].paths must be text or a list of text; [1] is a mapping']);
+  assert.deepEqual(at({ ...rule, paths: null }), ['constraints.rules[0].paths must be text or a list of text; it is null']);
   assert.deepEqual(at({ ...rule, exclude: NO_TEXT }), ['constraints.rules[0].exclude must be text or a list of text; it is a mapping']);
   assert.deepEqual(at({ ...rule, proven_by: 'x' }), ['constraints.rules[0].proven_by must be a mapping; it is text']);
   assert.deepEqual(at({ ...rule, proven_by: { incident: NO_TEXT, fixture: ['f'] } }), ['constraints.rules[0].proven_by.incident must be text; it is a mapping', 'constraints.rules[0].proven_by.fixture must be text; it is a list']);
@@ -101,6 +109,14 @@ test('a key under e2e.policy.run_on, skip_on or models.pstack is shown JSON-quot
   assert.ok(/^[ -~]+$/.test(e), e);
   assert.deepEqual(listTypeErrors(withValue(['models', 'pstack', 'hillclimb'], 'inherit-parent')), []);
   assert.deepEqual(listTypeErrors(withValue(['models', 'pstack', 'hillclimb'], NO_TEXT)), ['models.pstack.hillclimb must be a model, or a list of models; it is a mapping']);
+});
+
+test('run_on, skip_on and models.pstack must be mappings; a YAML set or other tagged value is not a mapping entry', () => {
+  for (const k of ['run_on', 'skip_on']) for (const [bad, kind] of [[[[null]], 'a list'], ['x', 'text']])
+    assert.deepEqual(listTypeErrors(withValue(['e2e', 'policy', k], bad)), [`e2e.policy.${k} must be a mapping; it is ${kind}`]);
+  assert.deepEqual(listTypeErrors(withValue(['models', 'pstack'], ['x'])), ['models.pstack must be a mapping; it is a list']);
+  const set = YAML.parse('agents:\n  rules: [!!set { marker: null }]\nstack:\n  exceptions: !!omap [ { a: 1 } ]\n');
+  assert.deepEqual(listTypeErrors(set), ['stack.exceptions must be a list of mappings; it is a tagged value', 'agents.rules must be a list of mappings; [0] is a set']);
 });
 
 // ---- CLI: every command that reads the config refuses with the config invalid lines, before anything uses the entry ----
@@ -119,6 +135,9 @@ const CASES = [
   ['a mapping as a stack exception name', text(['stack', 'exceptions'], [{ kind: 'language', name: NO_TEXT, reason: SECRET }]), 'stack.exceptions[0].name must be text; it is a mapping'],
   ['constraints.rules as text', text(['constraints', 'rules'], SECRET), 'constraints.rules must be a list of mappings; it is text'],
   ['a stack exception that is a number', text(['stack', 'exceptions'], [5]), 'stack.exceptions must be a list of mappings; [0] is a number'],
+  ['a null glob list under e2e.policy.run_on', text(['e2e', 'policy', 'run_on', `cat\nx`], null), `e2e.policy.run_on.${JSON.stringify(`cat\nx`)} must be a list of globs; it is null`],
+  ['a rule whose paths is null', text(['constraints', 'rules'], [{ ...MAP_LISTS[2][1], paths: null }]), 'constraints.rules[0].paths must be text or a list of text; it is null'],
+  ['a stack exception with no reason and a two-line name', text(['stack', 'exceptions'], [{ kind: 'language', name: `cat\nx` }]), `stack exception ${JSON.stringify(`cat\nx`.slice(0, 40))} needs a reason`],
 ];
 const COMMANDS = [['sync'], ['sync', '--check'], ['lint'], ['doctor'], ['rules', 'prove'], ['e2e', '--required'], ['verdict', 'check']];
 
