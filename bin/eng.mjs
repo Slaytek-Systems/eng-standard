@@ -912,7 +912,7 @@ function verdictRecord(result) {
 }
 // gh failed reading PR #n: one plain line, never gh's own text. No GitHub remote gh can use is the common case, named with its fix.
 function ghFailed(n, r) {
-  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one (git remote add github https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
+  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one under an unused remote name (such as git remote add github https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
   die(r.error?.code === 'ENOENT' ? `verdict: gh is not installed, so PR #${n} cannot be read; install gh and run gh auth login, or record the verdict without --pr`
     : `verdict: gh could not read PR #${n}${r.status ? ` (exit ${r.status})` : r.error ? ` (${r.error.code})` : ''}; run gh auth status and gh pr view ${n} to see why`);
 }

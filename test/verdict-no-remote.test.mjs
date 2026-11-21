@@ -34,7 +34,7 @@ for (const [what, remote] of [['no remote', null], ['only a non-GitHub remote', 
     for (const args of COMMANDS) {
       const x = repo(remote)(args), name = `eng ${args.join(' ')}`;
       assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
-      assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; add one \(git remote add github https:\/\/github\.com\/<owner>\/<repo>\.git\), or record the verdict without --pr\n$/, `${name}: ${x.stderr}`);
+      assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; add one under an unused remote name \(such as git remote add github https:\/\/github\.com\/<owner>\/<repo>\.git\), or record the verdict without --pr\n$/, `${name}: ${x.stderr}`);
       assert.equal(x.stdout, '', `${name}: nothing on stdout`);
       assert.doesNotMatch(x.stdout + x.stderr, /no git remotes found|known GitHub host|gh auth login|\n\s+at |node:internal|Node\.js v/, `${name}: no gh or Node text`);
     }
