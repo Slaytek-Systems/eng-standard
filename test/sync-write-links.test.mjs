@@ -109,3 +109,29 @@ test('CLAUDE.md -> AGENTS.md still syncs: the link stays and missing folders are
   const c = r.eng('sync', '--check');
   assert.equal(c.status, 0, c.stdout + c.stderr);
 });
+
+// Review round 1 on #109: a folder eng can list but not enter (mode 0600) hides whether the file is there, and a write
+// into it fails partway; it is refused before the first write.
+test('a folder on the path eng can list but not enter is refused before any write', { skip: process.getuid?.() === 0 && 'root enters every folder' }, () => {
+  const r = repo();
+  fs.mkdirSync(r.file('.github')); fs.chmodSync(r.file('.github'), 0o600);
+  try {
+    refuses(r, /\.github\/pull_request_template\.md \(.*cannot be read \(EACCES\)\)/, [['sync']]);
+  } finally { fs.chmodSync(r.file('.github'), 0o755); }
+  assert.deepEqual(fs.readdirSync(r.dir).sort(), ['.git', '.github', 'eng.config.yml'], 'nothing written');
+  assert.deepEqual(fs.readdirSync(r.file('.github')), []);
+});
+
+// Review round 1 on #109: render reads AGENTS.md and SHIPPING.md to keep the repo's own text, so a link there is refused
+// before it is read, with the file named.
+test('AGENTS.md or SHIPPING.md linked to a folder is refused and named, before render reads it', () => {
+  for (const f of ['AGENTS.md', 'SHIPPING.md']) {
+    const outside = tmp('eng-outside-');
+    const r = repo();
+    fs.symlinkSync(outside, r.file(f));
+    const before = snapshot(r.dir);
+    refuses(r, new RegExp(`${f.replace('.', '\\.')} \\(${f.replace('.', '\\.')} is a symlink\\)`), [['sync'], ['sync', '--check']]);
+    assert.deepEqual(snapshot(r.dir), before);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  }
+});
