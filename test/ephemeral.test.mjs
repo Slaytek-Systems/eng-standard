@@ -7,7 +7,7 @@ import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import http from 'node:http';
 import net from 'node:net';
-import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
+import { findLeftovers, PROXY, removeLeftover, runProcs, settle } from '../lib/ephemeral.mjs';
 import { openSockDir, sockName, staleSockDirs, SOCK_OWNER, SOCK_MAX } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -134,6 +134,48 @@ test('without python3: mode fail refuses the run; mode warn runs it and still st
   r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: noPy });
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /was not fully watched: processes: python3/);
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('nopy')} \\(sleep 304\\): stopped`)); assert.ok(!running(Number(mark('nopy'))), 'stopped through the run id');
+});
+
+// A fake /proc. stat fields after "(comm) " (proc(5)): [0] state, [6] flags, [19] start time, [47] env_start, [48] env_end.
+const fakeStat = (pid, { state = 'S', flags = 0, env = [100, 120] }) => { const f = Array(49).fill('0'); f[0] = state; f[6] = String(flags); f[19] = '7'; [f[47], f[48]] = env.map(String); return `${pid} (x) ${f.join(' ')}`; };
+const fakeProc = ps => ({ pids: () => Object.keys(ps).map(Number), read: (pid, f) => {
+  if (f === 'environ' && ps[pid].environ === null) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+  return f === 'stat' ? fakeStat(pid, ps[pid]) : ps[pid][f];
+} });
+// A fake run: each call to look returns the next result, then the last again; wait counts the fake clock's ticks.
+const fakeLooks = results => { let i = 0; return () => results[Math.min(i++, results.length - 1)]; };
+
+// The 'without python3' flake (CI at 83e7c49 and 7015566): the run's shell exited while the child it put in the background
+// was still in execve, whose new image has no environment yet, so eng read no run id there and passed the run.
+test('a process caught mid-exec, or one that exec\'d while eng read its environment, is unsure, never clean; a kernel thread, zombie, exiting process or empty environment is not', () => {
+  const r = runProcs('r1', [], fakeProc({
+    11: { environ: 'ENG_EPHEMERAL_RUN=r1\0PATH=/bin\0', cmdline: 'sleep\0' + '304\0' },  // carries the run id
+    12: { environ: '', cmdline: '', env: [0, 0] },                                   // mid-exec: no environment yet
+    13: { environ: '', cmdline: 'sleep\0', env: [100, 160] },                      // its stat has an environment the read missed
+    14: { environ: '', cmdline: '', env: [0, 0], flags: 0x200000 },                 // kernel thread
+    15: { environ: '', cmdline: '', env: [0, 0], state: 'Z' },                      // zombie
+    16: { environ: '', cmdline: '', env: [0, 0], flags: 0x4 },                      // exiting
+    17: { environ: '', cmdline: 'a\0', env: [200, 200] },                          // started with an empty environment
+    18: { environ: null, cmdline: 'b\0', env: [0, 0] },                            // another user's: nothing readable
+  }));
+  assert.deepEqual(r.procs.map(p => [p.pid, p.cmd]), [[11, 'sleep 304']]);
+  assert.deepEqual(r.unsure.sort(), [12, 13]);
+});
+
+test('eng run looks again while a process its first look caught mid-exec is still starting, and then reports it', () => {
+  const left = { kind: 'process', id: 12, owner: 'run' };
+  let ticks = 0;
+  const res = settle(fakeLooks([{ left: [], unsure: [12] }, { left: [], unsure: [12] }, { left: [left], unsure: [] }]), () => ticks++);
+  assert.deepEqual(res.left, [left]); assert.deepEqual(res.stuck, []); assert.ok(ticks >= 2, `looked again: ${ticks}`);
+});
+
+test('a process still mid-exec after the settle time is reported as stuck; one first seen mid-exec later never holds the run', () => {
+  let ticks = 0;
+  let res = settle(fakeLooks([{ left: [], unsure: [12] }]), () => ticks++);
+  assert.deepEqual(res.stuck, [12]); assert.equal(ticks, 15, 'waited the settle time (15 x 200 ms), no longer');
+  ticks = 0;
+  res = settle(fakeLooks([{ left: [], unsure: [] }, { left: [], unsure: [99] }]), () => ticks++);
+  assert.deepEqual(res.left, []); assert.deepEqual(res.stuck, []); assert.equal(ticks, 0, 'nothing to wait for');
 });
 
 test('containers, networks and volumes left behind fail and are removed, a container with the volumes docker made for it; --rm passes', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
