@@ -317,7 +317,7 @@ test('a checks_dir not written as git does is refused by the gate; affectedBy st
     });
   }
   assert.deepEqual(affectedBy(['.eng/checks/a.sh'], '.eng//checks'), { all: '.eng/checks/a.sh changed' });
-  assert.match(checkErrors({ pr_checks: 'affected', checks_dir: '../checks' }).join(), /verification\.checks_dir \(\.\.\/checks\) leaves the repo/);
+  assert.match(checkErrors({ pr_checks: 'affected', checks_dir: '../checks' }).join(), /verification\.checks_dir \("?\.\.\/checks"?\) leaves the repo/);
   assert.deepEqual(checkErrors({ checks_dir: '../checks' }), [], 'without pr_checks: affected, checks_dir validates as in 0.21.1');
 });
 

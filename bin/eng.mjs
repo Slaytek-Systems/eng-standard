@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { renderAll, renderErrors, agentsBlockErrors, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
+import { renderAll, renderErrors, agentsBlockErrors, renderedValueErrors, LINE_BREAK, harnessRel, harnessLines, executables, expandSkills, routerText, ROUTE_RULE, rulesetAdvice, SPAWN_RULE, GATE_COMMANDS } from '../lib/render.mjs';
 import { retired, migrate, FIX, rewriteModeErrors, missingRewriteMode, rewriteMode, addRewriteMode } from '../lib/migrate.mjs';
 import { flakeRuns, flakeVerdict, parseResults, validateFlake } from '../lib/flake.mjs';
 import { glob2re, decide, validatePolicy } from '../lib/e2e-policy.mjs';
@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel, asciiQuoted } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
@@ -86,16 +86,14 @@ const repoFiles = () => repoPaths().filter(f => !harnessOut(f) || readableFile(f
 function harnessConfigErrors(c) {
   const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
-  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
+  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${asciiQuoted(d)}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
 }
 // GitHub reads a PULL_REQUEST_TEMPLATE/ folder (any case) at the root, in .github or in docs, and ownPrTemplates counts it
 // as the repo's own PR template. A skills or checks folder there would turn eng's own output into the repo's template:
 // the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
 // (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
 // template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
-// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted with every character outside
-// printable ASCII as \\uXXXX (U+2028 ends a line for many readers), so it stays on one line.
-const asciiQuoted = v => JSON.stringify(v).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+// The PR template folder a repo path is, or sits in, or null. The value is shown with asciiQuoted, so it stays on one line.
 const PR_TEMPLATE_DIR = /^pull_request_template$/i;
 const prTemplateDirOf = p => {
   const [a, b = ''] = (repoRel(p) ?? '').split('/');
@@ -144,6 +142,7 @@ function configErrors(c) {
   errs.push(...rewriteModeErrors(c));
   errs.push(...profileErrors(c));
   errs.push(...agentsBlockErrors(c));
+  errs.push(...renderedValueErrors(c));
   errs.push(...guardErrors(c));
   return errs;
 }
@@ -402,7 +401,10 @@ const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/rem
 function seedShipping(owner) {
   const doc = YAML.parseDocument(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
   const pj = JSON.parse(readOr('package.json', 'null')), pm = sh('git ls-files').split('\n').some(f => /^bun\.lockb?$/.test(f)) ? 'bun' : 'npm', base = defaultBranch();
-  doc.setIn(['project', 'name'], repoName() || path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir')))));
+  // project.name is rendered into the AGENTS.md block, so it must be one line: a package or folder name that holds a line
+  // break is passed over, and init never seeds a config it then refuses.
+  const names = [repoName(), path.basename(path.dirname(path.resolve(ROOT, sh('git rev-parse --git-common-dir'))))];
+  doc.setIn(['project', 'name'], names.find(n => typeof n === 'string' && n && !LINE_BREAK.test(n)) ?? 'repo');
   doc.setIn(['project', 'default_branch'], base);
   doc.setIn(['project', 'protected_branches'], [base]);
   doc.setIn(['project', 'commands'], doc.createNode({ test: pj?.scripts?.test ? `${pm} run test` : "echo 'set project.commands.test in eng.config.yml' && exit 1" }));
