@@ -910,12 +910,20 @@ function verdictRecord(result) {
   try { postVerdict(engCtx(), arg('--pr'), rec, cfg); } catch (e) { die(`verdict: could not post the verdict comment: ${e.message}`); }
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
+// gh failed reading PR #n: one plain line, never gh's own text. No GitHub remote gh can use is the common case, named with its fix.
+function ghFailed(n, r) {
+  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one (git remote add origin https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
+  die(r.error?.code === 'ENOENT' ? `verdict: gh is not installed, so PR #${n} cannot be read; install gh and run gh auth login, or record the verdict without --pr`
+    : `verdict: gh could not read PR #${n}${r.status ? ` (exit ${r.status})` : r.error ? ` (${r.error.code})` : ''}; run gh auth status and gh pr view ${n} to see why`);
+}
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
 // ruleset and the self-merge workflow can see it. success only when `eng verdict check --pr <n>` passes (a counted PASS
 // for this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers, counting the PR's verdict
 // comments); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
-  const pr = JSON.parse(sh(`gh pr view ${Number(n)} --json headRefOid,state`));
+  const r = spawnSync('gh', ['pr', 'view', String(Number(n)), '--json', 'headRefOid,state'], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
+  let pr = null; try { pr = JSON.parse(r.stdout); } catch {}
+  if (r.status !== 0 || !pr) ghFailed(n, r);
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
   if (pr.headRefOid !== head()) die(`verdict status: local HEAD ${head().slice(0, 8)} is not PR #${n} head ${pr.headRefOid.slice(0, 8)}; run gh pr checkout ${n} && git pull --ff-only`);
 }
@@ -939,7 +947,7 @@ function prVerdicts(cfg, n, H) {
   if (logins !== null && !validLogins(logins)) die('verdict: verifier_logins lists the GitHub logins whose verdict comments count');
   const r = spawnSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY || '{owner}/{repo}'}/issues/${n}/comments?per_page=100`], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
   let pages = null; try { pages = JSON.parse(r.stdout); } catch {}
-  if (r.status !== 0 || !Array.isArray(pages)) die(`verdict: could not read PR #${n}'s verdict comments: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
+  if (r.status !== 0 || !Array.isArray(pages)) ghFailed(n, r);
   return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
 }
 function verdictCheck() {
