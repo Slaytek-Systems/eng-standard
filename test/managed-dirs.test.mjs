@@ -144,3 +144,10 @@ test('init in a repo that already ships still seeds and writes CODEOWNERS and ba
   assert.match(s.stdout, /wrote \.github\/CODEOWNERS/);
   assert.match(s.stdout, /wrote renovation\/baselines\/lint\.json/);
 });
+
+// package.json supports Node >=18; readdirSync's recursive option needs 18.17, and on an older 18 it lists only the top
+// folder, so init would miss the nested rule proof it checks (review round 2).
+test('eng uses no readdirSync recursive option, which Node 18 before 18.17 ignores', () => {
+  assert.match(JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).engines.node, />=18/);
+  assert.doesNotMatch(fs.readFileSync(ENG, 'utf8'), /readdirSync\([^)]*recursive/);
+});

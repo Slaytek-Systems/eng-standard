@@ -332,7 +332,7 @@ function init() {
   let seed = null;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
     const proofs = path.join(PKG, 'templates/rule-proofs');
-    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), files: fs.readdirSync(proofs, { recursive: true }).filter(f => fs.statSync(path.join(proofs, f)).isFile()).map(f => path.posix.join('.eng/rule-proofs', f.split(path.sep).join('/'))), write() {
+    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), files: filesUnder(proofs).map(f => `.eng/rule-proofs/${f}`), write() {
       fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), this.text); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
       // The starter config's example lint rule names this fixture as its proof; eng doctor and eng rules prove need it on disk.
       fs.cpSync(path.join(PKG, 'templates/rule-proofs'), path.join(ROOT, '.eng/rule-proofs'), { recursive: true }); console.log('  seeded .eng/rule-proofs/no-focused-tests (the example rule\'s proof)');
@@ -357,6 +357,9 @@ function init() {
   if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng doctor --launch.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
   console.log('eng init: done. Next: run create-verification-skill to make the repo verify-<app> skill, then start tasks with poteto-mode.');
 }
+// Every file under a package folder, as a /-joined path relative to it. Walked by hand: readdirSync's recursive option
+// needs Node 18.17, and the package supports Node 18.
+const filesUnder = (dir, rel = '') => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap(e => e.isDirectory() ? filesUnder(dir, rel ? `${rel}/${e.name}` : e.name) : e.isFile() ? [rel ? `${rel}/${e.name}` : e.name] : []);
 const repoName = () => { try { return JSON.parse(readOr('package.json', '{}')).name?.replace(/^@[^/]+\//, '') || null; } catch { return null; } };
 const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/remotes/origin/HEAD').replace(/^origin\//, ''); } catch {} try { sh('git rev-parse --verify -q main'); return 'main'; } catch { return sh('git rev-parse --abbrev-ref HEAD'); } };
 function seedShipping(owner) {
