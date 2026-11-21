@@ -161,9 +161,11 @@ function render(cfg, planned = null) {
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 // planned is a folder init is about to create; it counts as on disk, so init plans what sync renders once it exists.
+// It is matched by where it lands (real paths), so a folder named through a symlink to .github or docs counts there too.
 function ownPrTemplates(rendered, planned = null) {
   const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
-  const ahead = d => { const rel = !planned ? null : d === '.' ? planned : planned.startsWith(`${d}/`) ? planned.slice(d.length + 1) : null; return rel ? [rel.split('/')[0]] : []; };
+  const realOf = p => { let at = path.join(ROOT, p); const rest = []; while (!fs.existsSync(at)) { rest.unshift(path.basename(at)); at = path.dirname(at); } return path.join(fs.realpathSync(at), ...rest); };
+  const ahead = d => { if (!planned) return []; const first = path.relative(realOf(d), realOf(planned)).split(path.sep)[0]; return first && first !== '..' && !path.isAbsolute(first) ? [first] : []; };
   const names = d => { let ns = []; try { ns = fs.readdirSync(path.join(ROOT, d)); } catch {} return [...new Set([...ns, ...ahead(d)])]; };
   return ['.github', '.', 'docs'].flatMap(d => names(d).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)))
     .filter(p => !ours(p));
