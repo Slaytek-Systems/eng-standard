@@ -236,3 +236,52 @@ test('eng never locks a path it would refuse: skills_dir .claude syncs twice and
     }
   }
 });
+
+// Kalsigns 29c (Core task p574jfn0gsbbap66fxm6t1f17n8jnhrk): drift ends with one plain line that says what to do.
+const OUT_OF_DATE = 'Generated eng files are out of date. Edit eng.config.yml if needed, then run eng sync and commit what it writes.';
+const lastLine = r => r.stderr.trimEnd().split('\n').at(-1);
+
+test('sync --check drift (a missing file, a differing file, a changed lock) ends with one line that says what to do', () => {
+  const r = repo();
+  fs.rmSync(r.file('SHIPPING.md'));
+  let d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.match(d.stderr, /^  SHIPPING\.md: missing$/m); assert.equal(lastLine(d), OUT_OF_DATE);
+  assert.equal(d.stderr.split('\n').filter(l => l.includes('out of date')).length, 1, 'the line appears once');
+  assert.equal(r.eng('sync').status, 0);
+  r.edit('SHIPPING.md', s => s + 'hand edit\n');
+  d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.match(d.stderr, /^  SHIPPING\.md: differs from what eng\.config\.yml renders$/m); assert.equal(lastLine(d), OUT_OF_DATE);
+  assert.equal(r.eng('sync').status, 0);
+  r.edit('eng.config.yml', s => s.replace('nightly: { enabled: false', 'nightly: { enabled: true'));
+  d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.match(d.stderr, /^  \.eng\/lock\.json: config changed since last sync$/m); assert.equal(lastLine(d), OUT_OF_DATE);
+});
+
+test('sync --check drift in a repo that pins eng-standard names the pinned eng command', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('package.json'), JSON.stringify({ name: 'adopter', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.23.0' } }));
+  fs.rmSync(r.file('SHIPPING.md'));
+  const d = r.eng('sync', '--check');
+  assert.equal(d.status, 1);
+  assert.equal(lastLine(d), 'Generated eng files are out of date. Edit eng.config.yml if needed, then run the repo-pinned eng (node node_modules/@slayteksystems/eng-standard/bin/eng.mjs sync) and commit what it writes.');
+});
+
+test('sync --check drift in a repo whose eng-standard pin floats keeps the generic line', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('package.json'), JSON.stringify({ name: 'adopter', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#main' } }));
+  fs.rmSync(r.file('SHIPPING.md'));
+  const d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.match(d.stderr, /#main is a branch/);
+  assert.equal(lastLine(d), OUT_OF_DATE);
+});
+
+test('sync --check refusals that are not drift do not get the out-of-date line', () => {
+  const r = repo();
+  writeOldLock(r); // matches the config; only its renderer version differs
+  let d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.doesNotMatch(d.stderr, /out of date/);
+  assert.equal(r.eng('sync').status, 0);
+  r.edit('eng.config.yml', s => s + 'gates: 7\n');
+  d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.doesNotMatch(d.stderr, /out of date/);
+});
