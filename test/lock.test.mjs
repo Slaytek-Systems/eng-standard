@@ -173,12 +173,12 @@ test('{"files":"x"} is refused: eng sync deletes no repo file named 0 and writes
 const outside = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-lock-outside-')); dirs.push(outside);
 fs.writeFileSync(path.join(outside, 'keep'), 'not the repo\'s\n');
 for (const [what, lock, why] of [
-  ['an absolute path', { files: [path.join(outside, 'keep')] }, /\(absolute\)/],
+  ['an absolute path', { files: [path.join(outside, 'keep')] }, /\(absolute[;)]/],
   ['a path that leaves the repo', { files: [`../${path.basename(outside)}/keep`] }, /\(leaves the repo \(\.\.\)\)/],
   ['.. inside a path', { files: ['docs/../0'] }, /leaves the repo/],
-  ['a path with ./', { files: ['./0'] }, /\(not normalised\)/],
-  ['a path with //', { files: ['docs//0'] }, /\(not normalised\)/],
-  ['a trailing slash', { files: ['docs/'] }, /\(not normalised\)/],
+  ['a path with ./', { files: ['./0'] }, /\(not normalised[;)]/],
+  ['a path with //', { files: ['docs//0'] }, /\(not normalised[;)]/],
+  ['a trailing slash', { files: ['docs/'] }, /\(not normalised[;)]/],
   ['a path inside .git', { files: ['.git/config'] }, /\(inside \.git\)/],
   ['a backslash', { files: ['..\\0'] }, /\(contains a backslash\)/],
   ['an empty path', { files: [''] }, /\(empty\)/],
@@ -225,6 +225,28 @@ for (const dir of ['./.eng/checks', '/.eng/checks']) test(`a config folder writt
   assert.ok(JSON.parse(r.read('.eng/lock.json')).files.includes('.eng/checks/.gitkeep'));
   const again = r.eng('sync'); assert.equal(again.status, 0, again.stdout + again.stderr); assert.match(again.stdout, /^eng sync: no changes$/m);
   const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stdout + d.stderr);
+});
+
+test('a lock entry an earlier version wrote as ./x is refused with its corrected path, and correcting only that entry keeps an edited managed file managed', () => {
+  const r = repo(), lock = JSON.parse(r.read('.eng/lock.json'));
+  assert.ok(lock.files.includes('.eng/checks/.gitkeep') && lock.files.includes('.github/pull_request_template.md'));
+  r.edit('.github/pull_request_template.md', s => s + '\nOur own checklist line.\n');
+  const good = r.read('.eng/lock.json');
+  fs.writeFileSync(r.file('.eng/lock.json'), good.replace('".eng/checks/.gitkeep"', '"./.eng/checks/.gitkeep"'));
+  const s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  assert.match(s.stderr, /"\.\/\.eng\/checks\/\.gitkeep" \(not normalised; write "\.eng\/checks\/\.gitkeep"\)\. Fix: correct each refused entry in \.eng\/lock\.json as shown/);
+  assert.doesNotMatch(s.stderr, /delete (it|the lock)|rm \.eng|eng sync once/);
+  fs.writeFileSync(r.file('.eng/lock.json'), r.read('.eng/lock.json').replace('"./.eng/checks/.gitkeep"', '".eng/checks/.gitkeep"'));
+  const again = r.eng('sync'); assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.ok(JSON.parse(r.read('.eng/lock.json')).files.includes('.github/pull_request_template.md'));
+  assert.doesNotMatch(r.read('.github/pull_request_template.md'), /Our own checklist line/); // still eng's, so sync renders it
+});
+
+test('an absolute lock entry names the repo path it may mean, but only as a condition', () => {
+  const r = badLockRepo('{"package":"0.23.9","files":["/.eng/checks/.gitkeep"]}\n'), s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  assert.match(s.stderr, /"\/\.eng\/checks\/\.gitkeep" \(absolute; if it means the repo file "\.eng\/checks\/\.gitkeep", write that\)/);
 });
 
 test('a config folder outside the repo (checks_dir ../x) is refused before sync writes anything', () => {
