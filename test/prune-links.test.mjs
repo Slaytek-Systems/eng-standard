@@ -105,3 +105,29 @@ test('a stale lock entry with no symlink on its path is still pruned, with its e
   assert.match(s.stdout, /removed docs\/sub\/OLD\.md/);
   assert.ok(!fs.existsSync(r.file('docs')));
 });
+
+// Review round 1 on #106: a lock that lists a stale entry twice prunes it once and finishes the sync.
+test('a stale entry the lock lists twice is pruned once, and the sync finishes', () => {
+  const r = repo('docs/OLD.md');
+  const lockFile = r.file('.eng/lock.json'), lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  fs.writeFileSync(lockFile, JSON.stringify({ ...lock, files: [...lock.files, 'docs/OLD.md'].sort() }, null, 2) + '\n');
+  fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/OLD.md'), 'rendered once\n');
+  const s = r.eng('sync');
+  assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.equal(s.stdout.match(/removed docs\/OLD\.md/g)?.length, 1);
+  assert.ok(!JSON.parse(fs.readFileSync(lockFile, 'utf8')).files.includes('docs/OLD.md'));
+});
+
+// Review round 1 on #106: the checks folder init creates can change what renders (one named like a PR template makes
+// eng's own template a stale entry), so init plans with that folder before it creates it, and refuses having made none.
+test('eng init refuses a prune through a symlinked folder that its new checks folder causes, before it creates the folder', () => {
+  const r = repo('docs/unused.md');
+  fs.renameSync(r.file('.github'), r.file('gh-real')); fs.symlinkSync('gh-real', r.file('.github'));
+  const cfg = r.file('eng.config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^( {2}checks_dir: ).*$/m, '$1.github/PULL_REQUEST_TEMPLATE'));
+  const before = snapshot(r.dir);
+  const i = r.eng('init');
+  assert.equal(i.status, 1, i.stdout + i.stderr);
+  assert.match(i.stderr, /\.github\/pull_request_template\.md \(\.github is a symlink\)/);
+  assert.deepEqual(snapshot(r.dir), before, 'init created no checks folder and wrote nothing');
+});
