@@ -131,3 +131,17 @@ test('eng init refuses a prune through a symlinked folder that its new checks fo
   assert.match(i.stderr, /\.github\/pull_request_template\.md \(\.github is a symlink\)/);
   assert.deepEqual(snapshot(r.dir), before, 'init created no checks folder and wrote nothing');
 });
+
+// Review round 2 on #106: init's plan finds the new checks folder by where it lands, so a folder named through another
+// path to .github (here gh-real) counts as a PR template under .github too.
+test('eng init counts a new checks folder named through a symlinked alias of .github, and refuses before creating it', () => {
+  const r = repo('docs/unused.md');
+  fs.renameSync(r.file('.github'), r.file('gh-real')); fs.symlinkSync('gh-real', r.file('.github'));
+  const cfg = r.file('eng.config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^( {2}checks_dir: ).*$/m, '$1gh-real/PULL_REQUEST_TEMPLATE/checks'));
+  const before = snapshot(r.dir);
+  const i = r.eng('init');
+  assert.equal(i.status, 1, i.stdout + i.stderr);
+  assert.match(i.stderr, /\.github\/pull_request_template\.md \(\.github is a symlink\)/);
+  assert.deepEqual(snapshot(r.dir), before, 'init created no checks folder and wrote nothing');
+});
