@@ -939,13 +939,17 @@ function prVerdicts(cfg, n, H) {
   if (logins !== null && !validLogins(logins)) die('verdict: verifier_logins lists the GitHub logins whose verdict comments count');
   const r = spawnSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY || '{owner}/{repo}'}/issues/${n}/comments?per_page=100`], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
   let pages = null; try { pages = JSON.parse(r.stdout); } catch {}
-  if (r.status !== 0 || !Array.isArray(pages)) die(`verdict: could not read PR #${n}'s verdict comments: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
+  if (r.status !== 0) die(`verdict: could not read PR #${n}'s verdict comments: ${(r.stderr || r.stdout || '').trim().split('\n')[0]}`);
+  // Fail closed: only an array of pages, each an array of comment objects with a text body, is read.
+  const comment = c => c !== null && typeof c === 'object' && !Array.isArray(c) && typeof c.body === 'string';
+  if (!Array.isArray(pages) || !pages.every(p => Array.isArray(p) && p.every(comment))) die(`verdict: PR #${n}'s comments from gh are not pages of comments with a text body, so no verdict is read from them`);
   return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
 }
 function verdictCheck() {
   const cfg = loadConfig();
   evidenceCheck(cfg);
-  const H = head(), pid = patchId(cfg);
+  // --pr: the PR's comments are read first, so a wrong shape fails even when the branch has no change.
+  const H = head(), pid = patchId(cfg), pr = arg('--pr'), posted = pr ? prVerdicts(cfg, pr, H) : [];
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
@@ -955,7 +959,7 @@ function verdictCheck() {
   // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
   // another SHA with the same patch-id is reported and never carried.
   // --pr: this clone's records plus the PR's trusted comments for HEAD, ordered as self-merge orders them (an edit is latest).
-  const others = patchVerdicts(pid), pr = arg('--pr'), posted = pr ? prVerdicts(cfg, pr, H) : [];
+  const others = patchVerdicts(pid);
   const at = x => Date.parse(x.comment_at || x.at) || 0, all = [...others.filter(x => x.sha === H), ...posted].sort((x, y) => at(x) - at(y));
   console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}${pr ? `; PR #${pr}: ${posted.length} trusted verdict comment${posted.length === 1 ? '' : 's'} for HEAD` : ''}`);
   for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);

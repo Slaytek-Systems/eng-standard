@@ -56,7 +56,7 @@ test('a change with a local PASS: a wrong shape fails closed; a PR PASS comment 
   for (const s of WRONG) failsClosed(check(s), s);
   let r = check('[[{"body":"not a verdict","user":{"login":"x"}}]]');
   assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /eng verdict: PASS \(PASS verification by builder-1/);
-  const H = git('rev-parse HEAD'), comment = (result, by) => ({ body: verdictBody({ sha: H, result, by, method: 'verification', patch_id: 'p', runs: [{ cmd: 'true', exit: 0, output: '', sha: H, at: '2026-11-21T00:00:00Z' }] }), user: { login: 'v' }, author_association: 'OWNER', created_at: new Date(Date.now() + 60e3).toISOString() });
+  const H = git('rev-parse HEAD'), comment = (result, by) => ({ body: verdictBody({ sha: H, result, by, method: 'verification', patch_id: 'p', runs: [{ cmd: 'true', exit: 0, output: '', sha: H, at: '2026-11-21T00:00:00Z' }] }), user: { login: 'Mattslayga' }, author_association: 'OWNER', created_at: new Date(Date.now() + 60e3).toISOString() });
   r = check(JSON.stringify([[comment('PASS', 'verifier-2')]]));
   assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /PR #7: 1 trusted verdict comment for HEAD/);
   r = check(JSON.stringify([[comment('FAIL', 'verifier-2')]]));
