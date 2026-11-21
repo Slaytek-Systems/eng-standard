@@ -112,3 +112,11 @@ test('a checks folder init creates that is named like a PR template renders as i
   const i = r.eng(['init']); assert.equal(i.status, 0, i.stderr);
   const c = r.eng(['sync', '--check']); assert.equal(c.status, 0, c.stderr);
 });
+
+test('sync --check reads the lock before the config, so a bad lock is the refusal it reports (review round 2)', () => {
+  const r = repo(t => t);
+  fs.writeFileSync(path.join(r.dir, '.eng/lock.json'), 'nope');
+  fs.rmSync(path.join(r.dir, 'eng.config.yml')); fs.mkdirSync(path.join(r.dir, 'eng.config.yml'));
+  const c = r.eng(['sync', '--check']);
+  assert.notEqual(c.status, 0); assert.match(c.stderr, /^eng: FAIL \.eng\/lock\.json/m);
+});

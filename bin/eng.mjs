@@ -179,8 +179,8 @@ const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 // Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
 // what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
 // their first write, so a refusal writes nothing. init passes the config it is about to seed.
-function syncPlan(cur = readOr('eng.config.yml')) {
-  const old = readLock();
+function syncPlan(seed = null) {
+  const old = readLock(), cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
