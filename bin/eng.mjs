@@ -137,12 +137,17 @@ const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileS
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
-// eng's block in AGENTS.md must be findable before eng writes anything (lib/render.mjs agentsBlockSpan).
-function agentsBlockOrDie() { const span = agentsBlockSpan(readOr('AGENTS.md') ?? ''); if (span.error) die(span.error); }
+// What makes eng sync refuse whatever the config says, checked before eng writes anything: its block in AGENTS.md
+// (lib/render.mjs agentsBlockSpan) and the lock. Returns the lock.
+function preflight() {
+  const span = agentsBlockSpan(readOr('AGENTS.md') ?? '');
+  if (span.error) die(span.error);
+  try { return parseLock(readOr('.eng/lock.json')); } catch (e) { die(`.eng/lock.json is not a lock eng can read (${e.message}). Fix it or delete it (eng sync writes a new one), then run eng sync.`); }
+}
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
-  agentsBlockOrDie();
+  preflight();
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
@@ -231,7 +236,7 @@ function sync() {
 // gets a CODEOWNERS line and baselines, so the findings it has today pass and only new ones fail. Re-running is safe:
 // an existing config is kept, and a baseline is written only when it is missing.
 function init() {
-  agentsBlockOrDie();
+  preflight();
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
     if (!shipping) {
@@ -286,8 +291,11 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
-  agentsBlockOrDie();
+  preflight();
   const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
+  // A config eng sync would migrate and then refuse gets the refusal, not advice to run eng sync.
+  const mig = configMigration();
+  if (mig) { const next = YAML.parse(mig.text); validate(next); const errs = renderErrors(next); if (errs.length) die('config invalid:\n  ' + errs.join('\n  ')); }
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
   const cfg = loadConfig();

@@ -4,14 +4,14 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## 0.23.10 (21 Nov 2026)
 
-**`eng sync` finds the AGENTS.md block only by whole marker lines outside fenced code, and a refusal writes nothing** (Core task p57dd5k4fvwcf37hbc4a1hbwjh8jnq77, found in review of #98; the bugs predate it). Before, eng found the block by substring.
+**`eng sync` replaces only its own signed block in AGENTS.md, skips fenced code and comments, and a refusal writes nothing** (Core task p57dd5k4fvwcf37hbc4a1hbwjh8jnq77, found in review of #98; the bugs predate it). Before, eng found the block by substring: from the first `<!-- eng:begin -->` anywhere to the first `<!-- eng:end -->`.
 
-- Repo text that quoted `<!-- eng:begin -->` inline was taken for the block start, and eng sync deleted the repo text between the quote and the real block. Now a marker counts only as a whole line (up to three spaces of indent, trailing spaces allowed), and the indent and spaces around it are kept.
-- A marker pair in a fenced example (```` ``` ```` or `~~~`, also inside a list item or blockquote) was taken for the block, and eng sync overwrote the example. Fenced code and multi-line HTML comments are now repo text, above or below the real block. An example and no block: eng appends the block after it. Lines may end in `\n`, `\r\n` or `\r`.
-- Marker lines that are not one begin then one end, or a fence or comment that never closes when eng must append the block, make `eng sync`, `eng sync --check`, `eng doctor` and `eng init` stop with the fix before anything else.
-- `project.description` may not start with a code fence: it starts a line in the block, where a fence would hide the end marker.
-- With such markers, eng sync used to write the `git.rewrite_pushed` migration to `eng.config.yml` before it refused. It now checks everything before its first write, the lock file included, so a refusal leaves every file as it was.
-- **Upgrade:** move the pin, install and run `eng sync`. An AGENTS.md with one block and no marker lines elsewhere renders exactly as before.
+- **The block is signed.** Every eng release since v0.1.0 writes its GENERATED line right after `<!-- eng:begin -->`. eng now takes its block to be a whole `<!-- eng:begin -->` line (up to three spaces of indent) followed by that line, through the next marker line, which must be `<!-- eng:end -->` with no code fence or HTML comment in between. A repo that has only ever run eng sync has exactly that.
+- **Repo text is never taken for the block.** A marker quoted inline, shown in a fenced example (```` ``` ```` or `~~~`, also in a list item or blockquote) or inside a multi-line HTML comment is repo text, above or below the block. Before, an inline quote made eng sync delete the repo text between the quote and the block, and a fenced example was overwritten. Lines may end in `\n`, `\r\n` or `\r`.
+- **eng refuses what it cannot place,** and says how to fix it: two blocks, a block with no clean end, marker lines outside code with no signed block, or a fence or comment left open where eng would append. To place the block by hand, put the GENERATED line after the begin line; the error prints it. With no marker lines outside code, eng appends the block as before.
+- **A refusal writes nothing.** With bad markers, eng sync used to write the `git.rewrite_pushed` migration to `eng.config.yml` first. `eng sync`, `eng sync --check` and `eng init` now check the markers, the lock (`.eng/lock.json` must be JSON with a list of paths) and the migrated config before any write; `sync --check` reports what eng sync would refuse rather than advising it.
+- `project.description` may not start with a code fence, and `project.name` must be one line: both start lines in the block, where a fence would hide the end marker.
+- **Upgrade:** move the pin, install and run `eng sync`. An AGENTS.md eng wrote renders exactly as before.
 
 ## 0.23.9 (21 Nov 2026)
 
