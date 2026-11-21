@@ -37,13 +37,15 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 const failsClosed = (r, shape) => {
   assert.equal(r.status, 1, `${shape}: ${r.stdout}${r.stderr}`);
   assert.doesNotMatch(r.stdout, /eng verdict: PASS/, shape);
-  assert.deepEqual(r.stderr.trim().split('\n'), [r.stderr.trim().split('\n')[0]], `${shape}: one line, no stack trace: ${r.stderr}`);
-  assert.match(r.stderr.trim(), PLAIN, shape);
+  assert.equal(r.stdout, '', `${shape}: nothing before the FAIL line: ${r.stdout}`);
+  assert.match(r.stderr, new RegExp(PLAIN.source.slice(0, -1) + '\\n$'), `${shape}: one line, no stack trace: ${r.stderr}`);
 };
 
 test('no change on the branch: a wrong-shaped comments output fails closed; the expected shape still passes', () => {
   for (const s of WRONG) failsClosed(check(s), s);
-  for (const s of ['[]', '[[]]', '[[{"body":"hi"}],[]]']) {
+  // With no change the comments are only checked for shape, not parsed, so an odd field in a verdict comment passes as on main.
+  const odd = JSON.stringify([[{ body: '<!-- eng-verdict/v1 -->\n```json\n{"sha":"x","result":"PASS","by":"x"}\n```', created_at: { toString: null } }]]);
+  for (const s of ['[]', '[[]]', '[[{"body":"hi"}],[]]', odd]) {
     const r = check(s);
     assert.equal(r.status, 0, `${s}: ${r.stdout}${r.stderr}`); assert.match(r.stdout, /eng verdict: PASS \(no change against base\)/);
   }
