@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
@@ -88,11 +88,26 @@ function harnessConfigErrors(c) {
   if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
   return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
 }
+// GitHub reads a PULL_REQUEST_TEMPLATE/ folder (any case) at the root, in .github or in docs, and ownPrTemplates counts it
+// as the repo's own PR template. A skills or checks folder there would turn eng's own output into the repo's template:
+// the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
+// (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
+// template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
+const PR_TEMPLATE_DIR = /^pull_request_template$/i;
+function prTemplateDirErrors(c) {
+  const dirs = [[c?.agents?.skills_dir, 'agents.skills_dir', '.agents/skills'], [checksDir(c), 'verification.checks_dir', '.eng/checks']];
+  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what, dflt]) => {
+    const [a, b = ''] = (repoRel(d) ?? '').split('/');
+    const t = PR_TEMPLATE_DIR.test(a) ? a : /^(\.github|docs)$/i.test(a) && PR_TEMPLATE_DIR.test(b) ? `${a}/${b}` : null;
+    return t ? [`${what} (${d}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
+  });
+}
 function configErrors(c) {
   const errs = [];
   if (!c || typeof c !== 'object') return ['eng.config.yml is not a mapping'];
   errs.push(...dirValueErrors(c));
   errs.push(...harnessConfigErrors(c));
+  errs.push(...prTemplateDirErrors(c));
   if (c.version !== 1) errs.push('version must be 1');
   if (!c.merge?.owner || !c.merge?.command) errs.push('merge.owner and merge.command are required (no global merge rule)');
   if (c.merge?.method === 'rebase') errs.push('merge.method may not be rebase');

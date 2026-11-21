@@ -112,7 +112,9 @@ or exit code. It is off in CI (`CI` set), under `node --test`, in a repo that do
   rendered `AGENTS.md` tells every agent to read `.agents/skills/<name>/SKILL.md` directly. eng never creates, changes or
   deletes anything in `.claude/skills` or `.claude/agents`: developers and other tools own those folders. A
   setting that would make eng write into either one (`agents.skills_dir: .claude/skills` or `.claude/custom`,
-  `verification.checks_dir: .claude/skills`) is a config error, and an old lock's files there are never pruned. For Claude Code's own skill discovery, link each folder once:
+  `verification.checks_dir: .claude/skills`) is a config error, and an old lock's files there are never pruned. A
+  `skills_dir` or `checks_dir` in a folder GitHub reads as a PR template folder (`pull_request_template/` in any case, at
+  the root, in `.github` or in `docs`) is a config error too: eng would count its own files there as the repo's template. For Claude Code's own skill discovery, link each folder once:
   `ln -s ../.agents/skills .claude/skills` and `ln -s ../.agents/agents .claude/agents`. `eng sync` prints one line
   saying whether Claude Code can see every eng skill and subagent there, and the fix when it cannot, quoted and
   relative to the real `.claude` folder when `.claude` is itself a link. It is a warning, never a failure.
