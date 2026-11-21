@@ -118,3 +118,31 @@ test('eng sync, sync --check and init refuse every rendered value with a line br
     }
   }
 });
+
+// Review round 1 on #123: the checks_dir refusal under pr_checks: affected names an aliased skills_dir value too, so it
+// is shown escaped, never raw.
+test('the checks_dir that leaves the repo is shown escaped, so the refusal stays one printable line', async () => {
+  const { checkErrors } = await import('../lib/verification.mjs');
+  const errs = checkErrors({ checks_dir: '../a b', pr_checks: 'affected' });
+  assert.equal(errs.length, 1, JSON.stringify(errs));
+  assert.match(errs[0], /^verification\.checks_dir \("\.\.\/a\\u2028b"\) leaves the repo/);
+  assert.match(errs[0], PRINTABLE);
+});
+
+// Review round 1 on #123: eng init seeds project.name from package.json or the folder name. One that is not one line is
+// passed over, so init never seeds a config it then refuses.
+test('eng init seeds a one-line project.name when the package or folder name holds a line break', () => {
+  for (const [folder, pkgName, want] of [['a\nb', null, 'repo'], ['plain', 'pk g', 'plain'], ['x y', 'good-name', 'good-name']]) {
+    const parent = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-seed-')); scratch.push(parent);
+    const dir = path.join(parent, folder); fs.mkdirSync(dir);
+    const git = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'x\n');
+    if (pkgName) fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkgName }));
+    git('add', '-A'); git('commit', '-qm', 'base');
+    const res = spawnSync(process.execPath, [ENG, 'init', '--owner', '@o'], { cwd: dir, encoding: 'utf8', timeout: 120_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    const why = `${JSON.stringify(folder)} / ${JSON.stringify(pkgName)}`;
+    assert.equal(res.status, 0, `${why}: ${out(res).slice(-1500)}`);
+    assert.equal(YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')).project.name, want, why);
+  }
+});
