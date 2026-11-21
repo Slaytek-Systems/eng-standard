@@ -26,7 +26,7 @@ One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md fi
 
 ## Start here
 
-How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `SHIPPING.md` carries the short version (Reference, section "This standard"). The `AGENTS.md` block is a short router: `project.description` when set, the one command that proves a change (`eng gate`), each judgment-only rule (`agents.rules` with `enforced_by: review`) as a sharp edge, that the repo's own text wins where it differs, the route when a check blocks you, where the skills are, and that `SHIPPING.md` has the rest.
+How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `SHIPPING.md` carries the short version (Reference, section "This standard"). The `AGENTS.md` block is a short router: `project.description` when set, `eng gate` before review (exit 0 passes, exit 3 does not), each judgment-only rule (`agents.rules` with `enforced_by: review`) as a sharp edge, that the repo's own text wins where it differs, the route when a check blocks you, where the skills are, and that `SHIPPING.md` has the rest.
 
 ## Profiles
 

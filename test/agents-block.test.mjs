@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execSync, spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { renderAll } from '../lib/render.mjs';
 
@@ -19,7 +21,7 @@ test('the AGENTS.md block is a short router under 180 words, in both profiles', 
     assert.ok(words(block) < 180, `${profile}: ${words(block)} words`);
     const lines = block.split('\n').filter(l => l.startsWith('- '));
     assert.equal(lines.length, 5, `${profile}: ${lines.join('\n')}`);
-    assert.match(lines[0], /^- Prove a change with `eng gate`: it runs every check and gate this repo requires\. Only exit 0 is a pass\.$/);
+    assert.match(lines[0], /^- Run `eng gate` before asking for review\. Exit 0: every check and required gate passed\. Exit 3: some were deferred .*, not a pass\. Merging may need more \(`SHIPPING\.md`\)\.$/);
     assert.match(lines[1], /Text outside this block is this repo's own\. Where it, or a local rule in `SHIPPING\.md`, differs from what eng renders, the repo's text wins\./);
     assert.match(lines[2], /When one blocks you, take the route its message names; if it names none, find the rule in `SHIPPING\.md`\. Never bypass a check/);
     assert.match(lines[3], /Read `\.agents\/skills\/eng-route\/SKILL\.md` to pick one/);
@@ -44,7 +46,7 @@ test('a representative AGENTS.md renders under 60 lines and keeps the repo-owned
   assert.ok(a.split('\n').length < 60, `AGENTS.md is ${a.split('\n').length} lines`);
   assert.ok(a.startsWith(head), 'the repo text above the block is unchanged');
   assert.ok(a.endsWith(`<!-- eng:end -->\n${override}`), 'the repo-owned override section after the block is unchanged');
-  assert.ok(block.includes(`\n${c.project.description}\n- Prove a change`), 'the description is the first line under the heading');
+  assert.ok(block.includes(`\n${c.project.description}\n- Run \`eng gate\``), 'the description is the first line under the heading');
   const edges = block.split('\n').filter(l => l.startsWith('- Sharp edge, no check catches it: '));
   assert.deepEqual(edges.map(l => l.slice('- Sharp edge, no check catches it: '.length)), c.agents.rules.slice(0, 2).map(r => r.rule), 'only the judgment-only rules are listed, in order');
   // The block states no rule the override contradicts: who merges, and whether to rebase, are the repo's call.
@@ -52,14 +54,31 @@ test('a representative AGENTS.md renders under 60 lines and keeps the repo-owned
   assert.match(block, /the repo's text wins/);
 });
 
-test('project.description must be one line', async () => {
-  const { profileErrors } = await import('../lib/profile.mjs');
-  for (const bad of ['', '  ', 'two\nlines', 42]) {
+test('a description or review rule that is not one plain line is a config error, and eng sync writes nothing', async () => {
+  const { agentsBlockErrors } = await import('../lib/render.mjs');
+  for (const bad of ['', '  ', 'two\nlines', 42, 'see <!-- eng:end --> here', 'a <!-- comment']) {
     const c = template(); c.project.description = bad;
-    assert.ok(profileErrors(c).some(e => e.startsWith('project.description must be one line')), JSON.stringify(bad));
+    assert.ok(agentsBlockErrors(c).some(e => e.startsWith('project.description must be one line')), JSON.stringify(bad));
   }
-  const c = template(); c.project.description = 'One line.';
-  assert.deepEqual(profileErrors(c), []);
+  for (const bad of [undefined, { a: 1 }, '', 'x\ny', 'ends --> here']) {
+    const c = template(); c.agents.rules = [{ enforced_by: 'review', why: 'judgment', ...(bad === undefined ? {} : { rule: bad }) }];
+    assert.deepEqual(agentsBlockErrors(c), [`agents.rules[0].rule must be one line of text with no HTML comment (a review rule is rendered into the AGENTS.md block as a sharp edge)`], JSON.stringify(bad));
+  }
+  const c = template(); c.project.description = 'One line.'; c.agents.rules = [{ rule: 'Deploys run by hand', enforced_by: 'review', why: 'no check sees it' }];
+  assert.deepEqual(agentsBlockErrors(c), []);
+
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-block-'));
+  try {
+    execSync('git init -q -b main', { cwd: dir });
+    const cfg = template(); cfg.project.description = 'Quotes the marker <!-- eng:end --> on purpose.';
+    fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(cfg));
+    const mine = '# AGENTS.md\n\nRepo notes.\n';
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), mine);
+    const r = spawnSync(process.execPath, [path.join(PKG, 'bin/eng.mjs'), 'sync'], { cwd: dir, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout + r.stderr, /project\.description must be one line/);
+    assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), mine, 'AGENTS.md is untouched');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('without the eng-route skill, the block points at the router in SHIPPING.md, never at a missing file', () => {

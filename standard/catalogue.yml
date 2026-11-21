@@ -26,15 +26,15 @@ practices:
     stops_when: "The full suite is too slow to run locally; then keep one command per tier (fast, full) and have CI call the same tiers."
     detect:
       - "The CI workflow's check steps call one script or package command (for example `npm run validate`, `ci/stages.sh`)."
-      - "The local command the docs name is that same script, or calls every step CI calls."
+      - "The local command the docs name is that same script. Two lists that match today but are kept separately do not count: they drift."
       - "A linter is configured and runs in that command."
     adopt: "Pick the command the repo already has (a package script, a Makefile target, a shell script). Make CI call it instead of listing steps, and add any step only one side ran. With eng, name it in project.commands and gates.required so eng gate runs it."
     skip: "Valid with a recorded reason, such as no CI yet."
     evidence: "One audited repo's local validate skipped the linter its CI ran. Another ran one isolated validation script everywhere. The third had tests but no linter."
 
   executable-proof-for-high-stakes-logic:
-    what: "Logic where a bug costs most (state machines, money, auth and permissions, parsers, data migrations) has a check that runs it over many inputs: a property test, a model check or a fuzz test, run in CI."
-    why: "Example-based tests cover the cases someone thought of. Bugs in high-stakes logic live in the cases nobody did, and they come back after each fix until a check covers the whole input space."
+    what: "Logic where a bug costs most (state machines, money, auth and permissions, parsers, data migrations) has a check that runs it over far more inputs than hand-written examples: a property test, a bounded model check or a fuzz test, run in CI."
+    why: "Example-based tests cover the cases someone thought of. Bugs in high-stakes logic live in the cases nobody did, and they come back after each fix. Generated inputs or a model search reach many more of those cases. They prove only what they sample or explore, within the bounds the check states, so record the bounds."
     fits_when: "The repo has a flow that moves between states, money or permission logic, or a parser, and bugs there have recurred or would be costly."
     stops_when: "The logic becomes plain CRUD, or the check costs more to keep than the bugs it has found."
     detect:
