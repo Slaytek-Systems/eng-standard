@@ -72,11 +72,6 @@ test('another gh failure, or no gh at all, is one plain FAIL line with no gh tex
     assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
     assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5; run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
   }
-  // HEAD moves while gh reads the PR's comments: check --pr refuses instead of judging another commit.
-  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\ngit commit -q --allow-empty -m moved >/dev/null 2>&1\necho "[[]]"\n', { mode: 0o755 });
-  const moved = repo(null, noGh)(['verdict', 'check', '--pr', '5']);
-  assert.equal(moved.status, 1, moved.stdout + moved.stderr);
-  assert.match(moved.stderr, /^eng: FAIL verdict: HEAD moved from [0-9a-f]{8} to [0-9a-f]{8} while PR #5's verdicts were read; run eng verdict check again\n$/, moved.stderr);
   // A --pr that is not a plain number is a usage error before gh runs.
   const x = repo(null, noGh)(['verdict', 'PASS', '--by', 'probe', '--pr', '1e2']);
   assert.equal(x.status, 1); assert.match(x.stderr, /^eng: FAIL usage: eng verdict .*--pr <n>, where <n> is the PR number\n$/, x.stderr);

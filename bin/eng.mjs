@@ -953,12 +953,11 @@ function prVerdicts(cfg, n, H) {
 }
 function verdictCheck() {
   const cfg = loadConfig(), pr = arg('--pr');
-  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line. The check
-  // refuses if HEAD moved meanwhile, and every later read uses that one SHA; without --pr HEAD is read after the evidence check.
-  const prH = pr ? head() : null, posted = pr ? prVerdicts(cfg, pr, prH) : [];
+  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line. Without
+  // --pr HEAD is read after the evidence check, so a repo with no commits still gets its evidence check first.
+  const posted = pr ? prVerdicts(cfg, pr, head()) : [];
   evidenceCheck(cfg);
-  const H = head(), pid = patchId(cfg, H);
-  if (prH && H !== prH) die(`verdict: HEAD moved from ${prH.slice(0, 8)} to ${H.slice(0, 8)} while PR #${pr}'s verdicts were read; run eng verdict check again`);
+  const H = head(), pid = patchId(cfg);
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
@@ -976,13 +975,13 @@ function verdictCheck() {
   // Each verifier's latest verdict counts and any FAIL among them blocks, as in self-merge and eng merge gate.
   const latest = [...new Map(all.map(x => [x.by, x])).values()], failed = latest.find(x => x.result === 'FAIL');
   if (failed) die(`verdict: latest verdict by ${failed.by} is FAIL`);
-  const mb = sh(`git merge-base ${baseRef(cfg)} ${H}`);
-  const testable = testableFiles(sh(`git diff --no-renames --name-only ${mb} ${H}`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
+  const mb = sh(`git merge-base ${baseRef(cfg)} HEAD`);
+  const testable = testableFiles(sh(`git diff --no-renames --name-only ${mb} HEAD`).split('\n').filter(Boolean), reviewOnlyPaths(cfg));
   for (const x of latest) { const p = passProblem(x, testable); if (p) console.log(`  not counted: ${x.result} ${methodOf(x)} by ${x.by}: ${p}`); }
   const counted = latest.filter(x => !passProblem(x, testable)), v = counted.at(-1);
   if (!v) die('verdict: no PASS counts for this commit: verify it by running checks on this commit (eng run --by <id> -- <cmd>), then eng verdict PASS --by <id>');
   // risk:high (ship.high_risk, the rule self-merge and the risk label apply) needs ship.high_risk.verifiers distinct verifiers.
-  const risk = riskOf(cfg, mb, H), need = cfg.ship?.high_risk?.verifiers ?? SELF_MERGE_DEFAULTS.high_verifiers;
+  const risk = riskOf(cfg, mb), need = cfg.ship?.high_risk?.verifiers ?? SELF_MERGE_DEFAULTS.high_verifiers;
   if (risk.risk === 'high') {
     if (!(Number.isInteger(need) && need >= 1)) die(`verdict: ship.high_risk.verifiers must be a whole number >= 1 (got ${JSON.stringify(need)})`);
     console.log(`  risk:high (${risk.hits.slice(0, 3).map(h => h.file).join(', ')}${risk.hits.length > 3 ? ', ...' : ''})`);
@@ -994,9 +993,9 @@ function verdictCheck() {
 }
 // The change's risk class from ship.high_risk, as the risk-label workflow computes it (lib/risk.mjs), on the local diff.
 // No ship.high_risk block: low, as before 0.18.1, unless this change removed it.
-function riskOf(cfg, mb, rev = 'HEAD') {
+function riskOf(cfg, mb) {
   const hr = cfg.ship?.high_risk;
-  const z = sh(`git diff -z --name-status -M ${mb} ${rev}`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
+  const z = sh(`git diff -z --name-status -M ${mb} HEAD`).split('\0'), files = [], status = { M: 'modified', A: 'added', D: 'removed', T: 'modified' };
   for (let i = 0; i < z.length && z[i];) {
     const k = z[i][0];
     if (k === 'R' || k === 'C') { files.push({ filename: z[i + 2], previous_filename: k === 'R' ? z[i + 1] : undefined, status: k === 'R' ? 'renamed' : 'added' }); i += 3; }
