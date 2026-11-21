@@ -19,6 +19,7 @@ const scratch = [];
 after(() => scratch.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 
 const bad = repo => ['', ' ', '/.eng/x', './.eng/x', `../${repo}/.eng/x`, '.eng/../x', '.eng/./x', '.eng//x', '.eng/x/', '.eng\\x', '.eng/x\0', '.eng/<!--x', '<!-- eng:end -->', false, null, 42, { a: 'b' }];
+const shown = v => v && typeof v === 'object' ? '(a mapping)' : JSON.stringify(v);
 const good = ['.eng/checks', '.agents/skills', 'tools/skills', 'ci/checks', 'my dir/x', '.x'];
 
 test('dirValueErrors refuses every *_dir value that is not a normalised relative repo path, or that holds <!--', () => {
@@ -27,7 +28,7 @@ test('dirValueErrors refuses every *_dir value that is not a normalised relative
     for (const v of bad('r')) {
       const errs = dirValueErrors({ [a]: { [b]: v } });
       assert.equal(errs.length, 1, `${key} ${JSON.stringify(v)}: ${errs}`);
-      assert.ok(errs[0].startsWith(`${key} ${JSON.stringify(v)} `), errs[0]);
+      assert.ok(errs[0].startsWith(`${key} ${shown(v)} `), errs[0]);
       assert.deepEqual(dirValueErrors({ [a]: {} }), [], `${key} unset`);
     }
     for (const v of good) assert.deepEqual(dirValueErrors({ [a]: { [b]: v } }), [], `${key} ${v}`);
@@ -37,6 +38,8 @@ test('dirValueErrors refuses every *_dir value that is not a normalised relative
   const cyclic = YAML.parse('meta: &m\n  self: *m\n  x_dir: ./x\n');
   assert.equal(cyclic.meta.self, cyclic.meta, 'the alias makes the config cyclic');
   assert.deepEqual(dirValueErrors(cyclic).map(e => e.split(' ')[0]), ['meta.x_dir'], 'a cyclic config is walked once, without a crash');
+  const own = YAML.parse('agents:\n  skills_dir: &d\n    self: *d\n');
+  assert.deepEqual(dirValueErrors(own), ['agents.skills_dir (a mapping) is not a string: it must be a relative repo path written as git does, with no <!--'], 'a cyclic *_dir value is named by its type');
 });
 
 function repo() {
@@ -81,7 +84,7 @@ test('eng sync, sync --check and init refuse a bad checks_dir or agents.skills_d
       for (const args of [['sync'], ['sync', '--check'], ['init']]) {
         const res = r.eng(args), why = `${a}.${b} ${JSON.stringify(v)}: eng ${args.join(' ')}`;
         assert.equal(res.status, 1, `${why} refuses: ${out(res).slice(-1500)}`);
-        assert.ok(out(res).includes(`${a}.${b} ${JSON.stringify(v)} `), `${why} names the key and value: ${out(res).slice(-1500)}`);
+        assert.ok(out(res).includes(`${a}.${b} ${shown(v)} `), `${why} names the key and value: ${out(res).slice(-1500)}`);
         assert.deepEqual(shot(r.dir), before, `${why} wrote nothing`);
       }
     }
