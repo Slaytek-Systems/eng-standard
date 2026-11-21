@@ -176,18 +176,18 @@ function skillVisibilityOf(cfg) {
 const claudeVisibility = cfg => cfg.agents.harnesses.includes('claude-code') ? claudeLine(skillVisibilityOf(cfg)) : null;
 const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
-// Removes what this release retired from eng.config.yml (lib/migrate.mjs) before anything reads it, keeping every other byte.
-function migrateConfig() {
-  const p = path.join(ROOT, 'eng.config.yml'), cur = readOr('eng.config.yml');
-  if (cur === null) return 0;
+// Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
+// what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
+// their first write, so a refusal writes nothing.
+function syncPlan() {
+  const old = readLock(), cur = readOr('eng.config.yml');
+  if (cur === null) die('no eng.config.yml (run `eng init`)');
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
-  if (!changes.length) return 0;
-  validate(YAML.parse(added?.text ?? text));
-  fs.writeFileSync(p, added?.text ?? text);
-  for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
-  return changes.length;
+  const cfg = YAML.parse(added?.text ?? text);
+  validate(cfg);
+  return { old, cfg, migrated: changes.length ? added?.text ?? text : null, changes, files: render(cfg), exec: renderedExecutables(cfg) };
 }
 // Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
 function graphiteRepo() {
@@ -198,12 +198,13 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   ? { ok: false, what: 'git.rewrite_pushed is missing', fix: 'run eng sync: it adds protected when Graphite is set up here, otherwise never, and prints why' }
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
-function sync() {
-  const old = readLock();
-  const migrated = migrateConfig();
-  const cfg = loadConfig();
-  const files = render(cfg), exec = renderedExecutables(cfg);
-  let changed = migrated;
+function sync(plan = syncPlan()) {
+  const { old, cfg, files, exec, changes } = plan;
+  if (plan.migrated !== null) {
+    fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), plan.migrated);
+    for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
+  }
+  let changed = changes.length;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
     if (readOr(p) === content && !(exec.has(p) && !isExec(abs))) continue;
@@ -242,9 +243,9 @@ function init() {
     }
     else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
-  const cfg = loadConfig();
+  const plan = syncPlan(), cfg = plan.cfg;
   fs.mkdirSync(path.join(ROOT, checksDir(cfg)), { recursive: true });
-  sync();
+  sync(plan);
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
   console.log('  git config core.hooksPath .githooks');
@@ -287,12 +288,11 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
-  readLock();
+  // Every refusal eng sync would make comes first, so the migration advice below names a sync that passes.
+  const { cfg, files } = syncPlan();
   const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
-  const cfg = loadConfig();
-  const files = render(cfg);
   const bad = [];
   for (const [p, c] of Object.entries(files)) {
     const cur = readOr(p);
@@ -1139,8 +1139,8 @@ const found = COMMANDS.find(([n]) => n === cmd);
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
-// sync and init refuse a bad lock before the update notice writes its cache.
-else if (found) { if (cmd === 'sync' || cmd === 'init') readLock(); if (cmd !== 'doctor') await updateNotice(); found[3](); }
+// sync and init print the update notice after they run, so a refusal never lets it write its cache.
+else if (found) { const late = cmd === 'sync' || cmd === 'init'; if (cmd !== 'doctor' && !late) await updateNotice(); found[3](); if (late) await updateNotice(); }
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);
