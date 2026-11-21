@@ -60,12 +60,13 @@ test('a description or review rule that is not one plain line is a config error,
     const c = template(); c.project.description = bad;
     assert.ok(agentsBlockErrors(c).some(e => e.startsWith('project.description must be one line')), JSON.stringify(bad));
   }
-  for (const bad of [undefined, { a: 1 }, '', 'x\ny', 'ends --> here']) {
+  for (const bad of [undefined, { a: 1 }, '', 'x\ny', 'opens <!-- here']) {
     const c = template(); c.agents.rules = [{ enforced_by: 'review', why: 'judgment', ...(bad === undefined ? {} : { rule: bad }) }];
     assert.deepEqual(agentsBlockErrors(c), [`agents.rules[0].rule must be one line of text with no HTML comment (a review rule is rendered into the AGENTS.md block as a sharp edge)`], JSON.stringify(bad));
   }
-  const c = template(); c.project.description = 'One line.'; c.agents.rules = [{ rule: 'Deploys run by hand', enforced_by: 'review', why: 'no check sees it' }];
-  assert.deepEqual(agentsBlockErrors(c), []);
+  const c = template(); c.project.description = 'One line: draft --> review.'; c.agents.rules = [{ rule: 'Deploys run by hand; draft --> review --> live', enforced_by: 'review', why: 'no check sees it' }];
+  assert.deepEqual(agentsBlockErrors(c), [], 'a bare --> is plain text, not a marker');
+  assert.match(blockOf(renderAll(c, null)['AGENTS.md']), /- Sharp edge, no check catches it: Deploys run by hand; draft --> review --> live\n/);
 
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-block-'));
   try {
