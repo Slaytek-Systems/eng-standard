@@ -166,6 +166,8 @@ function ownPrTemplates(rendered) {
     .filter(p => !ours(p));
 }
 const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
+// The exact name is on disk: on a case-insensitive disk existsSync would also find another file whose name differs in case.
+const onDisk = p => { try { return fs.readdirSync(path.join(ROOT, path.dirname(p))).includes(path.basename(p)); } catch { return false; } };
 
 // What each agent tool can see of the skills and subagents eng renders (lib/skill-visibility.mjs). Developers and other
 // tools own .claude/skills, .claude/agents and every link between tool folders, so eng only reads them (Matt, 9 and 10 Nov 2026).
@@ -187,46 +189,7 @@ function syncPlan(seed = null) {
   if (added) changes.push(added);
   const cfg = YAML.parse(added?.text ?? text);
   validate(cfg);
-  const files = render(cfg);
-  return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune: prunePlan(old.files, files), exec: renderedExecutables(cfg) };
-}
-// The files a previous sync generated that the config no longer renders and that are on disk, each once. Never in
-// .claude/skills or .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the
-// developer. eng never reads through a symlink here. An entry is refused when a folder on its path, below the repo root,
-// is a symlink (a delete could land outside the repo or on another repo file), whether or not the file is there, or when
-// eng cannot read a folder on its path, so cannot tell what it would delete. A folder that is not there means the entry
-// is gone: skipped. eng writes regular files, so anything else at a stale path is the developer's and stays: a symlink
-// (neither it nor its target goes), a folder or a FIFO.
-function prunePlan(lockFiles, files) {
-  const prune = [], refused = [];
-  for (const p of new Set(lockFiles)) {
-    if (p in files || harnessOut(p)) continue;
-    const why = folderProblem(p);
-    if (why === null) continue;
-    if (why) { refused.push(`${p} (${why})`); continue; }
-    // The exact name in its folder's listing: on a case-insensitive disk lstat would also find another file.
-    const dir = path.dirname(p);
-    let names; try { names = fs.readdirSync(path.join(ROOT, dir)); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') refused.push(`${p} (${dir} cannot be read (${e.code}))`); continue; }
-    if (!names.includes(path.basename(p))) continue;
-    let st; try { st = fs.lstatSync(path.join(ROOT, p)); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-    if (st.isFile()) prune.push(p);
-  }
-  if (refused.length) die(`.eng/lock.json: eng sync would prune ${refused.length} file(s) the config no longer renders through a symlinked folder, or in a folder eng cannot read: ${refused.join(', ')}. eng reads nothing through the link, and writes and deletes nothing. Fix: delete each file yourself if it should go, then replace the linked folder with a real one (or make the folder readable), or remove the entry from .eng/lock.json; then run eng sync.`);
-  return prune;
-}
-// For each folder on the repo-relative path p, below the repo root, from the top down: why it is a symlink or cannot be
-// read; null when one is not there (the entry is gone); false when every folder is a real folder eng can list. lstat never
-// follows a link, and access runs only on a real folder.
-function folderProblem(p) {
-  const parts = p.split('/').slice(0, -1);
-  for (let i = 1; i <= parts.length; i++) {
-    const d = parts.slice(0, i).join('/');
-    let st; try { st = fs.lstatSync(path.join(ROOT, d)); } catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${d} cannot be read (${e.code || e.message})`; }
-    if (st.isSymbolicLink()) return `${d} is a symlink`;
-    if (!st.isDirectory()) return null;
-    try { fs.accessSync(path.join(ROOT, d), fs.constants.R_OK); } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
-  }
-  return false;
+  return { old, cfg, migrated: changes.length ? added?.text ?? text : null, changes, files: render(cfg), exec: renderedExecutables(cfg) };
 }
 // Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
 function graphiteRepo() {
@@ -238,7 +201,7 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
 function sync(plan = syncPlan()) {
-  const { cfg, files, prune, exec, changes } = plan;
+  const { old, cfg, files, exec, changes } = plan;
   if (plan.migrated !== null) {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), plan.migrated);
     for (const m of changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
@@ -252,12 +215,9 @@ function sync(plan = syncPlan()) {
     if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
-  // Prune what syncPlan checked (prunePlan). eng assumes no other process changes the repo while it runs; a file gone
-  // since the plan is skipped.
-  for (const p of prune) {
-    try { fs.unlinkSync(path.join(ROOT, p)); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-    console.log(`  removed ${p}`); changed++; rmEmptyParents(p);
-  }
+  // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
+  // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
+  for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
