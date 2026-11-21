@@ -50,3 +50,11 @@ test('a nested key given twice names its line and the key', () => {
 test('YAML that does not parse is one plain line naming the file and the line', () => {
   refuses('version: 1\nproject: a: b\n', 'config invalid: eng.config.yml line 2: the YAML does not parse (Nested mappings are not allowed in compact mappings)');
 });
+
+test('a repeated quoted key with a line break stays on one line', () => {
+  refuses('version: 1\n"a\\nb": 1\n"a\\nb": 2\n', 'config invalid: eng.config.yml line 3: the key "a\\nb" is given twice');
+});
+
+test('an alias with no anchor is one plain line, not a ReferenceError', () => {
+  refuses('version: 1\nproject: *unknown\n', 'config invalid: eng.config.yml: the YAML does not parse (Unresolved alias (the anchor must be set before the alias): unknown)');
+});
