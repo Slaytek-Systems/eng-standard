@@ -110,9 +110,16 @@ test('eng sync, sync --check and init refuse a rendered value with a line break:
 // Review round 1: a YAML anchor defined before agents must not hide agents.skills_dir from the refusal.
 test('a rendered *_dir value shared by a YAML alias is refused under every key that reaches it', () => {
   const c = YAML.parse('shared: &a\n  skills_dir: "tools/skills\\u2028more"\nagents: *a\nother:\n  x: *a\n');
-  assert.deepEqual(dirValueErrors(c).map(e => e.split(' ')[0]), ['shared.skills_dir', 'agents.skills_dir', 'other.x.skills_dir']);
+  assert.deepEqual(dirValueErrors(c).map(e => e.split(' ')[0]), ['shared.skills_dir', 'agents.skills_dir']);
   const cyclic = YAML.parse('meta: &m\n  self: *m\n  x_dir: ./x\n');
   assert.deepEqual(dirValueErrors(cyclic).map(e => e.split(' ')[0]), ['meta.x_dir'], 'a cycle is still walked once');
+  // Review round 2: a mesh of aliases is walked once per object, not once per path (26 levels would be 2^26 paths).
+  let y = 'leaf: &a26 {skills_dir: "a\\u2028b"}\n';
+  for (let i = 25; i >= 0; i--) y += `n${i}: &a${i} {self: *a${i}, first: *a${i + 1}, second: *a${i + 1}}\n`;
+  y += 'agents: *a0\n';
+  const mesh = YAML.parse(y, { maxAliasCount: -1 });
+  // One error, not one per path: a walk per path would build 2^26 of them and never finish.
+  assert.deepEqual(dirValueErrors(mesh).map(e => e.split(' ')[0]), ['leaf.skills_dir']);
 
   // The anchor is defined first, on a key before agents, and agents is only an alias of it.
   const r = repo(), { agents, ...rest } = r.base;
