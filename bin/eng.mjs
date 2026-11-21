@@ -34,6 +34,7 @@ import { declaredPin, pinStatus, lifecycleProblems, changesSince, isBehind, RAW_
 import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
 import { guardErrors, guardWiring, guardProbe, guardReport } from '../lib/guard-setup.mjs';
 import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
+import { listTypeErrors } from '../lib/config-lists.mjs';
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = process.cwd();
@@ -64,7 +65,14 @@ function loadConfig({ quiet = false } = {}) {
 function parseConfig(text, quiet = false) {
   const doc = YAML.parseDocument(text), [e] = doc.errors;
   const bad = 'config invalid: eng.config.yml';
-  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } if (!quiet) doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
+  if (!e) {
+    let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); }
+    // A list entry of the wrong type is refused here, before a migrate step (eng sync) or any check reads it.
+    const typeErrs = listTypeErrors(cfg);
+    if (typeErrs.length) die('config invalid:\n  ' + typeErrs.join('\n  '));
+    if (!quiet) doc.warnings.forEach(w => process.emitWarning(w));
+    return cfg;
+  }
   const at = e.linePos ? `${bad} line ${e.linePos[0].line}` : bad;
   if (e.code !== 'DUPLICATE_KEY') die(`${at}: the YAML does not parse`);
   let k = ''; // the repeated key is the one that starts where the error does
@@ -113,6 +121,9 @@ function prTemplateDirErrors(c) {
 function configErrors(c) {
   const errs = [];
   if (!c || typeof c !== 'object') return ['eng.config.yml is not a mapping'];
+  // Every check below reads list entries as text or mappings, so a wrong-typed entry is the only error given.
+  const typeErrs = listTypeErrors(c);
+  if (typeErrs.length) return typeErrs;
   errs.push(...dirValueErrors(c));
   errs.push(...harnessConfigErrors(c));
   errs.push(...prTemplateDirErrors(c));
