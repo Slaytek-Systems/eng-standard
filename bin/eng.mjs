@@ -142,10 +142,11 @@ const standardProblems = () => lifecycleProblems({ lockVersion: readLock().packa
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
-  // Keyed by normalised path, as the lock records it, so a config path such as ./.eng/checks never gives a lock eng then refuses.
+  // Keyed by the repo path each file is written to, as the lock records it, so a config path such as ./.eng/checks or
+  // /.eng/checks never gives a lock eng then refuses.
   const files = {}, outside = [];
   for (const [p, c] of Object.entries(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))) {
-    const n = path.posix.normalize(p), why = lockPathProblem(n);
+    const n = repoKey(p), why = lockPathProblem(n);
     if (why || n in files) outside.push(`${p} (${why ?? `also rendered as ${n}`})`); else files[n] = c;
   }
   if (outside.length) die(`config invalid:\n  eng would render ${outside.length} file(s) that are not distinct relative, normalised repo paths: ${outside.slice(0, 3).join(', ')}. Fix the setting that names that folder.`);
@@ -159,7 +160,9 @@ function render(cfg) {
 // GitHub reads a PR template from .github/, the root or docs/, named in any case, as a file or a PULL_REQUEST_TEMPLATE/
 // folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
-const renderedExecutables = cfg => new Set([...executables(cfg)].map(p => path.posix.normalize(p)));
+// The repo path that path.join(ROOT, p), the way eng writes it, lands on: ./x, /x and x//y all name x and x/y.
+const repoKey = p => path.relative(ROOT, path.join(ROOT, p)).split(path.sep).join('/');
+const renderedExecutables = cfg => new Set([...executables(cfg)].map(repoKey));
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
   const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);

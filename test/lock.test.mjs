@@ -217,10 +217,10 @@ test('a valid lock still prunes: a listed file the config no longer renders is r
   assert.ok(!fs.existsSync(r.file('docs/OLD.md')));
 });
 
-test('a config folder written ./.eng/checks renders and locks .eng/checks/.gitkeep, so the next sync and sync --check pass', () => {
+for (const dir of ['./.eng/checks', '/.eng/checks']) test(`a config folder written ${dir} renders and locks .eng/checks/.gitkeep, so the next sync and sync --check pass`, () => {
   const r = repo();
-  r.edit('eng.config.yml', s => s.replace(/^( +checks_dir:) \.eng\/checks/m, '$1 ./.eng/checks'));
-  assert.match(r.read('eng.config.yml'), /checks_dir: \.\/\.eng\/checks/);
+  r.edit('eng.config.yml', s => s.replace(/^( +checks_dir:) \.eng\/checks/m, `$1 ${dir}`));
+  assert.ok(r.read('eng.config.yml').includes(`checks_dir: ${dir}`));
   const s = r.eng('sync'); assert.equal(s.status, 0, s.stdout + s.stderr);
   assert.ok(JSON.parse(r.read('.eng/lock.json')).files.includes('.eng/checks/.gitkeep'));
   const again = r.eng('sync'); assert.equal(again.status, 0, again.stdout + again.stderr); assert.match(again.stdout, /^eng sync: no changes$/m);
