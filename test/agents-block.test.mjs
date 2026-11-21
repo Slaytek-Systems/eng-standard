@@ -183,6 +183,12 @@ test('stray unsigned marker lines stay as text and are never refused', () => {
   assert.equal(agentsOf(crlf), `# A\r\n\r\n${BLOCK}\r\nkeep\r\n`, 'a CRLF file keeps its line endings outside the block');
 });
 
+test('with no AGENTS.md, eng creates it and never reads its own new block for markers (review round 1 on #105)', () => {
+  const c = template(); c.project.name = `Marker demo\n<!-- eng:begin -->\n${SIG}\nDemo`;
+  const a = renderAll(c, null)['AGENTS.md'];
+  assert.ok(a.startsWith('# AGENTS.md\n\n<!-- eng:begin -->\n') && a.endsWith('<!-- eng:end -->\n'), a);
+});
+
 test('eng refuses two signed begin lines, or one with no end line after it, and names why', () => {
   for (const [bad, why] of [
     [`${OLD}\n\n${OLD}\n`, /2 signed <!-- eng:begin --> lines/],
