@@ -137,8 +137,10 @@ test('without python3: mode fail refuses the run; mode warn runs it and still st
 });
 
 // A fake /proc. stat fields after "(comm) " (proc(5)): [0] state, [6] flags, [19] start time, [47] env_start, [48] env_end.
-const fakeStat = (pid, { state = 'S', flags = 0, env = [100, 120] }) => { const f = Array(49).fill('0'); f[0] = state; f[6] = String(flags); f[19] = '7'; [f[47], f[48]] = env.map(String); return `${pid} (x) ${f.join(' ')}`; };
-const fakeProc = ps => ({ pids: () => Object.keys(ps).map(Number), read: (pid, f) => {
+// 'self' is this eng, started at 5; a process started before it (start below 5) cannot be the run's.
+const fakeStat = (pid, { state = 'S', flags = 0, start = 7, env = [100, 120] }) => { const f = Array(49).fill('0'); f[0] = state; f[6] = String(flags); f[19] = String(start); [f[47], f[48]] = env.map(String); return `${pid} (x) ${f.join(' ')}`; };
+const fakeProc = ps => ({ pids: () => Object.keys(ps).filter(k => k !== 'self').map(Number), read: (pid, f) => {
+  ps.self ??= { start: 5 };
   if (f === 'environ' && ps[pid].environ === null) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
   return f === 'stat' ? fakeStat(pid, ps[pid]) : ps[pid][f];
 } });
@@ -147,7 +149,7 @@ const fakeLooks = results => { let i = 0; return () => results[Math.min(i++, res
 
 // The 'without python3' flake (CI at 83e7c49 and 7015566): the run's shell exited while the child it put in the background
 // was still in execve, whose new image has no environment yet, so eng read no run id there and passed the run.
-test('a process caught mid-exec, or one that exec\'d while eng read its environment, is unsure, never clean; a kernel thread, zombie, exiting process or empty environment is not', () => {
+test('a process caught mid-exec, or one that exec\'d while eng read its environment, is unsure, never clean; a kernel thread, zombie, exiting process, sleeping empty environment or older process is not', () => {
   const r = runProcs('r1', [], fakeProc({
     11: { environ: 'ENG_EPHEMERAL_RUN=r1\0PATH=/bin\0', cmdline: 'sleep\0' + '304\0' },  // carries the run id
     12: { environ: '', cmdline: '', env: [0, 0] },                                   // mid-exec: no environment yet
@@ -155,11 +157,25 @@ test('a process caught mid-exec, or one that exec\'d while eng read its environm
     14: { environ: '', cmdline: '', env: [0, 0], flags: 0x200000 },                 // kernel thread
     15: { environ: '', cmdline: '', env: [0, 0], state: 'Z' },                      // zombie
     16: { environ: '', cmdline: '', env: [0, 0], flags: 0x4 },                      // exiting
-    17: { environ: '', cmdline: 'a\0', env: [200, 200] },                          // started with an empty environment
+    17: { environ: '', cmdline: 'a\0', env: [200, 200] },                          // an empty environment, asleep
     18: { environ: null, cmdline: 'b\0', env: [0, 0] },                            // another user's: nothing readable
+    19: { environ: '', cmdline: 'sleep\0', env: [200, 200], state: 'R' },         // running: its env pointers may be half filled
+    20: { environ: '', cmdline: 'sleep\0', env: [200, 200], state: 'D' },         // the same, waiting on a page
+    21: { environ: '', cmdline: '', env: [0, 0], start: 3 },                        // mid-exec, but older than this eng
   }));
   assert.deepEqual(r.procs.map(p => [p.pid, p.cmd]), [[11, 'sleep 304']]);
-  assert.deepEqual(r.unsure.sort(), [12, 13]);
+  assert.deepEqual(r.unsure.sort((a, b) => a - b), [12, 13, 19, 20]);
+});
+
+test('a process an earlier look found stays found, with the environment it had, when a later look catches it mid-exec', () => {
+  const ps = { 11: { environ: 'ENG_EPHEMERAL_RUN=r1\0SLAYTEK_PERSIST=1\0', cmdline: 'setsid\0sleep\0' } }, seen = new Map();
+  assert.deepEqual(runProcs('r1', [], fakeProc(ps), seen).procs.map(p => p.pid), [11]);
+  ps[11] = { environ: '', cmdline: '', env: [0, 0] };                               // now in its exec into sleep
+  let r = runProcs('r1', [], fakeProc(ps), seen);
+  assert.deepEqual(r.procs.map(p => [p.pid, p.cmd, p.env.includes('SLAYTEK_PERSIST=1')]), [[11, 'setsid sleep', true]]); assert.deepEqual(r.unsure, []);
+  ps[11] = { environ: '', cmdline: '', env: [0, 0], start: 9 };                    // a new process on the same pid
+  r = runProcs('r1', [], fakeProc(ps), seen);
+  assert.deepEqual(r.procs, []); assert.deepEqual(r.unsure, [11]);
 });
 
 test('eng run looks again while a process its first look caught mid-exec is still starting, and then reports it', () => {
@@ -174,8 +190,9 @@ test('a process still mid-exec after the settle time is reported as stuck; one f
   let res = settle(fakeLooks([{ left: [], unsure: [12] }]), () => ticks++);
   assert.deepEqual(res.stuck, [12]); assert.equal(ticks, 15, 'waited the settle time (15 x 200 ms), no longer');
   ticks = 0;
-  res = settle(fakeLooks([{ left: [], unsure: [] }, { left: [], unsure: [99] }]), () => ticks++);
-  assert.deepEqual(res.left, []); assert.deepEqual(res.stuck, []); assert.equal(ticks, 0, 'nothing to wait for');
+  const going = { kind: 'process', id: 11, owner: 'run' };
+  res = settle(fakeLooks([{ left: [going], unsure: [] }, { left: [], unsure: [99] }]), () => ticks++);
+  assert.deepEqual(res.left, []); assert.deepEqual(res.unsure, [99]); assert.deepEqual(res.stuck, []); assert.equal(ticks, 1, 'stopped once the leftover was gone');
 });
 
 test('containers, networks and volumes left behind fail and are removed, a container with the volumes docker made for it; --rm passes', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
