@@ -48,12 +48,12 @@ function withTmp(cfg) { const t = engTmp(cfg); RUN_ENV = t.env; if (t.owned) con
 const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 
 // quiet: parse and validate only, without YAML warnings (the command prints them when it loads the config itself).
-// CONFIG_TEXT: the text dispatch checked before the update notice. The command parses that same text, so a file saved
-// while the notice waited cannot slip a different config past the check.
+// CONFIG_TEXT: what dispatch saw before the update notice: the text it checked, false for no file, or null (not looked).
+// The command uses that same snapshot, so a file saved or created while the notice waited cannot slip past the check.
 let CONFIG_TEXT = null;
 function loadConfig({ quiet = false } = {}) {
   const p = path.join(ROOT, 'eng.config.yml');
-  if (CONFIG_TEXT === null && !fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
+  if (CONFIG_TEXT === false || (CONFIG_TEXT === null && !fs.existsSync(p))) die('no eng.config.yml (run `eng init`)');
   const cfg = parseConfig(CONFIG_TEXT ?? fs.readFileSync(p, 'utf8'), quiet);
   validate(cfg);
   return cfg;
@@ -1320,7 +1320,7 @@ if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 // A command that reads the config first checks it before the notice (a missing eng.config.yml keeps the old order).
 else if (found) {
   const late = cmd === 'sync' || cmd === 'init', cfgPath = path.join(ROOT, 'eng.config.yml');
-  if (READS_CONFIG_FIRST[cmd]?.() && fs.existsSync(cfgPath)) { CONFIG_TEXT = fs.readFileSync(cfgPath, 'utf8'); loadConfig({ quiet: true }); }
+  if (READS_CONFIG_FIRST[cmd]?.()) { CONFIG_TEXT = fs.existsSync(cfgPath) && fs.readFileSync(cfgPath, 'utf8'); if (CONFIG_TEXT !== false) loadConfig({ quiet: true }); }
   if (cmd !== 'doctor' && !late) await updateNotice();
   found[3]();
   if (late) await updateNotice();
