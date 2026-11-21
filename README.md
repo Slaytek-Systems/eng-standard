@@ -1,10 +1,32 @@
 # @slayteksystems/eng-standard v0 (sandbox only)
 
+## Why eng exists
+
+eng packages the experience and judgment of strong engineering teams and hands it to every repo's agent. The agent
+learns what good looks like in that repo and helps its person get there. Models don't reliably know or apply how good
+teams build, and most of that practice is private. Without it, agents guess, and people can't tell good work from broken
+work, so they can't trust it.
+
+It works as guidance, not gatekeeping. eng looks at a repo and suggests what it is missing, each suggestion with its
+reason and the point where it stops being right. The person chooses what to adopt and what to skip, and a skip with a
+recorded reason is a valid answer. What fits depends on what the repo is and where it is. eng works alongside the
+repo's other tools and does not replace them.
+
+Subtraction counts as much as adding. Removing a doc that contradicts the repo's real rules, or keeping a strong practice
+the repo already has instead of replacing it, is as much a win as adding a check.
+
+eng never blocks. The checks a repo chooses do: its hooks, its CI and the gates it lists in `eng.config.yml`.
+
+The practices eng suggests, with when each fits and how to detect it, are in
+[standard/catalogue.yml](standard/catalogue.yml).
+
+## How it works
+
 One file, `eng.config.yml`, drives everything. Agent-agnostic: plain SKILL.md files in `.agents/skills` (eng never writes into `.claude/skills`; one `ln -s ../.agents/skills .claude/skills` makes them visible to Claude Code, and `eng doctor` says which tools can see them), AGENTS.md (Codex/Cursor) + CLAUDE.md (`@AGENTS.md`), git hooks, and a Node CLI.
 
 ## Start here
 
-How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `SHIPPING.md` carries the short version (Reference, section "This standard"). The `AGENTS.md` block is three lines: take the route a blocking hook or check names (or find the rule in `SHIPPING.md` when it names none) and never bypass one, where the skills are, and that `SHIPPING.md` has the rest.
+How to pin, set up, keep current, upgrade and uninstall the standard, with the checks for each: [docs/lifecycle.md](docs/lifecycle.md). Every rendered `SHIPPING.md` carries the short version (Reference, section "This standard"). The `AGENTS.md` block is a short router: `project.description` when set, `eng gate` before review (exit 0 passes, exit 3 does not), each judgment-only rule (`agents.rules` with `enforced_by: review`) as a sharp edge, that the repo's own text wins where it differs, the route when a check blocks you, where the skills are, and that `SHIPPING.md` has the rest.
 
 ## Profiles
 

@@ -1,0 +1,59 @@
+# Practice catalogue v0: what strong teams do, as data a repo's agent can read. Suggestions, not gates.
+# Each entry says what the practice is, why it pays, when it fits, when it stops being right, the facts a tool or agent
+# can check to see whether a repo has it, and how to adopt it with the repo's own tools. Skipping one with a recorded
+# reason is a valid answer: the repo's lead decides, and eng never blocks on this file.
+# Evidence: a hand audit of three working repos (21 Nov 2026), anonymised. These four came up in all three, present or missing.
+version: 0
+
+practices:
+  thin-router-agents-md:
+    what: "AGENTS.md is a short router: what the repo is, the one command that proves a change, the sharp edges no check catches, and a link to the one document that owns each longer rule."
+    why: "Agents read AGENTS.md on every turn. Long rule dumps cost attention, drift from the repo's real rules and contradict them; a router stays true because each rule lives in one place."
+    fits_when: "Any repo an agent works in."
+    stops_when: "Never fully. Trim it again whenever it grows past a screen or repeats a rule another document owns."
+    detect:
+      - "AGENTS.md exists and is under about 60 lines."
+      - "Each rule in it is either a sharp edge (no check catches it) or a link to the document that owns it."
+      - "No two instruction files state the same rule differently (AGENTS.md, CLAUDE.md, SHIPPING.md, CONTRIBUTING.md, skill files)."
+    adopt: "Move each policy paragraph to the document that owns it and leave a one-line pointer. Keep the sharp edges. With eng, list judgment-only rules as agents.rules with enforced_by: review and set project.description; the rendered block becomes the router and the repo's own text outside it wins."
+    skip: "Valid with a recorded reason, such as a repo with one human contributor and no agents."
+    evidence: "The repo without eng had a 49-line router agents found easier to follow than the eng repo's 138-line AGENTS.md and 266-line SHIPPING.md, which contradicted the repo's own rules in 6 places."
+
+  one-check-command:
+    what: "One command runs lint and tests, and both local runs and CI call that same command."
+    why: "When local and CI checks are separate lists they drift, and a local pass stops predicting a CI pass. One command makes 'green here' mean 'green there'."
+    fits_when: "The repo has CI and any local check an agent or person runs before pushing."
+    stops_when: "The full suite is too slow to run locally; then keep one command per tier (fast, full) and have CI call the same tiers."
+    detect:
+      - "The CI workflow's check steps call one script or package command (for example `npm run validate`, `ci/stages.sh`)."
+      - "The local command the docs name is that same script. Two lists that match today but are kept separately do not count: they drift."
+      - "A linter is configured and runs in that command."
+    adopt: "Pick the command the repo already has (a package script, a Makefile target, a shell script). Make CI call it instead of listing steps, and add any step only one side ran. With eng, name it in project.commands and gates.required so eng gate runs it."
+    skip: "Valid with a recorded reason, such as no CI yet."
+    evidence: "One audited repo's local validate skipped the linter its CI ran. Another ran one isolated validation script everywhere. The third had tests but no linter."
+
+  executable-proof-for-high-stakes-logic:
+    what: "Logic where a bug costs most (state machines, money, auth and permissions, parsers, data migrations) has a check that runs it over far more inputs than hand-written examples: a property test, a bounded model check or a fuzz test, run in CI."
+    why: "Example-based tests cover the cases someone thought of. Bugs in high-stakes logic live in the cases nobody did, and they come back after each fix. Generated inputs or a model search reach many more of those cases. They prove only what they sample or explore, within the bounds the check states, so record the bounds."
+    fits_when: "The repo has a flow that moves between states, money or permission logic, or a parser, and bugs there have recurred or would be costly."
+    stops_when: "The logic becomes plain CRUD, or the check costs more to keep than the bugs it has found."
+    detect:
+      - "A property-test library (fast-check, Hypothesis, proptest), a model (TLA+, Alloy) or a fuzz target exists in the repo."
+      - "CI runs it, not only a local script."
+      - "git log shows repeated fixes in the same module (a recurring bug class with no such check)."
+    adopt: "Start in the repo's own runtime: property tests in its test runner. Use a model checker only for concurrency or protocols, bounded (standard/checks.yml lists costs). With eng, add it as an .eng/checks script with a declared weight and budget."
+    skip: "Valid with a recorded reason, such as no logic in the repo where a bug costs more than a quick fix."
+    evidence: "One audited repo gated a TLA+ model in CI. One had formal checks not yet in CI. One had five releases in a row fixing the same parser bypass class."
+
+  isolated-self-cleaning-runs:
+    what: "Each test, check or agent run works in its own scratch space (temp dir, worktree, container) and removes it on exit, failure or signal, within a resource budget."
+    why: "Shared scratch space lets runs collide, and leftovers pile up until a machine runs out of disk or memory. Isolation makes runs repeatable; cleanup keeps the machine usable."
+    fits_when: "Tests or agents write files, start processes or containers, or several runs share a machine."
+    stops_when: "Never for shared machines. On a single throwaway CI runner, cleanup matters less than isolation."
+    detect:
+      - "Tests write under a per-run temp dir (TMPDIR or the runner's temp API), not fixed paths or the repo."
+      - "Stale worktrees, temp dirs or stopped containers from finished work exist (count them)."
+      - "Heavy checks declare a memory and time bound."
+    adopt: "Use the test runner's temp-dir API and remove it in teardown; remove a worktree when its PR merges or closes; run containers with --rm and limits. With eng, eng run and eng gate set a per-run ENG_TMP that is removed on exit, and eng lint flags bare /tmp writes."
+    skip: "Valid with a recorded reason, such as a repo whose tests write no files."
+    evidence: "One audited repo budgeted its checks. One isolated validation but left 14 stale review worktrees. One isolated install tests in temp dirs."

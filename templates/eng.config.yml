@@ -6,6 +6,7 @@ profile: generic                  # Rendered rules name roles (the repo owner), 
 project:
   name: sandbox-repo
   # owner: "@your-handle"        # Who approves stack choices, risk:high PRs and new rules. Unset: rendered as "the repo owner".
+  # description: "One line: what this repo is and who uses it."   # Rendered at the top of the AGENTS.md block. Unset: no line.
   default_branch: main
   protected_branches: [main]       # Never rebased, force-pushed or deleted, in either git.rewrite_pushed mode.
   commands:                       # The repo's own commands, unchanged. `eng gate` runs the ones listed in gates.required.
@@ -59,7 +60,7 @@ agents:
   harnesses: [claude-code, codex, cursor]   # AGENTS.md is read by Codex and Cursor; CLAUDE.md imports it.
   skills_dir: .agents/skills
   # post_edit_command: "npm run lint:changed -- --hook"   # optional; rendered as a Claude Code PostToolUse hook (Edit|MultiEdit|Write) in .claude/settings.json. Exit 2 feeds stderr back to the agent.
-  rules: []                       # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng doctor fails on a rule with nothing enforcing it.
+  rules: []                       # Rule -> enforcer table (pstack correct). enforced_by: a lint rule id, check id, gate, hook path, or `review` + why (judgment only). eng doctor fails on a rule with nothing enforcing it. A `review` rule is a sharp edge: the AGENTS.md block lists it.
     # Example, not policy: - { rule: "Orders are written only through saveOrder()", enforced_by: gate-only-writes }
   skills:                         # <source>/<name>. Vendored copies at pins in pkg/vendor/PINS.txt; eng/* are ours.
     - pstack/*                     # the full pstack set (61 skills + 2 subagents), pinned in pkg/vendor/PINS.txt

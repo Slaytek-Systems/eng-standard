@@ -8,7 +8,7 @@ https://github.com/Slaytek-Systems/eng-standard/blob/main/docs/lifecycle.md.
 
 | You need | Read |
 |---|---|
-| The rules for this repo, day to day | the rendered `AGENTS.md` block (three lines), then `SHIPPING.md` (its Reference section holds the commands, checks, skill router and rule-to-enforcer table), then `STACK.md` |
+| The rules for this repo, day to day | the rendered `AGENTS.md` block (a short router; the repo's own text outside it wins), then `SHIPPING.md` (its Reference section holds the commands, checks, skill router and rule-to-enforcer table), then `STACK.md` |
 | Every `eng` command | `eng --help`, then the [README](../README.md) table. There are ten. `eng <command> --help` (or `-h`) prints one command's usage and runs nothing |
 | What changed between versions | [CHANGELOG.md](../CHANGELOG.md), also shipped in the package |
 | Every setting | `eng.config.yml`; the reference with a comment on each key is `templates/eng.config.yml` |

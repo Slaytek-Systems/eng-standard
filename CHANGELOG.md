@@ -2,6 +2,16 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.9 (21 Nov 2026)
+
+**The rendered AGENTS.md block is a short router, a practice catalogue starts, and the README opens with why eng exists** (decision 21 Nov 2026, Core task p57cskzqr04wnkb56rdr0vsr1h8jmnem). A three-repo audit found the repo without eng easier for agents than the one with it: its 138-line rendered AGENTS.md (v0.18.0) and 266-line SHIPPING.md contradicted the repo's own rules in 6 places.
+
+- **Router block.** Under the heading: `project.description` (new, optional, one line), `eng gate` before review (exit 0 passes; exit 3 deferred some checks and is not a pass; merging may need more), each `agents.rules` entry with `enforced_by: review` as a sharp edge no check catches, and a line saying the repo's own text outside the block, and SHIPPING.md's local rules, win where they differ. `eng sync` refuses a description or review rule that is not one line or holds `<!--`, so neither can fake the block's markers. The three lines it had (the route when a check blocks, the skills, SHIPPING.md) stay. It states no rule a repo might override. A rule with an enforcer still goes only to SHIPPING.md. On a copy of one consuming repo's config: 28 lines before, 34 after (its four judgment-only rules are now listed); the template renders 11 lines.
+- **Catalogue v0.** `standard/catalogue.yml`: thin router AGENTS.md, one check command for local and CI, executable proof for high-stakes logic, isolated self-cleaning runs. Each entry: what, why, fits when, stops when, facts to detect it, how to adopt it with the repo's own tools, and that skipping with a recorded reason is valid. eng does not audit against it yet.
+- **README.** Opens with why eng exists: guidance, not gatekeeping; subtraction counts as much as adding; eng never blocks, the checks a repo chooses do.
+- Follow-up: shrink the rendered SHIPPING.md the same way.
+- **Upgrade:** move the pin, install and run `eng sync`. The AGENTS.md block and the version in `.eng/lock.json` change; nothing else rendered does. Optionally set `project.description` and mark judgment-only rules `enforced_by: review`.
+
 ## 0.23.8 (15 Nov 2026)
 
 **Self-merge's re-check reads the labels, the statuses and the verdict comments again after its first read, and refuses the merge if any changed** (bug p571wk5x4dpjwem54zx5nxkvts8j7pa3, finding F1). A verifier could start an `eng run` and post a PASS between the re-check's status read and its comment read, and self-merge counted that PASS with no run in progress. Now an unchanged second read means every rule held at one moment. A status on another context, whose event never starts self-merge, does not count as a change. `test/self-merge.test.mjs` replays the formal 16-step path through `scripts/pr-gate.mjs merge`, and the formal check's `--property moment` passes every scenario. **Upgrade:** nothing to do.
