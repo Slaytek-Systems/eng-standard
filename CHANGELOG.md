@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.10 (21 Nov 2026)
+
+**`eng sync`, `sync --check` and `init` refuse a `.eng/lock.json` whose `files` is not a list of relative repo file paths, before they write or delete anything** (Core task p57fyte3f4p0p305bjjkzmzbwh8jmj6m, piece B-lock): a lock that is not a JSON object, `files` that is not a list (`{"files":"x"}` read as `["0"]`, so `eng sync` deleted a repo file named `0`), and any entry that is not a string, is empty or absolute, has a `.`, `..` or empty segment, a trailing slash or a backslash, or a `.git` segment anywhere (`sub/.git/config`); the refusal names each entry and why, and exits 1.
+
 ## 0.23.9 (21 Nov 2026)
 
 **The rendered AGENTS.md block is a short router, a practice catalogue starts, and the README opens with why eng exists** (decision 21 Nov 2026, Core task p57cskzqr04wnkb56rdr0vsr1h8jmnem). A three-repo audit found the repo without eng easier for agents than the one with it: its 138-line rendered AGENTS.md (v0.18.0) and 266-line SHIPPING.md contradicted the repo's own rules in 6 places.

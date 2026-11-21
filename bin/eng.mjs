@@ -135,7 +135,9 @@ function hookArgWarnings(cfg) {
 }
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
-const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
+// The lock, or the refusal lib/lock.mjs gives, before the caller writes or deletes anything.
+const readLock = () => { try { return parseLock(readOr('.eng/lock.json')); } catch (e) { return die(e.message); } };
+const standardProblems = () => lifecycleProblems({ lockVersion: readLock().package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
 function render(cfg) {
   const errs = renderErrors(cfg);
@@ -153,7 +155,7 @@ function render(cfg) {
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
-  const ours = p => p === ENG_PR_TEMPLATE && (parseLock(readOr('.eng/lock.json')).files.includes(p) || readOr(p) === rendered);
+  const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
   return ['.github', '.', 'docs'].flatMap(d => { try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
     .filter(p => !ours(p));
 }
@@ -193,6 +195,7 @@ const rewriteModeLine = cfg => missingRewriteMode(cfg)
   : { ok: true, what: `git.rewrite_pushed: ${rewriteMode(cfg)} (${rewriteMode(cfg) === 'never' ? 'no pushed branch or tag is rewritten' : 'default and protected branches and tags are locked; feature branches may be rewritten through the guarded tool'})` };
 
 function sync() {
+  const old = readLock();
   const migrated = migrateConfig();
   const cfg = loadConfig();
   const files = render(cfg), exec = executables(cfg);
@@ -207,7 +210,6 @@ function sync() {
   }
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
-  const old = parseLock(readOr('.eng/lock.json'));
   for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
@@ -226,6 +228,7 @@ function sync() {
 // gets a CODEOWNERS line and baselines, so the findings it has today pass and only new ones fail. Re-running is safe:
 // an existing config is kept, and a baseline is written only when it is missing.
 function init() {
+  readLock();
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
     if (!shipping) {
@@ -280,6 +283,7 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
+  readLock();
   const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
@@ -293,7 +297,7 @@ function syncCheck() {
   }
   for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
-  const lock = parseLock(readOr('.eng/lock.json')), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
+  const lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');
   const std = standardProblems();
   if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? '\n  Fix: run eng sync and commit what it writes. It overwrites hand edits to generated files, so move any first: into eng.config.yml, or for AGENTS.md outside the <!-- eng:begin --> and <!-- eng:end --> markers.' : ''}`);
@@ -356,7 +360,7 @@ function lintHits(cfg) {
   // Files eng sync writes (drift-tracked: rendered + vendored) are owned by the standard, not this repo. The drift
   // check forbids editing them, so repo lint rules must not flag them either (fix such hits upstream in eng-standard).
   // A config with no stack renders nothing (eng-standard itself: it does not sync its own files).
-  const c = loadConfig(), managed = new Set([...Object.keys(c.stack ? render(c) : {}), ...parseLock(readOr('.eng/lock.json')).files]);
+  const c = loadConfig(), managed = new Set([...Object.keys(c.stack ? render(c) : {}), ...readLock().files]);
   const own = files.filter(f => !managed.has(f));
   return builtinRules(cfg).flatMap(r => lintFiles(r, own, ROOT));
 }
@@ -1046,7 +1050,7 @@ async function upgradeInfo() {
     if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
     return r.text();
   };
-  const installed = pkgVersion(), rendered = parseLock(readOr('.eng/lock.json')).package ?? 'none';
+  const installed = pkgVersion(), rendered = readLock().package ?? 'none';
   let latest, changelog;
   try { latest = JSON.parse(await read('package.json')).version; changelog = await read('CHANGELOG.md'); }
   catch (e) { return { line: `  WARN eng-standard: installed ${installed}, rendered ${rendered}, latest UNKNOWN: could not read ${src} (${e.message}). Not a pass: retry, or set ENG_STANDARD_SOURCE to an eng-standard checkout`, state: 'latest UNKNOWN' }; }
