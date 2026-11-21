@@ -192,8 +192,10 @@ function syncPlan(seed = null) {
   const files = render(cfg);
   // Files a previous sync generated that the config no longer renders, each once. Never in .claude/skills or
   // .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
-  const prune = [...new Set(old.files)].filter(p => !(p in files) && !harnessOut(p) && onDisk(p));
-  const through = prune.flatMap(p => { const why = linkedFolder(p); return why ? [`${p} (${why})`] : []; });
+  const stale = [...new Set(old.files)].filter(p => !(p in files) && !harnessOut(p)), prune = stale.filter(onDisk);
+  // lstat also finds a file in a folder eng may enter but not list, which onDisk misses.
+  const lexists = p => { try { fs.lstatSync(path.join(ROOT, p)); return true; } catch { return false; } };
+  const through = stale.flatMap(p => { const why = (onDisk(p) || lexists(p)) && linkedFolder(p); return why ? [`${p} (${why})`] : []; });
   if (through.length) die(`.eng/lock.json: eng sync would delete ${through.length} file(s) the config no longer renders through a symlinked folder, which can land outside the repo or on another repo file: ${through.join(', ')}. eng deletes nothing. Fix: delete each file yourself if it should go, then run eng sync.`);
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune, exec: renderedExecutables(cfg) };
 }
@@ -230,9 +232,11 @@ function sync(plan = syncPlan()) {
     if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
-  // Prune (syncPlan checked no folder on the way is a symlink). A managed path that is itself a symlink is the
-  // developer's (eng writes regular files), so neither it nor its target is deleted.
-  for (const p of prune) if (!fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
+  // Prune (syncPlan refused any folder on the way that is a symlink; checked again here in case the tree changed since,
+  // and skipped then). A managed path that is itself a symlink is the developer's (eng writes regular files), so
+  // neither it nor its target is deleted. A path gone since the plan is skipped.
+  const keep = p => { try { return linkedFolder(p) || fs.lstatSync(path.join(ROOT, p)).isSymbolicLink(); } catch { return true; } };
+  for (const p of prune) if (!keep(p)) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
