@@ -17,15 +17,15 @@ after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 const tmp = p => { const d = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), p)); dirs.push(d); return d; };
 const env = { ...process.env, ENG_NO_UPDATE_CHECK: '1', XDG_CACHE_HOME: tmp('eng-xdg-') };
 
-// A synced, committed repo whose lock also lists stale, a file the config does not render.
-function repo(stale) {
+// A synced, committed repo whose lock also lists each stale entry, files the config does not render.
+function repo(...stale) {
   const dir = tmp('eng-prune-'), git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' });
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), TPL);
   const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: dir, encoding: 'utf8', env });
   assert.equal(eng('sync').status, 0);
   const lockFile = path.join(dir, '.eng/lock.json'), lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-  fs.writeFileSync(lockFile, JSON.stringify({ ...lock, files: [...lock.files, stale].sort() }, null, 2) + '\n');
+  fs.writeFileSync(lockFile, JSON.stringify({ ...lock, files: [...lock.files, ...stale].sort() }, null, 2) + '\n');
   git('add -A'); git('commit -qm base');
   return { dir, eng, file: p => path.join(dir, p) };
 }
@@ -130,4 +130,39 @@ test('eng init refuses the same prune through a symlinked folder, and writes and
   assert.match(i.stderr, /docs\/OLD\.md \(docs is a symlink\)/);
   assert.equal(fs.readFileSync(path.join(outside, 'OLD.md'), 'utf8'), 'not the repo\'s\n');
   assert.deepEqual(snapshot(r.dir), before, 'init wrote and deleted nothing');
+});
+
+// Review round 1 on #107: the refusal comes before any write or delete, also when sync has a generated file to write and
+// an ordinary stale entry (no link on its path) that sorts before the refused one.
+test('the refusal comes before writing a missing generated file or pruning an earlier ordinary entry', () => {
+  const outside = tmp('eng-outside-');
+  fs.writeFileSync(path.join(outside, 'OLD.md'), 'not the repo\'s\n');
+  const r = repo('a/OLD.md', 'docs/OLD.md');
+  fs.mkdirSync(r.file('a')); fs.writeFileSync(r.file('a/OLD.md'), 'rendered once\n');
+  fs.symlinkSync(outside, r.file('docs'));
+  const generated = JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.find(p => p !== 'a/OLD.md' && p !== 'docs/OLD.md');
+  fs.rmSync(r.file(generated));
+  const before = snapshot(r.dir);
+  for (const args of [['sync'], ['sync', '--check'], ['init']]) {
+    const s = r.eng(...args);
+    assert.equal(s.status, 1, `${args.join(' ')}: ${s.stdout}${s.stderr}`);
+    assert.match(s.stderr, /docs\/OLD\.md \(docs is a symlink\)/);
+    assert.deepEqual(snapshot(r.dir), before, `${args.join(' ')} wrote and deleted nothing`);
+  }
+  assert.ok(fs.existsSync(path.join(outside, 'OLD.md')));
+});
+
+// Review round 1 on #107: a linked folder eng may enter but not list still holds the stale file, so it is refused too.
+test('a lock entry under a symlinked folder that cannot be listed is refused too', () => {
+  const outside = tmp('eng-outside-');
+  fs.writeFileSync(path.join(outside, 'OLD.md'), 'not the repo\'s\n');
+  fs.chmodSync(outside, 0o111);
+  try {
+    const r = repo('docs/OLD.md');
+    fs.symlinkSync(outside, r.file('docs'));
+    const s = r.eng('sync');
+    assert.equal(s.status, 1, s.stdout + s.stderr);
+    assert.match(s.stderr, /docs\/OLD\.md \(docs is a symlink\)/);
+  } finally { fs.chmodSync(outside, 0o755); }
+  assert.ok(fs.existsSync(path.join(outside, 'OLD.md')));
 });
