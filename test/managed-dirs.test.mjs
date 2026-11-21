@@ -126,6 +126,48 @@ test('init refuses a folder at .github/CODEOWNERS in a repo that already ships, 
   assert.equal(fs.existsSync(r.file('eng.config.yml')), false);
 });
 
+// Core task p5795pctqs8d84n0chwgx0ah1x8jnqsy, item 1 (review round 1 on #120): init adds to the first CODEOWNERS of
+// .github/, the root and docs/ that is there. A folder on that search eng cannot list or enter may hold one, so init
+// cannot tell where to write: before, it created .github/CODEOWNERS, which GitHub then reads instead of docs/CODEOWNERS.
+// It is refused before any write. A CODEOWNERS found earlier in the search ends it, so a later such folder does not matter.
+const lockedInit = (r, folder, mode) => {
+  const before = snapshot(r.dir);
+  fs.chmodSync(r.file(folder), mode);
+  let s; try { s = r.eng('init', '--owner', '@o'); } finally { fs.chmodSync(r.file(folder), 0o755); }
+  return { s, before };
+};
+for (const mode of [0o444, 0o333]) {
+  test(`init refuses a mode ${mode.toString(8)} docs folder that may hold the repo's CODEOWNERS, before any write`, { skip: process.getuid?.() === 0 && 'root ignores folder modes' }, () => {
+    const r = shipping();
+    fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/CODEOWNERS'), '* @team\n');
+    execSync('git add docs && git commit -qm owners', { cwd: r.dir, stdio: 'pipe' });
+    const { s, before } = lockedInit(r, 'docs', mode);
+    assert.equal(s.status, 1, s.stdout + s.stderr);
+    assert.match(s.stderr, /^eng: FAIL init: docs cannot be read \(EACCES\), so eng cannot tell whether docs\/CODEOWNERS is there/m);
+    assert.doesNotMatch(s.stderr, /^\s+at /m, 'no stack trace');
+    assert.doesNotMatch(s.stdout, /wrote |seeded /);
+    assert.deepEqual(snapshot(r.dir), before, 'the refusal wrote nothing');
+  });
+
+  test(`init refuses a mode ${mode.toString(8)} .github folder, which is searched first for CODEOWNERS`, { skip: process.getuid?.() === 0 && 'root ignores folder modes' }, () => {
+    const r = shipping();
+    fs.mkdirSync(r.file('.github'));
+    const { s, before } = lockedInit(r, '.github', mode);
+    assert.equal(s.status, 1, s.stdout + s.stderr);
+    assert.match(s.stderr, /\.github cannot be read \(EACCES\)/);
+    assert.doesNotMatch(s.stderr, /^\s+at /m, 'no stack trace');
+    assert.deepEqual(snapshot(r.dir), before, 'the refusal wrote nothing');
+  });
+
+  test(`init adds to .github/CODEOWNERS and ignores a mode ${mode.toString(8)} docs folder after it`, { skip: process.getuid?.() === 0 && 'root ignores folder modes' }, () => {
+    const r = shipping();
+    fs.mkdirSync(r.file('.github')); fs.writeFileSync(r.file('.github/CODEOWNERS'), '/src/ @team\n'); fs.mkdirSync(r.file('docs'));
+    const { s } = lockedInit(r, 'docs', mode);
+    assert.equal(s.status, 0, s.stdout + s.stderr);
+    assert.match(fs.readFileSync(r.file('.github/CODEOWNERS'), 'utf8'), /^\/src\/ @team\n[^]*^\/renovation\/baselines\/ @o$/m);
+  });
+}
+
 test('init refuses a folder at a renovation baseline before writing anything', () => {
   const r = shipping();
   fs.mkdirSync(r.file('renovation/baselines/lint.json'), { recursive: true });
