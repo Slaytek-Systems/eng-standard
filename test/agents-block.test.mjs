@@ -196,12 +196,15 @@ test('eng sync replaces the signed block, keeps fenced examples and one-line rul
     assert.match(a, /- Sharp edge, no check catches it: Deploys run by hand; draft --> review --> live\n/);
     assert.match(eng(dir, 'sync').stdout, /eng sync: no changes/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-  for (const bad of [`${OLD}\n\n${OLD}\n`, `# AGENTS.md\n\n${OLD}\n\n<!-- eng:begin -->\n`]) {
-    dir = scratch(template(), bad);
+  // A config due the git.rewrite_pushed migration: a refusal must not write that either (#103's ordering).
+  const due = template(); delete due.git?.rewrite_pushed;
+  for (const [args, bad] of [[['sync'], `${OLD}\n\n${OLD}\n`], [['sync'], `# AGENTS.md\n\n${OLD}\n\n<!-- eng:begin -->\n`], [['sync', '--check'], `${OLD}\n\n${OLD}\n`], [['init'], `# AGENTS.md\n\n<!-- eng:end -->\n`]]) {
+    dir = scratch(due, bad);
     try {
-      const r = eng(dir, 'sync');
+      const r = eng(dir, ...args);
       assert.equal(r.status, 1, r.stdout + r.stderr);
-      assert.match(r.stderr, /AGENTS\.md/);
+      assert.match(r.stderr, /^eng: FAIL AGENTS\.md has /m);
+      assert.doesNotMatch(r.stderr, /    at /, "a refusal, not a stack trace");
       assert.equal(execSync('git status --porcelain --untracked-files=all', { cwd: dir, encoding: 'utf8' }), '', 'a refusal writes nothing');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
