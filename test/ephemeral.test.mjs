@@ -7,7 +7,7 @@ import { spawn, spawnSync, execSync } from 'node:child_process';
 import YAML from 'yaml';
 import http from 'node:http';
 import net from 'node:net';
-import { findLeftovers, PROXY, removeLeftover } from '../lib/ephemeral.mjs';
+import { findLeftovers, PROXY, removeLeftover, runProcs, settle } from '../lib/ephemeral.mjs';
 import { openSockDir, sockName, staleSockDirs, SOCK_OWNER, SOCK_MAX } from '../lib/hygiene.mjs';
 
 const ENG = path.resolve(new URL('../bin/eng.mjs', import.meta.url).pathname);
@@ -142,6 +142,69 @@ test('without python3: mode fail refuses the run; mode warn runs it and still st
   r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: noPy });
   assert.equal(r.status, 0, out(r)); assert.match(r.stdout, /was not fully watched: processes: python3/);
   assert.match(r.stdout, new RegExp(`LEFT process ${mark('nopy')} \\(sleep 304\\): stopped`)); assert.ok(!running(Number(mark('nopy'))), 'stopped through the run id');
+});
+
+// Without python3, eng finds a run's leftover processes only by the run id in /proc/<pid>/environ, which reads empty while a
+// process is inside execve. So an empty read of a live process that started after this eng is unsure, never clean: eng waits
+// its settle time for it, then warns, and stops nothing it has not proven is the run's.
+test('without python3: a process left with an empty environment is reported as unknown, not passed silently, and is not stopped', t => {
+  const bin = path.join(root, 'nopy'); fs.mkdirSync(bin, { recursive: true });
+  for (const b of ['bash', 'sh', 'sleep', 'setsid', 'env']) { const at = execSync(`command -v ${b}`, { encoding: 'utf8' }).trim(); if (!fs.existsSync(path.join(bin, b))) fs.symlinkSync(at, path.join(bin, b)); }
+  t.after(() => { setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.project.commands.test = 'true'; }); kill('nopy-empty'); });
+  // env -i: sleep's environment stays empty for good, as a process caught inside execve reads for a moment.
+  setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'warn'; c.project.commands.test = `setsid env -i sleep 305 >/dev/null 2>&1 & echo $! > '${path.join(marks, 'nopy-empty')}'`; });
+  const r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: bin } });
+  const pid = mark('nopy-empty');
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, new RegExp(`was not fully watched: .*processes: \\d+ process\\(es\\) started during the run still had an empty or unreadable environment after 3 s \\(pid (\\d+, )*${pid}(, \\d+)*\\)`), out(r));
+  assert.match(r.stdout, /eng run: PASS \(test: not fully watched, mode warn\)/); assert.ok(running(Number(pid)), 'not proven the run\'s, so not stopped');
+});
+
+// A fake /proc. stat fields after "(comm) " (proc(5)): [0] state, [6] flags, [19] start time.
+const fakeStat = (pid, { state = 'S', flags = 0, start = 60 }) => { const f = Array(49).fill('0'); f[0] = state; f[6] = String(flags); f[19] = String(start); return `${pid} (x) ${f.join(' ')}`; };
+const fakeProc = ps => ({ pids: () => Object.keys(ps).map(Number), read: (pid, f) => {
+  if (f === 'environ' && ps[pid].environ === null) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+  if (f === 'status') return `Name:\tx\nUid:\t${ps[pid].uid ?? process.getuid()}\t0\t0\t0\n`;
+  return f === 'stat' ? fakeStat(pid, ps[pid]) : ps[pid][f] ?? '';
+} });
+// A fake run: each call to look returns the next result, then the last again; wait counts the fake clock's ticks.
+const fakeLooks = results => { let i = 0; return () => results[Math.min(i++, results.length - 1)]; };
+
+test('a live process younger than eng whose environment reads empty, or is unreadable as this user, is unsure; an older one, a kernel thread, a zombie, an exiting one or another user\'s is not', () => {
+  const ps = fakeProc({
+    11: { environ: 'ENG_EPHEMERAL_RUN=r1\0PATH=/bin\0', cmdline: 'sleep\0' + '304\0' },  // carries the run id
+    12: { environ: '' },                         // empty: inside execve, or started with no environment
+    13: { environ: '', start: 40 },              // older than eng: never the run's
+    14: { environ: '', flags: 0x200000 },        // kernel thread
+    15: { environ: '', state: 'Z' },             // zombie
+    16: { environ: '', flags: 0x4 },             // exiting
+    17: { environ: null, uid: process.getuid() + 1 },  // another user's: nothing readable
+    19: { environ: null },                       // this user's, non-dumpable: unreadable
+    18: { environ: 'PATH=/bin\0' },              // someone else's
+  });
+  const r = runProcs('r1', [], { proc: ps, born: 50 });
+  assert.deepEqual(r.procs.map(p => [p.pid, p.cmd]), [[11, 'sleep 304']]);
+  assert.deepEqual(r.unsure, [12, 19]);
+  assert.deepEqual(runProcs('r1', [], { proc: ps }).unsure, [], 'with the reaper (no born), descendants are tracked another way');
+});
+
+test('eng run looks again while a process its first look could not read is unsure, and reports it once it carries the run id', () => {
+  const left = { kind: 'process', id: 12, owner: 'run' };
+  let ticks = 0;
+  const res = settle(fakeLooks([{ left: [], unsure: [12] }, { left: [], unsure: [12] }, { left: [left], unsure: [] }]), () => ticks++);
+  assert.deepEqual(res.left, [left]); assert.deepEqual(res.stuck, []); assert.ok(ticks >= 2, `looked again: ${ticks}`);
+});
+
+test('a process still unsure after the settle time is stuck, including one first seen unsure on a later look', () => {
+  let ticks = 0;
+  let res = settle(fakeLooks([{ left: [], unsure: [12] }]), () => ticks++);
+  assert.deepEqual(res.stuck, [12]); assert.equal(ticks, 15, 'waited the settle time (15 x 200 ms), no longer');
+  ticks = 0;
+  res = settle(fakeLooks([{ left: [{ kind: 'process', id: 11, owner: 'run' }], unsure: [] }, { left: [], unsure: [12] }]), () => ticks++);
+  assert.deepEqual(res.stuck, [12], 'a child a found process left mid-exec before it exited'); assert.equal(ticks, 15);
+  ticks = 0;
+  res = settle(fakeLooks([{ left: [], unsure: [] }]), () => ticks++);
+  assert.deepEqual(res.left, []); assert.deepEqual(res.stuck, []); assert.equal(ticks, 0, 'nothing to wait for');
 });
 
 test('containers, networks and volumes left behind fail and are removed, a container with the volumes docker made for it; --rm passes', { skip: !docker && 'no reachable docker with alpine:latest' }, () => {
