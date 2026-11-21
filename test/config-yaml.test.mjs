@@ -58,3 +58,7 @@ test('a repeated quoted key with a line break stays on one line', () => {
 test('an alias with no anchor is one plain line, not a ReferenceError', () => {
   refuses('version: 1\nproject: *unknown\n', 'config invalid: eng.config.yml: the YAML does not parse (Unresolved alias (the anchor must be set before the alias): unknown)');
 });
+
+test('a repeated key with a Unicode line separator is escaped, so the message stays on one line', () => {
+  refuses('version: 1\n"a\\u2028b": 1\n"a\\u2028b": 2\n', 'config invalid: eng.config.yml line 3: the key "a\\u2028b" is given twice');
+});
