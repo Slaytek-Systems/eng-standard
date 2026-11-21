@@ -156,7 +156,7 @@ test('without python3: a process left with an empty environment is reported as u
   const r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: { ...env, PATH: bin } });
   const pid = mark('nopy-empty');
   assert.equal(r.status, 0, out(r));
-  assert.match(r.stdout, new RegExp(`was not fully watched: .*processes: \\d+ process\\(es\\) started during the run still had an empty environment after 3 s \\(pid (\\d+, )*${pid}(, \\d+)*\\)`), out(r));
+  assert.match(r.stdout, new RegExp(`was not fully watched: .*processes: \\d+ process\\(es\\) started during the run still had an empty or unreadable environment after 3 s \\(pid (\\d+, )*${pid}(, \\d+)*\\)`), out(r));
   assert.match(r.stdout, /eng run: PASS \(test: not fully watched, mode warn\)/); assert.ok(running(Number(pid)), 'not proven the run\'s, so not stopped');
 });
 
