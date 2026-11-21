@@ -1131,3 +1131,36 @@ test('eng verdict --pr: no GitHub remote (none, or only non-GitHub ones) is one 
     assert.equal(g('notes --ref eng-verdict list'), '', 'no verdict was recorded either');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// Review round 1: the remote's host decides (not github.com anywhere in the URL); GITHUB_REPOSITORY names the repo only
+// for check's comment read (gh pr view and statuses resolve it from a remote or GH_REPO); the record route sends any --pr
+// value to gh; check on an empty diff reads no PR, so it needs no remote.
+test('eng verdict --pr: the remote host decides; GH_REPO always and GITHUB_REPOSITORY for check reach gh; +7 and an empty diff', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-noremote2-')), bin = path.join(root, 'bin'), log = path.join(root, 'gh-calls');
+  fs.mkdirSync(bin); fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\necho 'gh: boom' >&2; exit 1\n`, { mode: 0o755 });
+  const d = path.join(root, 'repo'), g = c => execSync(`git ${c}`, { cwd: d, stdio: 'pipe', encoding: 'utf8' }).trim();
+  fs.mkdirSync(d); g('init -q -b main'); g('config user.email t@t'); g('config user.name t');
+  fs.copyFileSync(ROOTCFG, path.join(d, 'eng.config.yml')); g('add -A'); g('commit -qm base');
+  const { GITHUB_REPOSITORY, GH_REPO, ...base } = process.env;
+  const eng = (env, ...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: d, encoding: 'utf8', env: { ...base, PATH: `${bin}:${process.env.PATH}`, ENG_NO_UPDATE_CHECK: '1', ...env } });
+  const line = n => `eng: FAIL verdict: PR #${n} needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr\n`;
+  const calls = () => { const c = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : ''; fs.rmSync(log, { force: true }); return c; };
+  const refused = (env, n, ...argv) => { const r = eng(env, 'verdict', ...argv); assert.deepEqual([r.status, r.stdout, r.stderr, calls()], [1, '', line(n), ''], `${argv.join(' ')} ${JSON.stringify(env)}`); };
+  const reaches = (env, ...argv) => { eng(env, 'verdict', ...argv); assert.notEqual(calls(), '', `${argv.join(' ')} ${JSON.stringify(env)} reaches gh`); };
+  try {
+    let r = eng({}, 'verdict', 'check', '--pr', '7');
+    assert.equal(r.status, 0, r.stdout + r.stderr); assert.match(r.stdout, /PASS \(no change against base/); assert.equal(calls(), '', 'an empty diff reads no PR');
+    g('checkout -qb feat'); fs.writeFileSync(path.join(d, 'README.md'), 'x\n'); g('add -A'); g('commit -qm docs');
+    assert.equal(eng({}, 'run', '--by', 'v-1', '--', 'true').status, 0);
+    refused({}, '+7', 'FAIL', '--by', 'v-1', '--pr', '+7');
+    for (const sub of [['PASS', '--by', 'v-1'], ['status']]) { refused({ GITHUB_REPOSITORY: 'o/r' }, '7', ...sub, '--pr', '7'); reaches({ GH_REPO: 'o/r' }, ...sub, '--pr', '7'); }
+    reaches({ GITHUB_REPOSITORY: 'o/r' }, 'check', '--pr', '7');
+    g('remote add origin https://gitlab.com/mirrors/github.com/o/r.git');
+    for (const sub of [['PASS', '--by', 'v-1'], ['check'], ['status']]) refused({}, '7', ...sub, '--pr', '7');
+    for (const u of ['github.com:o/r.git', 'ssh://git@GitHub.com:22/o/r', 'https://x:y@github.com/o/r']) {
+      g(`remote set-url origin ${u}`);
+      for (const sub of [['PASS', '--by', 'v-1'], ['check'], ['status']]) reaches({}, ...sub, '--pr', '7');
+    }
+    assert.equal(g('notes --ref eng-verdict list'), '', 'gh failed every time, so nothing was recorded');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
