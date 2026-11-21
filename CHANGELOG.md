@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.10 (21 Nov 2026)
+
+**Config validation refuses a `*_dir` value that is not a normalised relative repo path, or that holds `<!--`** (piece B-values, Core task p576xqexf3yb2xmgmzx3hh6fq58jnwgx). `verification.checks_dir`, `agents.skills_dir`, `e2e.evidence_dir` and every other `*_dir` key build repo paths, and some are rendered into the AGENTS.md block. An empty, absolute (`/.eng/checks`), `./` or `../<repo>/` value, a `.` or `..` segment, an empty segment, a backslash, a NUL, `<!--` or a set value that is not a string is now a config error: `eng sync`, `sync --check`, `init` and the gate exit 1 before writing anything. Before, sync wrote such a value into the lock and the block, and the gate ran the raw path.
+
 ## 0.23.9 (21 Nov 2026)
 
 **The rendered AGENTS.md block is a short router, a practice catalogue starts, and the README opens with why eng exists** (decision 21 Nov 2026, Core task p57cskzqr04wnkb56rdr0vsr1h8jmnem). A three-repo audit found the repo without eng easier for agents than the one with it: its 138-line rendered AGENTS.md (v0.18.0) and 266-line SHIPPING.md contradicted the repo's own rules in 6 places.

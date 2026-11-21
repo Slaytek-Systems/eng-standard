@@ -303,14 +303,17 @@ test('no new keys: a stacked --base or ENG_BASE gives the v0.21.1 e2e decision (
   });
 });
 
-test('checks_dir is normalised like the filesystem path, so a changed check always runs every check', async () => {
+// Piece B-values (21 Nov 2026): a checks_dir not written as git does is now a config error, so the gate refuses it
+// before running any check; affectedBy still normalises one it is handed.
+test('a checks_dir not written as git does is refused by the gate; affectedBy still normalises it', async () => {
   for (const d of ['.eng//checks', 'other/../.eng/checks', './.eng/checks/']) {
     await inRepo({ a: counting('a', 'src') }, { 'src/x': '1\n', 'other/y': '1\n' }, () => {
       git('checkout -q main'); write('eng.config.yml', YAML.stringify(config({ flake_runs_pr: 1, pr_checks: 'affected', checks_dir: d }))); git('commit -qam dir'); git('checkout -q -B pr');
       write('.eng/checks/a.sh', counting('a', 'src', 9)); git('commit -qam failing-check');
       const r = gatePr();
-      assert.equal(r.status, 1, `checks_dir ${d}: a changed failing check must run: ${out(r)}`);
-      assert.deepEqual(ran(), { a: 1 }, d); assert.match(r.stdout, /because \.eng\/checks\/a\.sh changed/, d);
+      assert.equal(r.status, 1, `checks_dir ${d}: the gate refuses the config: ${out(r)}`);
+      assert.ok(out(r).includes(`verification.checks_dir ${JSON.stringify(d)} has `), `${d}: ${out(r)}`);
+      assert.deepEqual(ran(), {}, `${d}: no check ran`);
     });
   }
   assert.deepEqual(affectedBy(['.eng/checks/a.sh'], '.eng//checks'), { all: '.eng/checks/a.sh changed' });
