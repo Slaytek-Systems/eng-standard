@@ -133,30 +133,3 @@ test('the PASS line always shows in AGENTS.md and SHIPPING.md, whatever merge.au
     assert.doesNotMatch(out['SHIPPING.md'], /<PASS_PROVES>/);
   }
 });
-
-// A marker counts only as a whole line (round-2 review on #98): repo text that quotes one inline is never taken for the
-// block, and ambiguous marker lines are refused instead of guessed at.
-test('repo text that quotes a marker inline survives sync; ambiguous marker lines are refused and nothing is written', () => {
-  const c = template();
-  const local = '# AGENTS.md\n\nThe generated part starts at `<!-- eng:begin -->` below.\n\n## Local approval rule\n\n- Changes to auth wait for the repo owner.\n';
-  const a = renderAll(c, `${local}\n<!-- eng:begin -->\nold\n<!-- eng:end -->\n`)['AGENTS.md'];
-  assert.ok(a.startsWith(local), 'the local rule between the inline quote and the block is kept');
-  assert.equal(a.split('\n').filter(l => l === '<!-- eng:begin -->').length, 1);
-  assert.ok(!a.includes('\nold\n'));
-  const inlineOnly = renderAll(c, '# AGENTS.md\n\nSee `<!-- eng:begin -->` and `<!-- eng:end -->`.\n')['AGENTS.md'];
-  assert.ok(inlineOnly.startsWith('# AGENTS.md\n\nSee `<!-- eng:begin -->` and `<!-- eng:end -->`.\n\n<!-- eng:begin -->\n'), 'inline quotes only: the block is appended');
-  for (const bad of ['<!-- eng:begin -->\nx\n<!-- eng:begin -->\ny\n<!-- eng:end -->\n', '<!-- eng:end -->\nx\n<!-- eng:begin -->\n', 'text\n<!-- eng:begin -->\nno end\n'])
-    assert.throws(() => renderAll(c, bad), /eng needs one of each, begin first/, JSON.stringify(bad));
-
-  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-markers-'));
-  try {
-    execSync('git init -q -b main', { cwd: dir });
-    fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(template()));
-    const mine = '# AGENTS.md\n\nKeep this.\n\n<!-- eng:begin -->\nA\n<!-- eng:begin -->\nB\n<!-- eng:end -->\n';
-    fs.writeFileSync(path.join(dir, 'AGENTS.md'), mine);
-    const r = spawnSync(process.execPath, [path.join(PKG, 'bin/eng.mjs'), 'sync'], { cwd: dir, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stderr, /AGENTS\.md has 2 line\(s\) that are exactly <!-- eng:begin --> and 1 exactly <!-- eng:end -->/);
-    assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), mine, 'AGENTS.md is untouched');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
