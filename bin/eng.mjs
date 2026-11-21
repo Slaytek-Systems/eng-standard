@@ -138,10 +138,11 @@ const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileS
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 // The lock, or the refusal lib/lock.mjs gives, before the caller writes or deletes anything. A linked .eng or lock file,
 // or one eng cannot look up, is refused before it is read, so eng never reads (or later writes) the lock through a link.
-// A .eng that is a file means no lock here; the write check names it if sync must write there.
+// A .eng that is a file means no lock here; the write check names it if sync must write there. A folder at the lock's
+// path is refused too: eng writes the lock there.
 const readLock = () => {
   const why = folderProblem('.eng/lock.json') === null ? null : writeProblem('.eng/lock.json');
-  if (why) die(`.eng/lock.json: ${why}. eng reads nothing through it and writes nothing. Fix: replace it with a real folder or file in the repo, then run eng sync.`);
+  if (why) die(`.eng/lock.json: ${why}. eng reads nothing through it and writes nothing. Fix: replace it with a real folder or file in the repo (move a folder at .eng/lock.json out of the way), then run eng sync.`);
   try { return parseLock(readOr('.eng/lock.json')); } catch (e) { return die(e.message); }
 };
 const standardProblems = () => lifecycleProblems({ lockVersion: readLock().package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
@@ -168,12 +169,13 @@ function render(cfg) {
 // A linked .github or docs is not listed: GitHub reads the repo's tree, where a link holds no template, and eng never reads
 // through a link (a linked .github is then refused by the write check when eng renders ours there). A linked template file
 // eng did not render is the repo's own (eng writes regular files), and its target is not read. One gone since the listing
-// is skipped.
+// is skipped. A folder named like a template file (pull_request_template.md/) holds no template for GitHub, so it is not
+// the repo's own; eng renders its template there only in .github, and the write check refuses the folder by name.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
-  const ours = (p, st) => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || (!st.isSymbolicLink() && readOr(p) === rendered));
+  const ours = (p, st) => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || (st.isFile() && readOr(p) === rendered));
   return ['.github', '.', 'docs'].flatMap(d => { if (folderProblem(`${d}/x`)) return []; try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
-    .filter(p => { const st = fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false }); return st && !ours(p, st); });
+    .filter(p => { const st = fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false }); return st && !(st.isDirectory() && path.extname(p)) && !ours(p, st); });
 }
 const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
 
@@ -188,9 +190,12 @@ const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
 // Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
 // what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
-// their first write, so a refusal writes nothing. init passes the config it is about to seed.
-function syncPlan(seed = null) {
-  const old = readLock(), cur = seed ?? readOr('eng.config.yml');
+// their first write, so a refusal writes nothing. init passes the config it is about to seed and the other files it
+// writes (initFiles(cfg): the seed's files, and the renovation baselines), so those are checked before the first write too.
+function syncPlan(seed = null, initFiles = () => []) {
+  const old = readLock(), cfgWhy = writeProblem('eng.config.yml');
+  if (cfgWhy) die(`eng.config.yml: ${cfgWhy}. eng reads nothing through it and writes nothing. Fix: replace it with a real file in the repo, then run eng sync.`);
+  const cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
@@ -199,24 +204,41 @@ function syncPlan(seed = null) {
   validate(cfg);
   // render reads AGENTS.md and SHIPPING.md to keep the repo's own text, and lists the checks folder for its check ids,
   // so a link there is refused before it is read.
-  refuseWrites(['AGENTS.md', 'SHIPPING.md', `${checksDir(cfg)}/.gitkeep`]);
+  const always = ['eng.config.yml', '.eng/lock.json', 'AGENTS.md', 'SHIPPING.md', ...initFiles(cfg)];
+  refuseClashes([...always, repoKey(`${checksDir(cfg)}/.gitkeep`)]);
+  refuseWrites(['AGENTS.md', 'SHIPPING.md', `${checksDir(cfg)}/.gitkeep`, ...initFiles(cfg)]);
   const files = render(cfg);
+  refuseClashes([...always, ...Object.keys(files)]);
   refuseWrites(Object.keys(files));
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune: prunePlan(old.files, files), exec: renderedExecutables(cfg) };
 }
+// A config that makes eng write a file where another path it writes needs a folder (verification.checks_dir:
+// .eng/lock.json/checks, agents.skills_dir: SHIPPING.md) is refused before the first write, whatever is on disk, so init
+// never creates the folder and leaves the file eng writes there a folder. paths are repo keys (repoKey).
+function refuseClashes(paths) {
+  const files = new Set(paths), clash = new Map();
+  for (const p of paths) {
+    const parts = p.split('/');
+    for (let i = 1; i < parts.length; i++) { const d = parts.slice(0, i).join('/'); if (files.has(d) && !clash.has(d)) clash.set(d, p); }
+  }
+  const why = [...clash].map(([d, p]) => `${d} is a file eng writes, so it cannot be a folder on the way to ${p}`);
+  if (why.length) die(`config invalid:\n  ${why.slice(0, 5).join('\n  ')}${why.length > 5 ? `\n  and ${why.length - 5} more` : ''}\n  eng writes nothing. Fix: point verification.checks_dir, agents.skills_dir or the setting that renders there at a folder outside the files eng writes, then run eng sync.`);
+}
 // eng writes each rendered file through the repo only. A file is refused when a folder on its path, below the repo root,
 // is a symlink, a file or one eng cannot list and enter, or when the file is itself a symlink or cannot be looked up (render
-// already dropped CLAUDE.md -> AGENTS.md), so a write never follows a link out of the repo or onto another repo file, or
-// fails partway. A folder or file that is not there is created by sync.
+// already dropped CLAUDE.md -> AGENTS.md), or is a folder or anything else that is not a regular file, so a write never
+// follows a link out of the repo or onto another repo file, or fails partway. A folder or file that is not there is
+// created by sync.
 function writeProblem(p) {
   const why = folderProblem(p, true);
   if (why) return why;
-  try { return fs.lstatSync(path.join(ROOT, p)).isSymbolicLink() ? `${p} is a symlink` : null; }
+  let st; try { st = fs.lstatSync(path.join(ROOT, p)); }
   catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${p} cannot be read (${e.code || e.message})`; }
+  return st.isSymbolicLink() ? `${p} is a symlink` : st.isDirectory() ? `${p} is a folder` : st.isFile() ? null : `${p} is not a regular file`;
 }
 function refuseWrites(paths) {
   const refused = paths.flatMap(p => { const why = writeProblem(p); return why ? [`${p} (${why})`] : []; });
-  if (refused.length) die(`eng sync would write ${refused.length} file(s) through a symlink, or in a folder eng cannot read or that is not a folder: ${refused.slice(0, 5).join(', ')}${refused.length > 5 ? `, and ${refused.length - 5} more` : ''}. eng writes nothing. Fix: replace each linked folder or file with a real one (or make the folder readable, or move the file that is in a folder's place), or change the config so it renders nothing there; then run eng sync.`);
+  if (refused.length) die(`eng sync would write ${refused.length} file(s) through a symlink, in a folder eng cannot read or that is not a folder, or where a folder is: ${refused.slice(0, 5).join(', ')}${refused.length > 5 ? `, and ${refused.length - 5} more` : ''}. eng writes nothing. Fix: replace each linked folder or file with a real one (or make the folder readable, or move the file that is in a folder's place, or the folder that is in a file's place), or change the config so it renders nothing there; then run eng sync.`);
 }
 // The files a previous sync generated that the config no longer renders and that are on disk, each once. Never in
 // .claude/skills or .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the
@@ -309,18 +331,21 @@ function init() {
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   let seed = null;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), write() {
+    const proofs = path.join(PKG, 'templates/rule-proofs');
+    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), files: filesUnder(proofs).map(f => `.eng/rule-proofs/${f}`), write() {
       fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), this.text); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
       // The starter config's example lint rule names this fixture as its proof; eng doctor and eng rules prove need it on disk.
       fs.cpSync(path.join(PKG, 'templates/rule-proofs'), path.join(ROOT, '.eng/rule-proofs'), { recursive: true }); console.log('  seeded .eng/rule-proofs/no-focused-tests (the example rule\'s proof)');
     } };
     else seed = seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
-  let plan = syncPlan(seed?.text);
+  // Every file init writes besides the render: the seed's, and each renovation baseline (written only when missing).
+  const initFiles = cfg => [...(seed?.files ?? []), ...(cfg.renovation ? BASELINE_KINDS.map(baselinePath) : [])];
+  let plan = syncPlan(seed?.text, initFiles);
   seed?.write();
   // A new checks folder can change what renders (one named like a PR template), so the plan is made again once it exists.
   const checks = path.join(ROOT, checksDir(plan.cfg));
-  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(); }
+  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(null, initFiles); }
   const cfg = plan.cfg;
   sync(plan);
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
@@ -332,6 +357,9 @@ function init() {
   if (!cfg.launch) { console.log(`  GAP 1: ${NO_LAUNCH}.\n  Do not create the verify-<app> skill yet: it may only call launch, never build infra. Add launch: to eng.config.yml (up/doctor/down) in the codebase, then run eng doctor --launch.`); return console.log('eng init: done, verify-skill creation STOPPED on gap 1 (no isolated launch).'); }
   console.log('eng init: done. Next: run create-verification-skill to make the repo verify-<app> skill, then start tasks with poteto-mode.');
 }
+// Every file under a package folder, as a /-joined path relative to it. Walked by hand: readdirSync's recursive option
+// needs Node 18.17, and the package supports Node 18.
+const filesUnder = (dir, rel = '') => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap(e => e.isDirectory() ? filesUnder(dir, rel ? `${rel}/${e.name}` : e.name) : e.isFile() ? [rel ? `${rel}/${e.name}` : e.name] : []);
 const repoName = () => { try { return JSON.parse(readOr('package.json', '{}')).name?.replace(/^@[^/]+\//, '') || null; } catch { return null; } };
 const defaultBranch = () => { try { return sh('git symbolic-ref --short refs/remotes/origin/HEAD').replace(/^origin\//, ''); } catch {} try { sh('git rev-parse --verify -q main'); return 'main'; } catch { return sh('git rev-parse --abbrev-ref HEAD'); } };
 function seedShipping(owner) {
@@ -347,10 +375,12 @@ function seedShipping(owner) {
   doc.setIn(['renovation'], doc.createNode({ version: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version, policy_owner: owner }));
   const text = String(doc), errs = configErrors(YAML.parse(text));
   if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
-  // init writes it only after the sync plan for this text passes.
-  return { text, write() {
+  // init writes it only after the sync plan for this text passes. CODEOWNERS is the first one there, looked up without
+  // reading it, so the plan's write check refuses a folder or link there before the first write.
+  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => folderProblem(p) === false && fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false })) || '.github/CODEOWNERS';
+  return { text, files: [co], write() {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
-    const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
+    const cur = readOr(co, '');
     if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
       fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
       fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
