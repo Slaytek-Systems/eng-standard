@@ -4,7 +4,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## 0.23.12 (21 Nov 2026)
 
-**A refusal from `eng sync`, `sync --check` or `init` writes nothing** (Core task p5767zdxsqeje9fhzmqewgz8958jm2xa, piece B-order). The three commands now run every check sync makes (the lock, the config as this release migrates it, the render and its skills) before their first write. Before, `eng sync` wrote the `git.rewrite_pushed` migration into eng.config.yml and then refused a render error or an unknown skill; `eng init` created the checks folder before such a refusal; and `sync --check` advised an `eng sync` that would then fail, where it now reports that failure. `sync` and `init` print the update notice after they run, so a refusal never writes its cache. How markers are detected is unchanged.
+**A refusal from `eng sync`, `sync --check` or `init` writes nothing** (Core task p5767zdxsqeje9fhzmqewgz8958jm2xa, piece B-order). The three commands now run every check sync makes (the lock, the config as this release migrates it, the render and its skills) before their first write. Before, `eng sync` wrote the `git.rewrite_pushed` migration into eng.config.yml and then refused a render error or an unknown skill; `eng init` created the checks folder before such a refusal, and in a repo that already ships wrote the config it seeds and CODEOWNERS before one (it now plans the seeded config first); and `sync --check` advised an `eng sync` that would then fail, where it now reports that failure. `sync` and `init` print the update notice after they run, so a refusal never writes its cache. How markers are detected is unchanged.
 
 ## 0.23.11 (21 Nov 2026)
 

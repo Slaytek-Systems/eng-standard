@@ -178,9 +178,9 @@ const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 
 // Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
 // what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
-// their first write, so a refusal writes nothing.
-function syncPlan() {
-  const old = readLock(), cur = readOr('eng.config.yml');
+// their first write, so a refusal writes nothing. init passes the config it is about to seed.
+function syncPlan(cur = readOr('eng.config.yml')) {
+  const old = readLock();
   if (cur === null) die('no eng.config.yml (run `eng init`)');
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
@@ -235,16 +235,21 @@ function sync(plan = syncPlan()) {
 function init() {
   readLock();
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
+  let seed = null;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
-    if (!shipping) {
-      fs.copyFileSync(path.join(PKG, 'templates/eng.config.yml'), path.join(ROOT, 'eng.config.yml')); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
+    if (!shipping) seed = { text: fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'), write() {
+      fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), this.text); console.log('  seeded eng.config.yml (edit it, then run eng sync)');
       // The starter config's example lint rule names this fixture as its proof; eng doctor and eng rules prove need it on disk.
       fs.cpSync(path.join(PKG, 'templates/rule-proofs'), path.join(ROOT, '.eng/rule-proofs'), { recursive: true }); console.log('  seeded .eng/rule-proofs/no-focused-tests (the example rule\'s proof)');
-    }
-    else seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
+    } };
+    else seed = seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
-  const plan = syncPlan(), cfg = plan.cfg;
-  fs.mkdirSync(path.join(ROOT, checksDir(cfg)), { recursive: true });
+  let plan = syncPlan(seed?.text);
+  seed?.write();
+  // A new checks folder can change what renders (one named like a PR template), so the plan is made again once it exists.
+  const checks = path.join(ROOT, checksDir(plan.cfg));
+  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(); }
+  const cfg = plan.cfg;
   sync(plan);
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
   sh('git config core.hooksPath .githooks');
@@ -270,12 +275,15 @@ function seedShipping(owner) {
   doc.setIn(['renovation'], doc.createNode({ version: JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version, policy_owner: owner }));
   const text = String(doc), errs = configErrors(YAML.parse(text));
   if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
-  fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
-  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
-  if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
-    fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
-    fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
-  }
+  // init writes it only after the sync plan for this text passes.
+  return { text, write() {
+    fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
+    const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => readOr(p) !== null) || '.github/CODEOWNERS', cur = readOr(co, '');
+    if (!BASELINE_KINDS.every(k => covers(cur, baselinePath(k)))) {
+      fs.mkdirSync(path.dirname(path.join(ROOT, co)), { recursive: true });
+      fs.writeFileSync(path.join(ROOT, co), `${cur.trimEnd()}${cur ? '\n' : ''}# Baseline edits need the policy owner (eng init)\n/renovation/baselines/ ${owner}\n`); console.log(`  wrote ${co}`);
+    }
+  } };
 }
 // Findings a repo already has when it adopts the standard. Only new ones fail eng lint afterwards.
 function saveBaseline(kind, cfg) {
@@ -289,7 +297,7 @@ function saveBaseline(kind, cfg) {
 
 function syncCheck() {
   // Every refusal eng sync would make comes first, so the migration advice below names a sync that passes.
-  const { cfg, files } = syncPlan();
+  const { files, exec } = syncPlan();
   const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
@@ -299,7 +307,7 @@ function syncCheck() {
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
-  for (const p of renderedExecutables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
+  for (const p of exec) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');

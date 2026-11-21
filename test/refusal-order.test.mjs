@@ -94,3 +94,21 @@ test('with the update notice on, sync, sync --check and init refuse a bad config
     assert.deepEqual(fs.readdirSync(xdg), [], `eng ${cmd.join(' ')} wrote the update cache before refusing`);
   }
 });
+
+// Review round 1 on #103: init in a repo that already ships plans the config it seeds before it writes it or CODEOWNERS.
+test('eng init in a repo that already ships refuses a seeded config that cannot render before it writes it or CODEOWNERS', () => {
+  const dir = tmp('eng-order-ship-'), git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe' });
+  git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"name":" "}\n'); git('add -A'); git('commit -qm base');
+  const before = snapshot(dir);
+  const i = spawnSync(process.execPath, [ENG, 'init', '--owner', '@owner'], { cwd: dir, encoding: 'utf8', env: quiet });
+  assert.notEqual(i.status, 0); assert.match(i.stderr, /project\.name must be a string/);
+  assert.deepEqual(snapshot(dir), before, 'init wrote neither eng.config.yml nor CODEOWNERS');
+});
+
+test('a checks folder init creates that is named like a PR template renders as it did, and sync --check then passes', () => {
+  const r = repo(t => t.replace(/^( {2}checks_dir: ).*$/m, '$1.github/PULL_REQUEST_TEMPLATE')); noChecksDir(r);
+  fs.rmSync(path.join(r.dir, '.github/PULL_REQUEST_TEMPLATE'), { recursive: true, force: true });
+  const i = r.eng(['init']); assert.equal(i.status, 0, i.stderr);
+  const c = r.eng(['sync', '--check']); assert.equal(c.status, 0, c.stderr);
+});
