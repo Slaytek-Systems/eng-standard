@@ -136,8 +136,14 @@ function hookArgWarnings(cfg) {
 }
 const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : d;
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
-// The lock, or the refusal lib/lock.mjs gives, before the caller writes or deletes anything.
-const readLock = () => { try { return parseLock(readOr('.eng/lock.json')); } catch (e) { return die(e.message); } };
+// The lock, or the refusal lib/lock.mjs gives, before the caller writes or deletes anything. A linked .eng or lock file,
+// or one eng cannot look up, is refused before it is read, so eng never reads (or later writes) the lock through a link.
+// A .eng that is a file means no lock here; the write check names it if sync must write there.
+const readLock = () => {
+  const why = folderProblem('.eng/lock.json') === null ? null : writeProblem('.eng/lock.json');
+  if (why) die(`.eng/lock.json: ${why}. eng reads nothing through it and writes nothing. Fix: replace it with a real folder or file in the repo, then run eng sync.`);
+  try { return parseLock(readOr('.eng/lock.json')); } catch (e) { return die(e.message); }
+};
 const standardProblems = () => lifecycleProblems({ lockVersion: readLock().package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
 const repoKey = p => path.posix.normalize(p.replace(/^\/+/, ''));
@@ -159,11 +165,15 @@ function render(cfg) {
 // GitHub reads a PR template from .github/, the root or docs/, named in any case, as a file or a PULL_REQUEST_TEMPLATE/
 // folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
+// A linked .github or docs is not listed: GitHub reads the repo's tree, where a link holds no template, and eng never reads
+// through a link (a linked .github is then refused by the write check when eng renders ours there). A linked template file
+// eng did not render is the repo's own (eng writes regular files), and its target is not read. One gone since the listing
+// is skipped.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
-  const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
-  return ['.github', '.', 'docs'].flatMap(d => { try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
-    .filter(p => !ours(p));
+  const ours = (p, st) => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || (!st.isSymbolicLink() && readOr(p) === rendered));
+  return ['.github', '.', 'docs'].flatMap(d => { if (folderProblem(`${d}/x`)) return []; try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
+    .filter(p => { const st = fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false }); return st && !ours(p, st); });
 }
 const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
 
