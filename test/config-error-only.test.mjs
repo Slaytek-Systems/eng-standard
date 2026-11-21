@@ -174,40 +174,30 @@ test('eng run in a private worktree still runs with no eng.config.yml, and with 
   }
 });
 
-// Review round 1 on #126: a value of the wrong type in a list the shared validator walks is a config error, not a stack trace.
-test('a wrong-typed constraints.rules or stack.exceptions is one config invalid error, for eng run and eng lint alike', async () => {
+// The round-3 review cases on #126: a list entry of the wrong type (checked by lib/config-lists.mjs since 0.23.28) is refused
+// by eng run in a private worktree too, with only the config invalid error, and nothing starts.
+test('eng run in a private worktree refuses a wrong-typed list entry with only the config invalid error, and starts nothing', async () => {
   const YAML = (await import('yaml')).default;
   const shaped = f => { const c = YAML.parse(TPL); f(c); return YAML.stringify(c); };
+  const rule = { id: 'r1', paths: 'src/**', proven_by: { incident: 'i', fixture: 'f' } };
   const cases = [
-    ['constraints.rules a mapping', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: {} }; }), /^ {2}constraints\.rules must be a list of rules$/m],
-    ['constraints.rules holding null', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: [null] }; }), /^ {2}constraints\.rules must be a list of rules$/m],
-    ['stack.exceptions a number', shaped(c => { c.stack = { ...(c.stack || {}), exceptions: 5 }; }), /^ {2}stack\.exceptions must be a list of exceptions$/m],
+    ['agents.skills: [null]', shaped(c => { c.agents = { ...(c.agents || {}), skills: [null] }; }), /^ {2}agents\.skills must be a list of skills \(<source>\/<name>\); \[0\] is null$/m],
+    ['gates.required: [{toString: null}]', shaped(c => { c.gates.required = [...(c.gates.required || []), { toString: null }]; }), /^ {2}gates\.required must be a list of gate names; \[\d+\] is a mapping$/m],
+    ['a mapping as a rule id, proof present', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: [{ ...rule, id: { toString: null } }] }; }), /^ {2}constraints\.rules\[0\]\.id must be text; it is a mapping$/m],
+    ['a mapping as an exception name, reason present', shaped(c => { c.stack = { ...(c.stack || {}), exceptions: [{ kind: 'language', name: { toString: null }, reason: 'r' }] }; }), /^ {2}stack\.exceptions\[0\]\.name must be text; it is a mapping$/m],
   ];
-  for (const [what, config, detail] of cases) for (const args of [['run', '--', 'true'], ['lint']]) {
-    const r = repo(config), x = r.eng(args), name = `${what}: eng ${args.join(' ')}`;
-    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
-    assert.equal(x.stdout, '', name);
-    assert.match(x.stderr, /^eng: FAIL config invalid:\n/, `${name}: ${x.stderr}`);
-    assert.match(x.stderr, detail, `${name}: ${x.stderr}`);
-    assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${name}: only the error: ${x.stderr}`);
-    assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME`);
-  }
-});
-
-// Review round 2 on #126: a rule id or exception name that is not a string is named by its place in the list.
-test('a constraints rule or stack exception with a mapping for its id or name is one config invalid error', async () => {
-  const YAML = (await import('yaml')).default;
-  const shaped = f => { const c = YAML.parse(TPL); f(c); return YAML.stringify(c); };
-  const cases = [
-    ['a rule id', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: [{ id: { toString: null } }] }; }), /^ {2}constraints\.rules\[0\] needs proven_by\.incident and proven_by\.fixture$/m],
-    ['an exception name', shaped(c => { c.stack = { ...(c.stack || {}), exceptions: [{ name: { toString: null } }] }; }), /^ {2}stack\.exceptions\[0\] needs a reason$/m],
-  ];
-  for (const [what, config, detail] of cases) for (const args of [['run', '--', 'true'], ['lint']]) {
-    const r = repo(config), x = r.eng(args), name = `${what}: eng ${args.join(' ')}`;
-    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
-    assert.equal(x.stdout, '', name);
-    assert.match(x.stderr, detail, `${name}: ${x.stderr}`);
-    assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${name}: only the error: ${x.stderr}`);
-    assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME`);
+  for (const [what, config, detail] of cases) {
+    const r = repo(config), mark = path.join(tmp('eng-mark-'), 'started');
+    const x = r.eng(['run', '--', 'sh', '-c', `touch '${mark}'`]);
+    assert.equal(x.signal, null, `${what} did not hang`);
+    assert.equal(x.status, 1, `${what}: ${x.stdout}${x.stderr}`);
+    assert.equal(x.stdout, '', what);
+    assert.match(x.stderr, /^eng: FAIL config invalid:\n/, `${what}: ${x.stderr}`);
+    assert.match(x.stderr, detail, `${what}: ${x.stderr}`);
+    assert.doesNotMatch(x.stderr, /TypeError|\n {4}at /, `${what}: no stack trace: ${x.stderr}`);
+    assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${what}: only the error: ${x.stderr}`);
+    assert.deepEqual(fs.readdirSync(r.xdg), [], `${what} wrote nothing under XDG_CACHE_HOME`);
+    assert.ok(!fs.existsSync(mark), `${what}: the command never started`);
+    assert.equal(execSync('git worktree list --porcelain', { cwd: r.dir, encoding: 'utf8' }).match(/^worktree /gm).length, 1, `${what}: no worktree was added`);
   }
 });
