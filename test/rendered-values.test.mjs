@@ -94,7 +94,7 @@ test('eng sync, sync --check and init refuse a rendered value with a line break:
         const lines = res.stderr.split('\n').filter(l => l.includes(key));
         assert.equal(lines.length, 1, `${why}: one line names the key: ${JSON.stringify(res.stderr)}`);
         assert.doesNotMatch(all.replaceAll('\n', ''), RAW, `${why}: no raw line break from the value`);
-        assert.ok(!all.includes(SIG), `${why}: the signed line is never echoed`);
+        assert.ok(!all.split('\n').some(l => [SIG, '<!-- eng:begin -->', '<!-- eng:end -->'].includes(l.trim())), `${why}: no marker line is echoed`);
         assert.deepEqual(shot(r.dir), before, `${why} wrote nothing`);
       }
     }

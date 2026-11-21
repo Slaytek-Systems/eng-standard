@@ -81,7 +81,8 @@ test('a skills_dir with a newline inside a PR template folder is refused on one 
   assert.equal(s.status, 1, s.stdout + s.stderr);
   const lines = s.stderr.split('\n').filter(l => l.includes('agents.skills_dir'));
   assert.equal(lines.length, 1, s.stderr);
-  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\nb"\) is in docs\/pull_request_template, /, s.stderr);
+  // Since v0.23.25 a line break in a rendered value is refused by the *_dir check, once, before the PR template check.
+  assert.match(lines[0], /agents\.skills_dir "docs\/pull_request_template\/a\\nb" holds a line break: /, s.stderr);
 });
 
 // Review round 1 on #121: with skills_dir docs or .github, the empty-folder cleanup after a sync must leave the
@@ -106,7 +107,7 @@ test('a skills_dir with U+2028 inside a PR template folder is refused on one pri
   assert.equal(s.status, 1, s.stdout + s.stderr);
   const lines = s.stderr.split(/\r\n|[\n\r\u2028\u2029\u0085]/).filter(l => l.includes('agents.skills_dir'));
   assert.equal(lines.length, 1, s.stderr);
-  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\u2028b\\u00e9"\) is in /, s.stderr);
+  assert.match(lines[0], /agents\.skills_dir "docs\/pull_request_template\/a\\u2028b\\u00e9" holds a line break: /, s.stderr);
   assert.match(lines[0], /^[ -~]*$/, s.stderr);
 });
 

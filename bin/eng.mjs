@@ -18,7 +18,7 @@ import { merge, postVerdict, mergeDoctor, mergeSettings } from '../lib/merge-cli
 import { validateAuto } from '../lib/merge-queue.mjs';
 import { trustErrors } from '../lib/trust.mjs';
 import { formalErrors } from '../lib/formal.mjs';
-import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel } from '../lib/verification.mjs';
+import { passProblem, testableFiles, reviewOnlyPaths, reviewOnlyErrors, runLog, runsFor, methodOf, checksDir, flakeRunsOf, parallelOf, prChecksOf, affectedBy, EVENTS, checkErrors, dirValueErrors, checkSteps, repoRel, asciiQuoted, LINE_BREAK } from '../lib/verification.mjs';
 import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
@@ -83,19 +83,19 @@ const repoPaths = () => sh('git ls-files --cached --others --exclude-standard').
 // or a FIFO is skipped, so it can never fail or block a scan.
 const readableFile = f => { try { const abs = path.join(ROOT, f); if (!fs.lstatSync(abs).isFile()) return false; fs.accessSync(abs, fs.constants.R_OK); return true; } catch { return false; } };
 const repoFiles = () => repoPaths().filter(f => !harnessOut(f) || readableFile(f));
+// A dir value with a line break is refused once, by dirValueErrors, so no other check names it a second time.
+const onePathLine = d => typeof d === 'string' && d.trim() !== '' && !LINE_BREAK.test(d);
 function harnessConfigErrors(c) {
   const sd = c?.agents?.skills_dir, dirs = [[sd, 'agents.skills_dir'], [checksDir(c), 'verification.checks_dir']];
-  if (typeof sd === 'string') dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
-  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
+  if (typeof sd === 'string' && !LINE_BREAK.test(sd)) dirs.push([`${path.dirname(sd)}/agents`, 'the subagent folder beside agents.skills_dir']);
+  return dirs.filter(([d]) => onePathLine(d)).flatMap(([d, what]) => { const h = harnessOut(d); return h ? [`${what} (${d}) is in ${h}, which eng never writes into: developers and other tools own it. Use a folder outside .claude/skills and .claude/agents (the defaults are .agents/skills and .eng/checks), and link ${h} to it yourself if Claude Code should see it`] : []; });
 }
 // GitHub reads a PULL_REQUEST_TEMPLATE/ folder (any case) at the root, in .github or in docs, and ownPrTemplates counts it
 // as the repo's own PR template. A skills or checks folder there would turn eng's own output into the repo's template:
 // the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
 // (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
 // template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
-// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted with every character outside
-// printable ASCII as \\uXXXX (U+2028 ends a line for many readers), so it stays on one line.
-const asciiQuoted = v => JSON.stringify(v).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+// The PR template folder a repo path is, or sits in, or null. The value is shown with asciiQuoted, so it stays on one line.
 const PR_TEMPLATE_DIR = /^pull_request_template$/i;
 const prTemplateDirOf = p => {
   const [a, b = ''] = (repoRel(p) ?? '').split('/');
@@ -103,7 +103,7 @@ const prTemplateDirOf = p => {
 };
 function prTemplateDirErrors(c) {
   const dirs = [[c?.agents?.skills_dir, 'agents.skills_dir', '.agents/skills'], [checksDir(c), 'verification.checks_dir', '.eng/checks']];
-  return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what, dflt]) => {
+  return dirs.filter(([d]) => onePathLine(d)).flatMap(([d, what, dflt]) => {
     const t = prTemplateDirOf(d);
     return t ? [`${what} (${asciiQuoted(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
   });
