@@ -194,7 +194,8 @@ function syncPlan(seed = null) {
 // .claude/skills or .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the
 // developer. An entry is refused when a folder on its path, below the repo root, is a symlink (the delete could land
 // outside the repo or on another repo file), or when eng cannot read its folder, so cannot tell what it would delete.
-// A managed path that is itself a symlink is the developer's (eng writes regular files): neither it nor its target goes.
+// eng writes regular files, so anything else at a stale path is the developer's and stays: a symlink (neither it nor
+// its target goes), a folder or a FIFO.
 function prunePlan(lockFiles, files) {
   const prune = [], refused = [];
   for (const p of new Set(lockFiles)) {
@@ -204,7 +205,7 @@ function prunePlan(lockFiles, files) {
     if (listed === false) continue;
     const why = linkedFolder(p) || (listed === null && `${path.dirname(p)} cannot be read`);
     if (why) refused.push(`${p} (${why})`);
-    else if (!fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) prune.push(p);
+    else if (fs.lstatSync(path.join(ROOT, p)).isFile()) prune.push(p);
   }
   if (refused.length) die(`.eng/lock.json: eng sync would delete ${refused.length} file(s) the config no longer renders through a symlinked folder, or in a folder eng cannot read: ${refused.join(', ')}. eng writes and deletes nothing. Fix: delete each file yourself if it should go (or make its folder readable), then run eng sync.`);
   return prune;

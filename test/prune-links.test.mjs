@@ -180,3 +180,17 @@ test('a lock entry whose folder cannot be read is refused, and nothing is writte
   } finally { fs.chmodSync(r.file('docs'), 0o755); }
   assert.ok(fs.existsSync(r.file('docs/OLD.md')));
 });
+
+// Review round 1 on #108: a folder at a stale path is not a file eng wrote, so it stays and the sync finishes.
+test('a stale lock entry that is a folder on disk is left alone, and the sync finishes', () => {
+  const r = repo('docs/OLD.md');
+  fs.mkdirSync(r.file('docs/OLD.md'), { recursive: true }); fs.writeFileSync(r.file('docs/OLD.md/keep.md'), 'mine\n');
+  const generated = JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.find(p => p !== 'docs/OLD.md');
+  fs.rmSync(r.file(generated));
+  const s = r.eng('sync');
+  assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.doesNotMatch(s.stdout, /removed/);
+  assert.ok(fs.existsSync(r.file(generated)));
+  assert.equal(fs.readFileSync(r.file('docs/OLD.md/keep.md'), 'utf8'), 'mine\n');
+  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('docs/OLD.md'));
+});
