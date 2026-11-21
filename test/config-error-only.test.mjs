@@ -193,3 +193,21 @@ test('a wrong-typed constraints.rules or stack.exceptions is one config invalid 
     assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME`);
   }
 });
+
+// Review round 2 on #126: a rule id or exception name that is not a string is named by its place in the list.
+test('a constraints rule or stack exception with a mapping for its id or name is one config invalid error', async () => {
+  const YAML = (await import('yaml')).default;
+  const shaped = f => { const c = YAML.parse(TPL); f(c); return YAML.stringify(c); };
+  const cases = [
+    ['a rule id', shaped(c => { c.constraints = { ...(c.constraints || {}), rules: [{ id: { toString: null } }] }; }), /^ {2}constraints\.rules\[0\] needs proven_by\.incident and proven_by\.fixture$/m],
+    ['an exception name', shaped(c => { c.stack = { ...(c.stack || {}), exceptions: [{ name: { toString: null } }] }; }), /^ {2}stack\.exceptions\[0\] needs a reason$/m],
+  ];
+  for (const [what, config, detail] of cases) for (const args of [['run', '--', 'true'], ['lint']]) {
+    const r = repo(config), x = r.eng(args), name = `${what}: eng ${args.join(' ')}`;
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.equal(x.stdout, '', name);
+    assert.match(x.stderr, detail, `${name}: ${x.stderr}`);
+    assert.ok(x.stderr.split('\n').filter(Boolean).every((l, i) => i === 0 ? l.startsWith('eng: FAIL config invalid') : l.startsWith('  ')), `${name}: only the error: ${x.stderr}`);
+    assert.deepEqual(fs.readdirSync(r.xdg), [], `${name} wrote nothing under XDG_CACHE_HOME`);
+  }
+});
