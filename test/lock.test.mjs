@@ -147,3 +147,54 @@ test('sync --check fails with no lock', () => {
   assert.notEqual(d.status, 0);
   assert.match(d.stderr, /\.eng\/lock\.json: config changed since last sync/);
 });
+
+// B-lock: eng sync deletes the lock entries it no longer renders, so a lock entry that is not a relative repo file path
+// must be refused before sync, sync --check or init writes or deletes anything. {"files":"x"} read as ["0"] and deleted 0.
+test('sync, sync --check and init refuse a lock whose files is not a list of relative repo paths, and change nothing', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('0'), 'mine\n'); fs.mkdirSync(r.file('sub/.git'), { recursive: true }); fs.writeFileSync(r.file('sub/.git/config'), 'cfg\n');
+  fs.rmSync(r.file('SHIPPING.md')); r.git('add -A'); r.git('commit -qm files');
+  const cases = [
+    ['{"package":"0.1.0","files":"x"}', /files must be a list of repo file paths/],
+    ['{"package":"0.1.0","files":null}', /files must be a list of repo file paths/],
+    ['{"package":"0.1.0"}', /files must be a list of repo file paths/],
+    ['{"package":"0.1.0","files":[1]}', /1 \(not a string\)/],
+    ['{"package":"0.1.0","files":[""]}', /"" \(empty\)/],
+    [`{"package":"0.1.0","files":[${JSON.stringify(r.file('0'))}]}`, /\(absolute\)/],
+    ['{"package":"0.1.0","files":["../x"]}', /"\.\.\/x" \(has a \. or \.\. segment\)/],
+    ['{"package":"0.1.0","files":["./0"]}', /"\.\/0" \(has a \. or \.\. segment\)/],
+    ['{"package":"0.1.0","files":["a//b"]}', /"a\/\/b" \(has an empty segment or a trailing slash\)/],
+    ['{"package":"0.1.0","files":["sub/"]}', /"sub\/" \(has an empty segment or a trailing slash\)/],
+    ['{"package":"0.1.0","files":["a\\\\b"]}', /\(has a backslash\)/],
+    ['{"package":"0.1.0","files":[".git/HEAD"]}', /"\.git\/HEAD" \(has a \.git segment\)/],
+    ['{"package":"0.1.0","files":["sub/.git/config"]}', /"sub\/\.git\/config" \(has a \.git segment\)/],
+    ['{"package":"0.1.0","files":["sub/.GIT/config"]}', /\(has a \.git segment\)/],
+    ['[]', /not a JSON object/],
+    ['nope', /not valid JSON/],
+  ];
+  const state = () => [r.git('status --porcelain --untracked-files=all'), r.read('.eng/lock.json'), r.read('eng.config.yml'), r.read('0'), r.read('sub/.git/config')].join('\0');
+  for (const [lock, why] of cases) {
+    fs.writeFileSync(r.file('.eng/lock.json'), lock + '\n');
+    const before = state();
+    for (const cmd of [['sync'], ['sync', '--check'], ['init']]) {
+      const d = r.eng(...cmd);
+      assert.equal(d.status, 1, `eng ${cmd.join(' ')} with ${lock}: ${d.stdout}${d.stderr}`);
+      assert.match(d.stderr, /^eng: FAIL \.eng\/lock\.json: /, `eng ${cmd.join(' ')} with ${lock}`);
+      assert.match(d.stderr, why, `eng ${cmd.join(' ')} with ${lock}`);
+      assert.match(d.stderr, /Fix: correct (each refused entry|\.eng\/lock\.json)/);
+      assert.equal(d.stdout, '', `eng ${cmd.join(' ')} with ${lock} printed ${d.stdout}`);
+      assert.equal(state(), before, `eng ${cmd.join(' ')} with ${lock} changed the repo`);
+    }
+  }
+  r.git('checkout -q -- .eng/lock.json');
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
+  assert.ok(fs.existsSync(r.file('SHIPPING.md')) && r.read('0') === 'mine\n');
+});
+
+test('the refusal names every bad entry, keeps good ones out of it, and is one fixed message', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify({ package: '0.1.0', files: ['AGENTS.md', '/etc/passwd', 'a/../b'] }));
+  const d = r.eng('sync');
+  assert.equal(d.status, 1);
+  assert.equal(d.stderr, 'eng: FAIL .eng/lock.json: files lists 2 entries that are not relative repo file paths: "/etc/passwd" (absolute), "a/../b" (has a . or .. segment). Fix: correct each refused entry in .eng/lock.json, then run eng sync.\n');
+});
