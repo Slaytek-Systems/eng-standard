@@ -1309,10 +1309,11 @@ function runCmd() {
 // before the update notice, doctor's version line and lint's --config-from advisory, so a config error is their only
 // output and the notice writes no cache. Each command still prints its own output, warnings included, where it did. Not
 // here: sync and init (their notice prints after they run), merge gate (its settings may come from the merge queue's base,
-// and it reads them only once it has a PR), eng run in a private worktree, and verdict status without a numeric --pr
-// (a usage error, before any config).
+// and it reads them only once it has a PR), eng run down (it reads only the run's launch.json), and verdict status without
+// a numeric --pr (a usage error, before any config). eng run in a private worktree reads it too, but a missing file is
+// allowed there: it runs with the repo's folder name.
 const READS_CONFIG_FIRST = { lint: () => true, doctor: () => true, gate: () => true, e2e: () => true, rules: () => a[0] === 'prove',
-  verdict: () => a[0] !== 'status' || /^\d+$/.test(arg('--pr') || ''), merge: () => a[0] === 'post', run: () => runRoute() === 'here' || runRoute() === 'named' };
+  verdict: () => a[0] !== 'status' || /^\d+$/.test(arg('--pr') || ''), merge: () => a[0] === 'post', run: () => runRoute() !== null && a[0] !== 'down' };
 // One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
 async function updateNotice() {
   try {
@@ -1323,7 +1324,9 @@ async function updateNotice() {
     if (line) console.error(line);
   } catch {}
 }
-function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig, configErrors }; }
+// optionalConfig: the config, validated as loadConfig does, or null when the repo has no eng.config.yml (eng run's private worktree).
+const optionalConfig = () => CONFIG_TEXT === false || (CONFIG_TEXT === null && !fs.existsSync(path.join(ROOT, 'eng.config.yml'))) ? null : loadConfig();
+function engCtx() { return { ROOT, PKG, sh, die, arg, args: a, flag: k => a.includes(k), head, loadConfig, optionalConfig, configErrors }; }
 const found = COMMANDS.find(([n]) => n === cmd);
 // Help never runs the command: `eng <cmd> --help`, `-h` (before any `--`, whose tail belongs to the command eng runs) and `eng help <cmd>`.
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
