@@ -73,3 +73,9 @@ test('an alias with no anchor is one plain line with no alias name', () => {
   refuses('version: 1\nproject: *unknown\n', 'config invalid: eng.config.yml: the YAML does not parse');
   refuses('version: 1\nproject: *a b\n', 'config invalid: eng.config.yml: the YAML does not parse');
 });
+
+test('a config that parses still shows the YAML warnings the parser gives, as before', () => {
+  const r = repo(`${TPL}${TPL.endsWith('\n') ? '' : '\n'}review_probe: !unknown value\n`), s = r.eng('lint');
+  assert.equal(s.status, 0, `${s.stdout}${s.stderr}`);
+  assert.match(s.stderr, /YAMLWarning: Unresolved tag: !unknown/);
+});
