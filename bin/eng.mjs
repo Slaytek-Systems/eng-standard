@@ -953,10 +953,11 @@ function prVerdicts(cfg, n, H) {
 }
 function verdictCheck() {
   const cfg = loadConfig(), pr = arg('--pr');
-  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line.
-  const posted = pr ? prVerdicts(cfg, pr, head()) : [];
+  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line. HEAD is
+  // read once here and used for the whole check; without --pr it is read after the evidence check, as before.
+  const prH = pr ? head() : null, posted = pr ? prVerdicts(cfg, pr, prH) : [];
   evidenceCheck(cfg);
-  const H = head(), pid = patchId(cfg);
+  const H = prH ?? head(), pid = patchId(cfg);
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
