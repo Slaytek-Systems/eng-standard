@@ -1164,3 +1164,23 @@ test('eng verdict --pr: the remote host decides; GH_REPO always and GITHUB_REPOS
     assert.equal(g('notes --ref eng-verdict list'), '', 'gh failed every time, so nothing was recorded');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// Review round 2: a scheme URL's host is its real hostname (userinfo-looking text in the query does not count), and check
+// --pr with no eng.config.yml and no remote gets the remote line (the empty-diff probe needs a config).
+test('eng verdict --pr: a query string cannot fake the host; check with no config and no remote is the remote line', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-noremote3-')), bin = path.join(root, 'bin'), log = path.join(root, 'gh-calls');
+  fs.mkdirSync(bin); fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\necho 'gh: boom' >&2; exit 1\n`, { mode: 0o755 });
+  const d = path.join(root, 'repo'), g = c => execSync(`git ${c}`, { cwd: d, stdio: 'pipe', encoding: 'utf8' }).trim();
+  fs.mkdirSync(d); g('init -q -b main'); g('config user.email t@t'); g('config user.name t'); fs.writeFileSync(path.join(d, 'a.md'), 'a\n'); g('add -A'); g('commit -qm base');
+  const { GITHUB_REPOSITORY, GH_REPO, ...base } = process.env;
+  const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: d, encoding: 'utf8', env: { ...base, PATH: `${bin}:${process.env.PATH}`, ENG_NO_UPDATE_CHECK: '1' } });
+  const line = 'eng: FAIL verdict: PR #7 needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr\n';
+  try {
+    let r = eng('verdict', 'check', '--pr', '7');
+    assert.deepEqual([r.status, r.stdout, r.stderr], [1, '', line], 'no config, no remote');
+    g('remote add origin https://gitlab.com?mirror=@github.com/o/r.git');
+    r = eng('verdict', 'status', '--pr', '7');
+    assert.deepEqual([r.status, r.stdout, r.stderr], [1, '', line], 'a query string is not the host');
+    assert.equal(fs.existsSync(log), false, 'gh was never called');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
