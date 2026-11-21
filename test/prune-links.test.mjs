@@ -226,6 +226,28 @@ test('a lock entry under a folder that can be entered but not listed is refused,
   assert.deepEqual(snapshot(r.dir), before, 'the refusal wrote and deleted nothing');
 });
 
+// Review round 5 on #108 (Core task p5795pctqs8d84n0chwgx0ah1x8jnqsy, item 1): the entry's own folder eng may list but
+// not enter (mode 0444), or enter but not list (mode 0333). Before v0.23.15 the 0444 folder listed, then lstat on the
+// file threw EACCES and sync exited 1 with a stack trace. Both are refused with the normal message, and nothing changes.
+for (const mode of [0o444, 0o333]) {
+  test(`a lock entry whose own folder is mode ${mode.toString(8)} is refused by name, with no stack trace, and nothing is written or deleted`, { skip: process.getuid?.() === 0 && 'root ignores folder modes' }, () => {
+    const r = repo('docs/OLD.md');
+    fs.mkdirSync(r.file('docs')); fs.writeFileSync(r.file('docs/OLD.md'), 'rendered once\n');
+    const before = snapshot(r.dir);
+    fs.chmodSync(r.file('docs'), mode);
+    try {
+      for (const args of [['sync'], ['sync', '--check']]) {
+        const s = r.eng(...args);
+        assert.equal(s.status, 1, `${args.join(' ')}: ${s.stdout}${s.stderr}`);
+        assert.match(s.stderr, /^eng: FAIL \.eng\/lock\.json: eng sync would prune 1 file\(s\).*docs\/OLD\.md \(docs cannot be read \(EACCES\)\)/m);
+        assert.doesNotMatch(s.stderr, /^\s+at /m, 'no stack trace');
+        assert.doesNotMatch(s.stdout, /removed|wrote /);
+      }
+    } finally { fs.chmodSync(r.file('docs'), 0o755); }
+    assert.deepEqual(snapshot(r.dir), before, 'the refusal wrote and deleted nothing');
+  });
+}
+
 // A stale file gone between eng listing its folder and checking the entry is skipped, not a crash. The race is made
 // deterministic: a preload wraps fs.readdirSync so listing the entry's folder deletes the file right after.
 test('a stale file that disappears after its folder is listed is skipped, and the sync finishes', () => {

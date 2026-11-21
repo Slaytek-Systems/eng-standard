@@ -391,8 +391,14 @@ function seedShipping(owner) {
   const text = String(doc), errs = configErrors(YAML.parse(text));
   if (errs.length) die(`init: the seeded eng.config.yml is invalid (fix templates/eng.config.yml upstream):\n  ${errs.join('\n  ')}`);
   // init writes it only after the sync plan for this text passes. CODEOWNERS is the first one there, looked up without
-  // reading it, so the plan's write check refuses a folder or link there before the first write.
-  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => folderProblem(p) === false && fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false })) || '.github/CODEOWNERS';
+  // reading it, so the plan's write check refuses a folder or link there before the first write. A linked folder holds
+  // no CODEOWNERS for GitHub, so it is passed over. A folder eng cannot list or enter may hold one, so init cannot tell
+  // where to write: refused before any write, unless a CODEOWNERS earlier in the search already ended it.
+  const co = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => {
+    const why = folderProblem(p);
+    if (why && !why.endsWith(' is a symlink')) die(`init: ${why}, so eng cannot tell whether ${p} is there. eng writes nothing. Fix: make the folder readable (or move it), then run eng init.`);
+    return why === false && fs.lstatSync(path.join(ROOT, p), { throwIfNoEntry: false });
+  }) || '.github/CODEOWNERS';
   return { text, files: [co], write() {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), text); console.log('  wrote eng.config.yml (built from this repo; review every DRAFT value)');
     const cur = readOr(co, '');
