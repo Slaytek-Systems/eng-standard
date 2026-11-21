@@ -73,3 +73,41 @@ test('init in a repo with no links creates the checks folder as before', () => {
   assert.equal(fs.readFileSync(r.file('ci/checks/.gitkeep'), 'utf8'), '');
   assert.equal(r.eng('sync', '--check').status, 0);
 });
+
+// Review round 1 on #112: render lists the checks folder (its check ids go into SHIPPING.md), so a link there is refused
+// before render reads through it. A target eng cannot list shows it: the refusal names the link, with no listing error.
+test('init with the checks folder linked to a folder eng cannot list refuses the link before it reads through it', () => {
+  const r = repo('ci/checks'), outside = tmp('eng-outside-');
+  fs.mkdirSync(r.file('ci')); fs.symlinkSync(outside, r.file('ci/checks'));
+  const before = snapshot(r.dir);
+  fs.chmodSync(outside, 0o300);
+  let i; try { i = r.eng('init'); } finally { fs.chmodSync(outside, 0o755); }
+  assert.equal(i.status, 1, `${i.stdout}${i.stderr}`);
+  assert.match(i.stderr, /\(ci\/checks is a symlink\)/);
+  assert.doesNotMatch(i.stderr, /EACCES/);
+  assert.deepEqual(fs.readdirSync(outside), [], 'init created nothing outside the repo');
+  assert.deepEqual(snapshot(r.dir), before, 'init created nothing in the repo');
+});
+
+// Review round 1 on #112: a file where the checks path needs a folder is refused before init's first write, so init
+// writes neither its seed config nor anything else.
+test('init with a file where the checks folder path needs a folder exits 1 and writes nothing, its seed config included', () => {
+  const dir = tmp('eng-init-file-');
+  execSync('git init -q -b main', { cwd: dir });
+  fs.writeFileSync(path.join(dir, '.eng'), 'a file\n');
+  const before = snapshot(dir);
+  const i = spawnSync(process.execPath, [ENG, 'init'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(i.status, 1, `${i.stdout}${i.stderr}`);
+  assert.match(i.stderr, /\.eng\/checks\/\.gitkeep \(\.eng is not a folder\)/);
+  assert.deepEqual(snapshot(dir), before, 'init wrote nothing');
+});
+
+test('init with a file where a configured checks folder path needs a folder exits 1 and creates nothing', () => {
+  const r = repo('ci/checks');
+  fs.writeFileSync(r.file('ci'), 'a file\n');
+  const before = snapshot(r.dir);
+  const i = r.eng('init');
+  assert.equal(i.status, 1, `${i.stdout}${i.stderr}`);
+  assert.match(i.stderr, /ci\/checks\/\.gitkeep \(ci is not a folder\)/);
+  assert.deepEqual(snapshot(r.dir), before);
+});
