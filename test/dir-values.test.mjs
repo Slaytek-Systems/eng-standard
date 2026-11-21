@@ -18,7 +18,7 @@ const out = r => r.stdout + r.stderr;
 const scratch = [];
 after(() => scratch.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 
-const bad = repo => ['', ' ', '/.eng/x', './.eng/x', `../${repo}/.eng/x`, '.eng/../x', '.eng/./x', '.eng//x', '.eng/x/', '.eng\\x', '.eng/x\0', '.eng/<!--x', '<!-- eng:end -->'];
+const bad = repo => ['', ' ', '/.eng/x', './.eng/x', `../${repo}/.eng/x`, '.eng/../x', '.eng/./x', '.eng//x', '.eng/x/', '.eng\\x', '.eng/x\0', '.eng/<!--x', '<!-- eng:end -->', false, null, 42, { a: 'b' }];
 const good = ['.eng/checks', '.agents/skills', 'tools/skills', 'ci/checks', 'my dir/x', '.x'];
 
 test('dirValueErrors refuses every *_dir value that is not a normalised relative repo path, or that holds <!--', () => {
@@ -28,15 +28,21 @@ test('dirValueErrors refuses every *_dir value that is not a normalised relative
       const errs = dirValueErrors({ [a]: { [b]: v } });
       assert.equal(errs.length, 1, `${key} ${JSON.stringify(v)}: ${errs}`);
       assert.ok(errs[0].startsWith(`${key} ${JSON.stringify(v)} `), errs[0]);
+      assert.deepEqual(dirValueErrors({ [a]: {} }), [], `${key} unset`);
     }
     for (const v of good) assert.deepEqual(dirValueErrors({ [a]: { [b]: v } }), [], `${key} ${v}`);
   }
   assert.deepEqual(dirValueErrors({ verification: {}, agents: { skills: [] } }), [], 'an unset dir is left to the defaults');
   assert.equal(dirValueErrors({ x: [{ some_dir: '/abs' }] }).length, 1, 'any *_dir key, wherever it sits');
+  const cyclic = YAML.parse('meta: &m\n  self: *m\n  x_dir: ./x\n');
+  assert.equal(cyclic.meta.self, cyclic.meta, 'the alias makes the config cyclic');
+  assert.deepEqual(dirValueErrors(cyclic).map(e => e.split(' ')[0]), ['meta.x_dir'], 'a cyclic config is walked once, without a crash');
 });
 
 function repo() {
-  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-dirvals-')); scratch.push(dir);
+  // A private parent, so the snapshot of the folder beside the repo sees only what eng could write there.
+  const parent = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-dirvals-')); scratch.push(parent);
+  const dir = path.join(parent, 'repo'); fs.mkdirSync(dir);
   const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim();
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
   const c = YAML.parse(fs.readFileSync(path.join(PKG, 'templates/eng.config.yml'), 'utf8'));
@@ -59,6 +65,14 @@ function shot(dir) {
 
 test('eng sync, sync --check and init refuse a bad checks_dir or agents.skills_dir with exit 1 and write nothing', () => {
   const r = repo(), name = path.basename(r.dir);
+  // init creates the checks folder only after the config passes: a bad skills_dir beside a new checks_dir creates nothing.
+  for (const v of [false, './x']) {
+    const c = structuredClone(r.base); c.verification.checks_dir = 'new/checks'; c.agents.skills_dir = v;
+    fs.writeFileSync(path.join(r.dir, 'eng.config.yml'), YAML.stringify(c));
+    const before = shot(r.dir), res = r.eng(['init']);
+    assert.equal(res.status, 1, out(res)); assert.deepEqual(shot(r.dir), before, `skills_dir ${v}: init wrote nothing`);
+    assert.ok(!fs.existsSync(path.join(r.dir, 'new')), `skills_dir ${v}: no new/checks`);
+  }
   for (const [a, b] of [['verification', 'checks_dir'], ['agents', 'skills_dir']]) {
     for (const v of bad(name)) {
       const c = structuredClone(r.base); c[a][b] = v;
