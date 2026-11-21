@@ -93,13 +93,17 @@ function harnessConfigErrors(c) {
 // the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
 // (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
 // template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
+// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted, so it stays on one line.
 const PR_TEMPLATE_DIR = /^pull_request_template$/i;
+const prTemplateDirOf = p => {
+  const [a, b = ''] = (repoRel(p) ?? '').split('/');
+  return PR_TEMPLATE_DIR.test(a) ? a : /^(\.github|docs)$/i.test(a) && PR_TEMPLATE_DIR.test(b) ? `${a}/${b}` : null;
+};
 function prTemplateDirErrors(c) {
   const dirs = [[c?.agents?.skills_dir, 'agents.skills_dir', '.agents/skills'], [checksDir(c), 'verification.checks_dir', '.eng/checks']];
   return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what, dflt]) => {
-    const [a, b = ''] = (repoRel(d) ?? '').split('/');
-    const t = PR_TEMPLATE_DIR.test(a) ? a : /^(\.github|docs)$/i.test(a) && PR_TEMPLATE_DIR.test(b) ? `${a}/${b}` : null;
-    return t ? [`${what} (${d}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
+    const t = prTemplateDirOf(d);
+    return t ? [`${what} (${JSON.stringify(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
   });
 }
 function configErrors(c) {
@@ -341,8 +345,9 @@ function sync(plan = syncPlan()) {
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read. syncPlan refused a symlink on skills_dir's path (every skill
   // renders there). Each path is looked up with lstat, not the listing's type: a name that is not UTF-8 decodes to one
-  // another entry may have, so the listing's type can belong to a different file. A symlink is never entered.
-  const walk = x => { let ns; try { ns = fs.readdirSync(x); } catch { return; } for (const n of ns) { const c = path.join(x, n); let st; try { st = fs.lstatSync(c); } catch { continue; } if (!st.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
+  // another entry may have, so the listing's type can belong to a different file. A symlink is never entered. Nor is a PR
+  // template folder (skills_dir docs or .github): it is the repo's, and removing an empty one would change the next plan.
+  const walk = x => { let ns; try { ns = fs.readdirSync(x); } catch { return; } for (const n of ns) { const c = path.join(x, n); let st; try { st = fs.lstatSync(c); } catch { continue; } if (!st.isDirectory() || harnessOut(path.relative(ROOT, c)) || prTemplateDirOf(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
   walk(path.join(ROOT, cfg.agents.skills_dir));
   const lock = lockText(pkgVersion(), Object.keys(files));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
