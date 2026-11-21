@@ -4,7 +4,7 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 ## 0.23.19 (21 Nov 2026)
 
-**The 'without python3' test in `test/ephemeral.test.mjs` no longer races its child's exec** (Core tasks p578wy4d054vyqkw08ed9drfdh8jm54z and p57fp72g5cg7sd54jwgdzwm3w58jnv1a). Test-only; eng's behaviour is unchanged. Without python3, eng run finds a leftover only by its run id in `/proc/<pid>/environ`, which reads empty while the process is inside execve. The test's step started `setsid sleep 304 &` and exited at once, so eng could look while sleep was still in exec, miss it, and the test failed (CI on #103 and #108). The step now waits until the child's argv[0] is `sleep` and its environ holds the run id, which the kernel sets only at the end of that exec and keeps until sleep exits. The lib race itself is Core task p579c3zthe0jrqsz77212r110h8jn0hz.
+**The 'without python3' test in `test/ephemeral.test.mjs` no longer races its child's exec** (Core tasks p578wy4d054vyqkw08ed9drfdh8jm54z and p57fp72g5cg7sd54jwgdzwm3w58jnv1a). Test-only; eng's behaviour is unchanged. Without python3, eng run finds a leftover only by its run id in `/proc/<pid>/environ`, which reads empty while the process is inside execve. The test's step started `setsid sleep 304 &` and exited at once, so eng could look while sleep was still in exec, miss it, and the test failed (CI on #103 and #108). The step now waits until the child's argv[0] is `sleep` and its environ holds the run id, at which point procfs exposes sleep's final argv and environment, so the empty-environ window has closed; both stay readable until sleep exits. The lib race itself is Core task p579c3zthe0jrqsz77212r110h8jn0hz.
 
 ## 0.23.18 (21 Nov 2026)
 
