@@ -188,7 +188,20 @@ function syncPlan(seed = null) {
   const cfg = YAML.parse(added?.text ?? text);
   validate(cfg);
   const files = render(cfg);
+  writePlan(files);
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune: prunePlan(old.files, files), exec: renderedExecutables(cfg) };
+}
+// eng writes each rendered file through the repo only. A file is refused when a folder on its path, below the repo root,
+// is a symlink or cannot be read, or when the file is itself a symlink (render already dropped CLAUDE.md -> AGENTS.md), so
+// a write never follows a link out of the repo or onto another repo file. A folder that is not there is created by sync.
+function writePlan(files) {
+  const refused = Object.keys(files).flatMap(p => {
+    const why = folderProblem(p);
+    if (why) return [`${p} (${why})`];
+    try { if (fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) return [`${p} (${p} is a symlink)`]; } catch {}
+    return [];
+  });
+  if (refused.length) die(`eng sync would write ${refused.length} file(s) through a symlink, or in a folder eng cannot read: ${refused.slice(0, 5).join(', ')}${refused.length > 5 ? `, and ${refused.length - 5} more` : ''}. eng writes nothing. Fix: replace each linked folder or file with a real one (or make the folder readable), or change the config so it renders nothing there; then run eng sync.`);
 }
 // The files a previous sync generated that the config no longer renders and that are on disk, each once. Never in
 // .claude/skills or .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the
