@@ -576,7 +576,7 @@ test('eng merge post --dry-run and eng verdict --pr', () => {
   fs.writeFileSync(p, cfg);
   git('checkout -q -B feat3 origin/main'); fs.writeFileSync(path.join(dir, 'v.md'), 'v\n'); git('add -A'); git('commit -qm v -m "Agent: builder-1"');
   fs.writeFileSync(calls, '');
-  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7']);
+  r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7'], { GH_REPO: 'o/r' }); // gh pr view needs GH_REPO or a GitHub remote
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const log = fs.readFileSync(calls, 'utf8');
   assert.match(log, /api repos\/o\/r\/issues\/7\/comments -f body=<!-- eng-verdict\/v1 -->/);

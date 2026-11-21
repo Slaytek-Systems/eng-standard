@@ -910,12 +910,18 @@ function verdictRecord(result) {
   try { postVerdict(engCtx(), arg('--pr'), rec, cfg); } catch (e) { die(`verdict: could not post the verdict comment: ${e.message}`); }
   console.log(`eng verdict: posted the verdict comment on PR #${arg('--pr')}`);
 }
-// --pr <n> reaches GitHub through gh, which finds the repo from GH_REPO or a git remote (GITHUB_REPOSITORY names it for
-// the comments). With none pointing at GitHub, refuse in one line before gh runs, instead of gh's stack trace.
-function needGitHub(n) {
-  if (!/^\d+$/.test(n || '') || process.env.GH_REPO || process.env.GITHUB_REPOSITORY) return;
+// --pr <n> reaches GitHub through gh, which finds the repo from GH_REPO or a git remote; check's comment read also takes
+// GITHUB_REPOSITORY. With none of those, refuse in one line before gh runs, instead of gh's stack trace. check and status
+// take only a plain number (else a usage error); the record route sends any other value to gh. check on an empty diff
+// reads no PR. A remote counts when its URL's host is github.com.
+const githubHost = u => (/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?([^/:]+)/i.exec(u) || /^(?:[^@/:]*@)?([^/:]+):/.exec(u))?.[1].toLowerCase() === 'github.com';
+function needGitHub(sub, n) {
+  const check = sub === 'check';
+  if (check || sub === 'status' ? !/^\d+$/.test(n || '') : !n || n.startsWith('-')) return;
+  if (process.env.GH_REPO || (check && process.env.GITHUB_REPOSITORY)) return;
+  try { if (check && patchId(loadConfig({ quiet: true })) === 'empty') return; } catch {}
   const r = spawnSync('git', ['remote', '-v'], { cwd: ROOT, encoding: 'utf8' });
-  if (r.status !== 0 || /[@/]github\.com[:/]/i.test(r.stdout)) return;
+  if (r.status !== 0 || r.stdout.split('\n').some(l => githubHost(l.split(/\s+/)[1] || ''))) return;
   die(`verdict: PR #${n} needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr`);
 }
 // eng verdict status --pr <n>: post the verdict to GitHub as commit status `verdict` on the PR's exact head SHA, so a
@@ -1345,7 +1351,7 @@ if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 else if (found) {
   const late = cmd === 'sync' || cmd === 'init', cfgPath = path.join(ROOT, 'eng.config.yml');
   if (READS_CONFIG_FIRST[cmd]?.()) { CONFIG_TEXT = fs.existsSync(cfgPath) && fs.readFileSync(cfgPath, 'utf8'); if (CONFIG_TEXT !== false) loadConfig({ quiet: true }); }
-  if (cmd === 'verdict') needGitHub(arg('--pr')); // before the update notice: its one line is the only output
+  if (cmd === 'verdict') needGitHub(a[0], arg('--pr')); // before the update notice: its one line is the only output
   if (cmd !== 'doctor' && !late) await updateNotice();
   found[3]();
   if (late) await updateNotice();

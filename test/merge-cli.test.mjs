@@ -669,7 +669,7 @@ test('eng verdict --pr in a merge.auto repo also dispatches the gate for that PR
   config();
   const h = branch('verdictpr'); git('checkout', '-q', 'verdictpr');
   respond({}, true);
-  const r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7']);
+  const r = eng(['verdict', 'PASS', '--by', 'verifier-1', '--review', '--pr', '7'], { GH_REPO: 'o/r' }); // gh pr view needs GH_REPO or a GitHub remote
   git('checkout', '-q', 'main');
   assert.match(r.stdout, /dispatched gate\.yml for PR #7 so eng-merge-gate sees this verdict/, r.stdout + r.stderr);
   assert.deepEqual(writes().filter(c => c.call?.includes('dispatches')), [{ call: 'POST repos/o/r/actions/workflows/gate.yml/dispatches', body: { ref: 'main', inputs: { pr: '7' } } }]);
