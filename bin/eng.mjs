@@ -146,7 +146,9 @@ function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
   // Keyed by the repo path eng writes, so the lock never records ./agents/x (skills_dir .claude) or /x, which it refuses.
-  const files = Object.fromEntries(Object.entries(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'))).map(([p, c]) => [repoKey(p), c]));
+  // An AGENTS.md block eng cannot place (lib/render.mjs agentsBlockSpan) is refused here, before any write.
+  let rendered; try { rendered = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')); } catch (e) { die(e.message); }
+  const files = Object.fromEntries(Object.entries(rendered).map(([p, c]) => [repoKey(p), c]));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
