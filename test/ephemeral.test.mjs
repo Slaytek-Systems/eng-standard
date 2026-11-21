@@ -126,7 +126,15 @@ test('without python3: mode fail refuses the run; mode warn runs it and still st
   for (const b of ['bash', 'sh', 'sleep', 'setsid']) { const at = execSync(`command -v ${b}`, { encoding: 'utf8' }).trim(); if (!fs.existsSync(path.join(bin, b))) fs.symlinkSync(at, path.join(bin, b)); }
   const noPy = { ...env, PATH: bin };
   t.after(() => { setCfg(c => { c.hygiene.run_rules.ephemeral_runs.mode = 'fail'; c.project.commands.test = 'true'; }); kill('nopy'); });
-  setCfg(c => { c.project.commands.test = `setsid sleep 304 >/dev/null 2>&1 & echo $! > ${marks}/nopy`; });
+  // The step must not exit before its child is attributable: without python3, eng finds the child only by the run id in
+  // /proc/<pid>/environ, which reads empty while the child is inside execve. So the step waits until the child's argv[0]
+  // is sleep and its environ holds this run's id. The kernel sets both at the end of sleep's exec, and they stay set
+  // until sleep exits, so the wait ends only after the race window has closed. The bound turns a broken child into a
+  // clear failure instead of a hang; it is not a timing margin.
+  const waitExec = 'p=$!; echo $p > MARKS/nopy; up() { local a e; { IFS= read -r -d "" a; } < /proc/$p/cmdline || return 1; [ "$a" = sleep ] || return 1; '
+    + 'while IFS= read -r -d "" e; do [ "$e" = "ENG_EPHEMERAL_RUN=$ENG_EPHEMERAL_RUN" ] && return 0; done < /proc/$p/environ; return 1; }; '
+    + 'n=0; until up 2>/dev/null; do n=$((n+1)); [ $n -lt 3000 ] || { echo "sleep never finished its exec" >&2; exit 9; }; sleep 0.01; done';
+  setCfg(c => { c.project.commands.test = `setsid sleep 304 >/dev/null 2>&1 & ${waitExec.replace('MARKS', marks)}`; });
   let r = spawnSync(process.execPath, [ENG, 'run', 'test'], { cwd: dir, encoding: 'utf8', env: noPy });
   assert.equal(r.status, 1, out(r)); assert.match(r.stderr, /run test not started, because it could not be watched: processes: python3/);
   assert.ok(!fs.existsSync(path.join(marks, 'nopy')), 'the refused run never started');
