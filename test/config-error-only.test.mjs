@@ -118,3 +118,26 @@ test('the command uses the config text dispatch checked, even if the file change
     assert.match(err, /is available/); assert.equal(code, 0, out + err); assert.match(out, /eng lint: PASS/);
   } finally { srv.close(); }
 });
+
+// Review round 2 on #125.
+test('the YAML warning of a valid config still prints where the command loads it', () => {
+  const r = repo(`%YAML 1.3\n---\n${TPL}`), x = r.eng(['lint']);
+  assert.match(x.stderr, /YAMLWarning: Unsupported YAML version 1\.3/, x.stderr);
+});
+
+test('with no eng.config.yml at the start, one created while the notice waits is not read: the missing-config error stays', async () => {
+  const r = repo(TPL); fs.rmSync(path.join(r.dir, 'eng.config.yml'));
+  const srv = (await import('node:http')).createServer((req, res) => {
+    fs.writeFileSync(path.join(r.dir, 'eng.config.yml'), `${TPL}\nbroken: [\n`); // created mid-lookup
+    res.writeHead(200, { 'content-type': 'application/json', connection: 'close' }); res.end('{"version":"99.0.0"}');
+  });
+  await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  try {
+    const env = { ...process.env, XDG_CACHE_HOME: tmp('eng-xdg-'), ENG_STANDARD_SOURCE: `http://127.0.0.1:${srv.address().port}/` };
+    for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK', 'GITHUB_ACTIONS', 'BUILDKITE']) delete env[k];
+    const { spawn } = await import('node:child_process');
+    const [code, , err] = await new Promise(ok => { let o = '', e = ''; const c = spawn(process.execPath, [ENG, 'lint'], { cwd: r.dir, env }); c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { e += d; }); c.on('close', s => ok([s, o, e])); });
+    assert.ok(fs.existsSync(path.join(r.dir, 'eng.config.yml')), 'the file was created during the lookup');
+    assert.equal(code, 1); assert.match(err, /no eng\.config\.yml/, err); assert.doesNotMatch(err, /config invalid/, err);
+  } finally { srv.close(); }
+});
