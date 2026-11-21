@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.12 (21 Nov 2026)
+
+**A refusal from `eng sync`, `sync --check` or `init` writes nothing** (Core task p5767zdxsqeje9fhzmqewgz8958jm2xa, piece B-order). The three commands now run every check sync makes (the lock, the config as this release migrates it, the render and its skills) before their first write. Before, `eng sync` wrote the `git.rewrite_pushed` migration into eng.config.yml and then refused a render error or an unknown skill; `eng init` created the checks folder before such a refusal, and in a repo that already ships wrote the config it seeds and CODEOWNERS before one (it now plans the seeded config first); and `sync --check` advised an `eng sync` that would then fail, where it now reports that failure. `sync` and `init` print the update notice after they run, so a refusal never writes its cache. How markers are detected is unchanged.
+
 ## 0.23.11 (21 Nov 2026)
 
 **`eng sync`, `sync --check` and `init` refuse a `.eng/lock.json` whose `files` is not a list of relative repo file paths, before they write or delete anything** (Core task p57fyte3f4p0p305bjjkzmzbwh8jmj6m, piece B-lock): a lock that is not a JSON object, `files` that is not a list (`{"files":"x"}` read as `["0"]`, so `eng sync` deleted a repo file named `0`), and any entry that is not a string, is empty or absolute, has a `.`, `..` or empty segment, a trailing slash, a backslash or a NUL byte, or a `.git` segment anywhere (`sub/.git/config`); the 0.11.0 `{path: sha256}` object is still read when every value is a sha256 hash, and its paths pass the same checks; the refusal names each entry and why, and exits 1. eng now locks the path it writes, so `skills_dir: .claude` (subagents in `agents/`, locked as `./agents/...` before) never gives a lock it refuses, and `checks_dir: ./.eng/checks` or `/.eng/checks` is a config error since 0.23.10, so sync writes no lock for it; a lock an earlier version wrote that way is refused once: correct those entries.
