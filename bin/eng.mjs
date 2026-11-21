@@ -60,7 +60,7 @@ function loadConfig() {
 function parseConfig(text) {
   const doc = YAML.parseDocument(text), [e] = doc.errors;
   const bad = 'config invalid: eng.config.yml';
-  if (!e) { try { return doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } }
+  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
   const at = e.linePos ? `${bad} line ${e.linePos[0].line}` : bad;
   if (e.code !== 'DUPLICATE_KEY') die(`${at}: the YAML does not parse`);
   let k = ''; // the repeated key is the one that starts where the error does
