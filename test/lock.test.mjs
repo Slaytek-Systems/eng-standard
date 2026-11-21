@@ -158,6 +158,10 @@ test('sync, sync --check and init refuse a lock whose files is not a list of rel
     ['{"package":"0.1.0","files":"x"}', /files must be a list of repo file paths/],
     ['{"package":"0.1.0","files":null}', /files must be a list of repo file paths/],
     ['{"package":"0.1.0"}', /files must be a list of repo file paths/],
+    ['{"package":"0.1.0","files":{"0":false}}', /files must be a list of repo file paths/],
+    ['{"package":"0.1.0","files":{"0":"x"}}', /files must be a list of repo file paths/],
+    [`{"package":"0.1.0","files":{"../0":"${'a'.repeat(64)}"}}`, /"\.\.\/0" \(has a \. or \.\. segment\)/],
+    ['{"package":"0.1.0","files":["0\\u0000x"]}', /\(has a NUL byte\)/],
     ['{"package":"0.1.0","files":[1]}', /1 \(not a string\)/],
     ['{"package":"0.1.0","files":[""]}', /"" \(empty\)/],
     [`{"package":"0.1.0","files":[${JSON.stringify(r.file('0'))}]}`, /\(absolute\)/],
@@ -197,4 +201,19 @@ test('the refusal names every bad entry, keeps good ones out of it, and is one f
   const d = r.eng('sync');
   assert.equal(d.status, 1);
   assert.equal(d.stderr, 'eng: FAIL .eng/lock.json: files lists 2 entries that are not relative repo file paths: "/etc/passwd" (absolute), "a/../b" (has a . or .. segment). Fix: correct each refused entry in .eng/lock.json, then run eng sync.\n');
+});
+
+test('with the update notice on, a bad lock is refused before the notice writes its cache', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('package.json'), JSON.stringify({ name: 'demo', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
+  fs.writeFileSync(r.file('.eng/lock.json'), '{"package":"0.1.0","files":[false]}\n');
+  const xdg = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-lock-xdg-')); dirs.push(xdg);
+  const on = { ...env, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: `file://${xdg}/no-such-source/` };
+  for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK']) delete on[k];
+  for (const cmd of [['sync'], ['sync', '--check'], ['init']]) {
+    const d = spawnSync(process.execPath, [ENG, ...cmd], { cwd: r.dir, encoding: 'utf8', env: on });
+    assert.equal(d.status, 1, `eng ${cmd.join(' ')}: ${d.stderr}`);
+    assert.match(d.stderr, /^eng: FAIL \.eng\/lock\.json: files lists 1 entry .*false \(not a string\)/);
+    assert.deepEqual(fs.readdirSync(xdg), [], `eng ${cmd.join(' ')} wrote the update cache before refusing`);
+  }
 });

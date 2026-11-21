@@ -1135,7 +1135,8 @@ const found = COMMANDS.find(([n]) => n === cmd);
 const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
-else if (found) { if (cmd !== 'doctor') await updateNotice(); found[3](); }
+// sync and init refuse a bad lock before the update notice writes its cache.
+else if (found) { if (cmd === 'sync' || cmd === 'init') readLock(); if (cmd !== 'doctor') await updateNotice(); found[3](); }
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);
