@@ -209,3 +209,36 @@ test('a stale lock entry that is a folder on disk is left alone, and the sync fi
   assert.equal(fs.readFileSync(r.file('docs/OLD.md/keep.md'), 'utf8'), 'mine\n');
   assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('docs/OLD.md'));
 });
+
+// Review round 4 on #108: a folder above the entry's own that eng may enter but not list (mode 0111) is a folder eng
+// cannot read, so it cannot tell what it would delete: refused the same way, and nothing is written or deleted.
+test('a lock entry under a folder that can be entered but not listed is refused, and nothing is written or deleted', () => {
+  const r = repo('archive/sub/OLD.md');
+  fs.mkdirSync(r.file('archive/sub'), { recursive: true }); fs.writeFileSync(r.file('archive/sub/OLD.md'), 'rendered once\n');
+  const before = snapshot(r.dir);
+  fs.chmodSync(r.file('archive'), 0o111);
+  try {
+    const s = r.eng('sync');
+    assert.equal(s.status, 1, s.stdout + s.stderr);
+    assert.match(s.stderr, /archive\/sub\/OLD\.md \(archive cannot be read \(EACCES\)\)/);
+    assert.doesNotMatch(s.stdout, /removed|wrote /);
+  } finally { fs.chmodSync(r.file('archive'), 0o755); }
+  assert.deepEqual(snapshot(r.dir), before, 'the refusal wrote and deleted nothing');
+});
+
+// A stale file gone between eng listing its folder and checking the entry is skipped, not a crash. The race is made
+// deterministic: a preload wraps fs.readdirSync so listing the entry's folder deletes the file right after.
+test('a stale file that disappears after its folder is listed is skipped, and the sync finishes', () => {
+  const r = repo('gone/OLD.md');
+  fs.mkdirSync(r.file('gone')); fs.writeFileSync(r.file('gone/OLD.md'), 'rendered once\n');
+  const hook = path.join(tmp('eng-hook-'), 'vanish.mjs');
+  fs.writeFileSync(hook, `import fs from 'node:fs';
+const real = fs.readdirSync, dir = ${JSON.stringify(r.file('gone'))};
+fs.readdirSync = function (d, ...a) { const out = real.call(this, d, ...a); if (String(d) === dir) fs.rmSync(dir + '/OLD.md', { force: true }); return out; };
+`);
+  const s = spawnSync(process.execPath, ['--import', hook, ENG, 'sync'], { cwd: r.dir, encoding: 'utf8', env });
+  assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.doesNotMatch(s.stdout, /removed gone/);
+  assert.ok(!fs.existsSync(r.file('gone/OLD.md')), 'the hook deleted the file after the listing');
+  assert.ok(!JSON.parse(fs.readFileSync(r.file('.eng/lock.json'), 'utf8')).files.includes('gone/OLD.md'));
+});
