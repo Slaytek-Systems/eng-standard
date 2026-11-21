@@ -214,14 +214,28 @@ function applyFix(r) {
   return fix;
 }
 
+// eng sync renders .claude/settings.json, so with .claude a symlink it refuses and writes nothing (v0.23.15: eng never
+// writes through a symlinked folder). eng doctor still prints the link fix, and the fix works as printed.
+function applyDoctorFix(r) {
+  const s = r.eng(['sync']);
+  assert.equal(s.status, 1, out(s)); assert.match(s.stderr, /\.claude\/settings\.json \(\.claude is a symlink\)/);
+  const { fix } = doctorClaude(r.eng(['doctor']));
+  assert.ok(fix.length, 'a fix is printed');
+  for (const cmd of fix) execSync(cmd, { cwd: r.dir, shell: '/bin/sh', stdio: 'pipe' });
+  const after = doctorClaude(r.eng(['doctor']));
+  assert.equal(after.seen, after.total, fix.join('; '));
+  assert.equal(after.total, r.total);
+  return fix.join('; ');
+}
+
 test('the printed link fix works when .claude is a symlink, inside or outside the repo', () => {
   const inside = repo();
   fs.mkdirSync(inside.file('config/nested'), { recursive: true });
   fs.renameSync(inside.file('.claude'), inside.file('config/nested/claude')); fs.symlinkSync('config/nested/claude', inside.file('.claude'));
-  assert.match(applyFix(inside), /^ln -s \.\.\/\.\.\/\.\.\/\.agents\/skills \.claude\/skills; /);
+  assert.match(applyDoctorFix(inside), /^ln -s \.\.\/\.\.\/\.\.\/\.agents\/skills \.claude\/skills; /);
   const outside = repo(), away = tmp('eng-harness-parent-');
   fs.renameSync(outside.file('.claude'), path.join(away, 'claude')); fs.symlinkSync(path.join(away, 'claude'), outside.file('.claude'));
-  applyFix(outside);
+  applyDoctorFix(outside);
 });
 
 test('the printed link fix quotes a source path with spaces', () => {
