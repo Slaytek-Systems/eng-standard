@@ -15,13 +15,13 @@ after(() => dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
 const hasGh = spawnSync('gh', ['--version']).status === 0;
 
 // A committed repo on a branch with one change, and the given remote (none when null), run with env base.
-function repo(remote, base = process.env) {
+function repo(remote, base = process.env, change = true) {
   const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-no-remote-')), git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe' });
   dirs.push(dir);
   git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
   fs.writeFileSync(path.join(dir, 'eng.config.yml'), TPL);
   git('add -A'); git('commit -qm base'); git('checkout -qb feat');
-  fs.writeFileSync(path.join(dir, 'f'), 'x\n'); git('add -A'); git('commit -qm change');
+  if (change) { fs.writeFileSync(path.join(dir, 'f'), 'x\n'); git('add -A'); git('commit -qm change'); }
   if (remote) git(`remote add origin ${remote}`);
   const env = { ...base, ENG_NO_UPDATE_CHECK: '1' };
   for (const k of ['GITHUB_REPOSITORY', 'GH_REPO', 'NODE_TEST_CONTEXT']) delete env[k];
@@ -34,9 +34,15 @@ for (const [what, remote] of [['no remote', null], ['only a non-GitHub remote', 
     for (const args of COMMANDS) {
       const x = repo(remote)(args), name = `eng ${args.join(' ')}`;
       assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
-      assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; add one \(git remote add origin https:\/\/github\.com\/<owner>\/<repo>\.git\), or record the verdict without --pr\n$/, `${name}: ${x.stderr}`);
+      assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote, and this repo has none gh can use; add one \(git remote add github https:\/\/github\.com\/<owner>\/<repo>\.git\), or record the verdict without --pr\n$/, `${name}: ${x.stderr}`);
+      assert.equal(x.stdout, '', `${name}: nothing on stdout`);
       assert.doesNotMatch(x.stdout + x.stderr, /no git remotes found|known GitHub host|gh auth login|\n\s+at |node:internal|Node\.js v/, `${name}: no gh or Node text`);
     }
+    // No change against base: check --pr still reads the PR first, never a PASS without it.
+    const x = repo(remote, process.env, false)(['verdict', 'check', '--pr', '5']);
+    assert.equal(x.status, 1, x.stdout + x.stderr);
+    assert.equal(x.stdout, '');
+    assert.match(x.stderr, /^eng: FAIL verdict: PR #5 needs a GitHub remote/);
   });
 }
 
@@ -59,4 +65,14 @@ test('another gh failure, or no gh at all, is one plain FAIL line with no gh tex
     assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5 \(exit 4\); run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
     assert.doesNotMatch(x.stdout + x.stderr, /SECRET-GH-TEXT|\n\s+at /, `${name}: no gh or Node text`);
   }
+  // gh exits 0 with JSON that lacks the PR's head: still one plain line, no TypeError.
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho \'{"state":"OPEN"}\'\n', { mode: 0o755 });
+  for (const args of COMMANDS) {
+    const name = `eng ${args.join(' ')}`, x = repo(null, noGh)(args);
+    assert.equal(x.status, 1, `${name}: ${x.stdout}${x.stderr}`);
+    assert.match(x.stderr, /^eng: FAIL verdict: gh could not read PR #5; run gh auth status and gh pr view 5 to see why\n$/, `${name}: ${x.stderr}`);
+  }
+  // A --pr that is not a plain number is a usage error before gh runs.
+  const x = repo(null, noGh)(['verdict', 'PASS', '--by', 'probe', '--pr', '1e2']);
+  assert.equal(x.status, 1); assert.match(x.stderr, /^eng: FAIL usage: eng verdict .*--pr <n>, where <n> is the PR number\n$/, x.stderr);
 });

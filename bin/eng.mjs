@@ -912,7 +912,7 @@ function verdictRecord(result) {
 }
 // gh failed reading PR #n: one plain line, never gh's own text. No GitHub remote gh can use is the common case, named with its fix.
 function ghFailed(n, r) {
-  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one (git remote add origin https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
+  if (/no git remotes found|none of the git remotes configured for this repository point to a known GitHub host/.test(r.stderr || '')) die(`verdict: PR #${n} needs a GitHub remote, and this repo has none gh can use; add one (git remote add github https://github.com/<owner>/<repo>.git), or record the verdict without --pr`);
   die(r.error?.code === 'ENOENT' ? `verdict: gh is not installed, so PR #${n} cannot be read; install gh and run gh auth login, or record the verdict without --pr`
     : `verdict: gh could not read PR #${n}${r.status ? ` (exit ${r.status})` : r.error ? ` (${r.error.code})` : ''}; run gh auth status and gh pr view ${n} to see why`);
 }
@@ -921,9 +921,10 @@ function ghFailed(n, r) {
 // for this exact commit; on risk:high, from ship.high_risk.verifiers distinct verifiers, counting the PR's verdict
 // comments); failure otherwise. Local HEAD must be the PR's live head: the status binds to that SHA.
 function prHead(n) {
+  if (!/^\d+$/.test(n || '')) die('usage: eng verdict PASS|PASS+NOTES|FAIL|status ... --pr <n>, where <n> is the PR number');
   const r = spawnSync('gh', ['pr', 'view', String(Number(n)), '--json', 'headRefOid,state'], { cwd: ROOT, encoding: 'utf8', timeout: 60e3 });
   let pr = null; try { pr = JSON.parse(r.stdout); } catch {}
-  if (r.status !== 0 || !pr) ghFailed(n, r);
+  if (r.status !== 0 || typeof pr?.headRefOid !== 'string') ghFailed(n, r);
   if (pr.state !== 'OPEN') die(`verdict status: PR #${n} is ${pr.state}`);
   if (pr.headRefOid !== head()) die(`verdict status: local HEAD ${head().slice(0, 8)} is not PR #${n} head ${pr.headRefOid.slice(0, 8)}; run gh pr checkout ${n} && git pull --ff-only`);
 }
@@ -951,9 +952,11 @@ function prVerdicts(cfg, n, H) {
   return trusted(parseVerdicts(pages.flat()), logins).filter(v => v.sha === H);
 }
 function verdictCheck() {
-  const cfg = loadConfig();
+  const cfg = loadConfig(), H = head(), pr = arg('--pr');
+  // --pr: read the PR's verdict comments before any output, so a repo gh cannot reach fails with that one line.
+  const posted = pr ? prVerdicts(cfg, pr, H) : [];
   evidenceCheck(cfg);
-  const H = head(), pid = patchId(cfg);
+  const pid = patchId(cfg);
   if (pid === 'empty') {
     // On the default branch: report the verdict of the last merged change (squash commit) by patch-id. Main is not gated
     // on it (the PR was), but the record must resolve so the audit trail survives the squash.
@@ -963,7 +966,7 @@ function verdictCheck() {
   // A verdict counts only for the exact commit it ran on. Patch-id ignores the message and whitespace, so a verdict for
   // another SHA with the same patch-id is reported and never carried.
   // --pr: this clone's records plus the PR's trusted comments for HEAD, ordered as self-merge orders them (an edit is latest).
-  const others = patchVerdicts(pid), pr = arg('--pr'), posted = pr ? prVerdicts(cfg, pr, H) : [];
+  const others = patchVerdicts(pid);
   const at = x => Date.parse(x.comment_at || x.at) || 0, all = [...others.filter(x => x.sha === H), ...posted].sort((x, y) => at(x) - at(y));
   console.log(`  HEAD ${H.slice(0, 8)}, patch-id ${pid.slice(0, 12)}${pr ? `; PR #${pr}: ${posted.length} trusted verdict comment${posted.length === 1 ? '' : 's'} for HEAD` : ''}`);
   for (const x of others.filter(x => x.sha !== H)) console.log(`  not counted: ${x.result} by ${x.by} is for ${x.sha.slice(0, 8)}, not HEAD ${H.slice(0, 8)}: a verdict counts only for the exact commit it ran on`);
