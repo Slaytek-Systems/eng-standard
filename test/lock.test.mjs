@@ -266,6 +266,15 @@ test('sync --check drift in a repo that pins eng-standard names the pinned eng c
   assert.equal(lastLine(d), 'Generated eng files are out of date. Edit eng.config.yml if needed, then run the repo-pinned eng (node node_modules/@slayteksystems/eng-standard/bin/eng.mjs sync) and commit what it writes.');
 });
 
+test('sync --check drift in a repo whose eng-standard pin floats keeps the generic line', () => {
+  const r = repo();
+  fs.writeFileSync(r.file('package.json'), JSON.stringify({ name: 'adopter', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#main' } }));
+  fs.rmSync(r.file('SHIPPING.md'));
+  const d = r.eng('sync', '--check');
+  assert.equal(d.status, 1); assert.match(d.stderr, /#main is a branch/);
+  assert.equal(lastLine(d), OUT_OF_DATE);
+});
+
 test('sync --check refusals that are not drift do not get the out-of-date line', () => {
   const r = repo();
   writeOldLock(r); // matches the config; only its renderer version differs

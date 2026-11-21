@@ -30,7 +30,7 @@ import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBoun
 import { stepOutput, TAIL_LINES, TAIL_BYTES } from '../lib/step-output.mjs';
 import { enclose, tellEnclosing, commonDir, NESTED_GATE_RULE } from '../lib/nested.mjs';
 import { belowDefault, changedFromDefault, belowDefaultLines } from '../lib/gate-levels.mjs';
-import { declaredPin, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC, PKG_NAME } from '../lib/standard.mjs';
+import { declaredPin, pinStatus, lifecycleProblems, changesSince, isBehind, RAW_MAIN, LIFECYCLE_DOC, PKG_NAME } from '../lib/standard.mjs';
 import { skillVisibility, fsProbe, visibilityReport, claudeLine } from '../lib/skill-visibility.mjs';
 import { guardErrors, guardWiring, guardProbe, guardReport } from '../lib/guard-setup.mjs';
 import { noticeFor, latestVersion, packageManager, noticeOff } from '../lib/update-notice.mjs';
@@ -459,8 +459,10 @@ function syncCheck() {
   const lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');
   const std = standardProblems();
-  // Drift ends with one plain line that says what to do (Kalsigns 29c). A repo that pins eng gets the pinned command.
-  const run = declaredPin(readOr('package.json')) ? `the repo-pinned eng (node node_modules/${PKG_NAME}/bin/eng.mjs sync)` : 'eng sync';
+  // Drift ends with one plain line that says what to do (Kalsigns 29c). A repo with a fixed pin gets the pinned command;
+  // a floating pin is not one (its own line above says so), so it gets the generic wording.
+  const pin = declaredPin(readOr('package.json'));
+  const run = pin && pinStatus(pin.spec).ok ? `the repo-pinned eng (node node_modules/${PKG_NAME}/bin/eng.mjs sync)` : 'eng sync';
   if (bad.length || std.length) die(`sync --check:\n  ${[...bad, ...std].join('\n  ')}${bad.length ? `\n  eng sync overwrites hand edits to generated files, so move any first: into eng.config.yml, or for AGENTS.md outside the <!-- eng:begin --> and <!-- eng:end --> markers.\nGenerated eng files are out of date. Edit eng.config.yml if needed, then run ${run} and commit what it writes.` : ''}`);
   console.log(`eng sync --check: PASS (${Object.keys(files).length} generated files match config)`);
 }
