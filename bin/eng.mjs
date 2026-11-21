@@ -193,9 +193,10 @@ function syncPlan(seed = null) {
   // Files a previous sync generated that the config no longer renders, each once. Never in .claude/skills or
   // .claude/agents, even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
   const stale = [...new Set(old.files)].filter(p => !(p in files) && !harnessOut(p)), prune = stale.filter(onDisk);
-  // lstat also finds a file in a folder eng may enter but not list, which onDisk misses.
-  const lexists = p => { try { fs.lstatSync(path.join(ROOT, p)); return true; } catch { return false; } };
-  const through = stale.flatMap(p => { const why = (onDisk(p) || lexists(p)) && linkedFolder(p); return why ? [`${p} (${why})`] : []; });
+  // In a folder eng may enter but not list, onDisk sees nothing, so lstat decides there (only there: on a
+  // case-insensitive disk lstat would also find a file whose name differs in case).
+  const unlisted = p => { try { fs.readdirSync(path.join(ROOT, path.dirname(p))); return false; } catch { try { fs.lstatSync(path.join(ROOT, p)); return true; } catch { return false; } } };
+  const through = stale.flatMap(p => { const why = (onDisk(p) || unlisted(p)) && linkedFolder(p); return why ? [`${p} (${why})`] : []; });
   if (through.length) die(`.eng/lock.json: eng sync would delete ${through.length} file(s) the config no longer renders through a symlinked folder, which can land outside the repo or on another repo file: ${through.join(', ')}. eng deletes nothing. Fix: delete each file yourself if it should go, then run eng sync.`);
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune, exec: renderedExecutables(cfg) };
 }
@@ -207,6 +208,14 @@ function linkedFolder(p) {
     try { if (fs.lstatSync(path.join(ROOT, d)).isSymbolicLink()) return `${d} is a symlink`; } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
   }
   return false;
+}
+// Runs fn in the repo folder dir (repo-relative) and returns true, only when the folder eng enters is that folder of the
+// repo with no symlink on the way. The working folder then stays that folder, whatever is renamed or linked after, so
+// fn's relative paths cannot be sent outside it. Returns false, running nothing, otherwise.
+function inRepoFolder(dir, fn) {
+  const back = process.cwd();
+  try { process.chdir(path.join(ROOT, dir)); } catch { return false; }
+  try { return process.cwd() === path.join(fs.realpathSync(ROOT), dir) && (fn(), true); } finally { process.chdir(back); }
 }
 // Graphite keeps its repo config in the common git dir, so a worktree of a Graphite repo counts too.
 function graphiteRepo() {
@@ -232,11 +241,11 @@ function sync(plan = syncPlan()) {
     if (exec.has(p)) fs.chmodSync(abs, 0o755);
     console.log(`  wrote ${p}`); changed++;
   }
-  // Prune (syncPlan refused any folder on the way that is a symlink; checked again here in case the tree changed since,
-  // and skipped then). A managed path that is itself a symlink is the developer's (eng writes regular files), so
-  // neither it nor its target is deleted. A path gone since the plan is skipped.
-  const keep = p => { try { return linkedFolder(p) || fs.lstatSync(path.join(ROOT, p)).isSymbolicLink(); } catch { return true; } };
-  for (const p of prune) if (!keep(p)) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
+  // Prune. syncPlan refused any folder on the way that is a symlink; the delete runs inside the real folder, so a link
+  // made since is skipped, not followed. A managed path that is itself a symlink is the developer's (eng writes regular
+  // files), so neither it nor its target is deleted. A path gone since the plan is skipped.
+  const keep = p => { try { return fs.lstatSync(path.join(ROOT, p)).isSymbolicLink(); } catch { return true; } };
+  for (const p of prune) if (!keep(p) && inRepoFolder(path.dirname(p), () => fs.unlinkSync(path.basename(p)))) { console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
   const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
@@ -1095,7 +1104,7 @@ async function upgradeInfo() {
 // After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
 function rmEmptyParents(p) {
   for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
-    try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
+    try { if (fs.readdirSync(path.join(ROOT, d)).length || !inRepoFolder(path.dirname(d), () => fs.rmdirSync(path.basename(d)))) return; } catch { return; }
     console.log(`  removed ${d}/`);
   }
 }
