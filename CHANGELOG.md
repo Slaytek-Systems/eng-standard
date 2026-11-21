@@ -2,6 +2,10 @@
 
 Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command, config or policy area; patch = rule or doc addition to an existing area. History before 0.7.1 is in `git log`.
 
+## 0.23.10 (21 Nov 2026)
+
+**`eng sync`, `sync --check` and `init` refuse a `.eng/lock.json` they must not act on, before any write or delete** (Core task p57fyte3f4p0p305bjjkzmzbwh8jmj6m, piece B-lock of the #99 split). `{"files":"x"}` read as `["0"]`, so `eng sync` deleted a repo file named `0`. Now `files` must be a list (or the 0.11.0 `{ path: sha256 }` object) of relative, normalised repo paths: a string, not empty, no absolute path, no `..` segment, no `.`, `//` or trailing slash, no backslash or NUL, nothing in `.git`. A lock that is not JSON or not an object is refused too, with the entries and how to restore it. `sync` reads the lock first, before it migrates the config. Every other command that reads the lock (`doctor`, `lint`) refuses it the same way. An entry such as `../<repo>/.claude/skills/x`, which 0.17.x skipped while pruning, now refuses the whole sync. **Upgrade:** nothing to do; a lock eng wrote is always valid.
+
 ## 0.23.9 (21 Nov 2026)
 
 **The rendered AGENTS.md block is a short router, a practice catalogue starts, and the README opens with why eng exists** (decision 21 Nov 2026, Core task p57cskzqr04wnkb56rdr0vsr1h8jmnem). A three-repo audit found the repo without eng easier for agents than the one with it: its 138-line rendered AGENTS.md (v0.18.0) and 266-line SHIPPING.md contradicted the repo's own rules in 6 places.
