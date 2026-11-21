@@ -23,7 +23,7 @@ import { modelErrors, neverErrors } from '../lib/models.mjs';
 import { profileErrors, needsProfileNotice, PROFILE_NOTICE, PASS_PROVES } from '../lib/profile.mjs';
 import { ephemeral, runRuleErrors, runRules, declaredRuns, alwaysWatched, isolationErrors } from '../lib/ephemeral.mjs';
 import { diskRules, diskRuleErrors, evidenceRuns, evidenceFindings, leftovers } from '../lib/disk-rules.mjs';
-import { parseLock, lockText } from '../lib/lock.mjs';
+import { parseLock, lockText, lockPathProblem } from '../lib/lock.mjs';
 import { classifyRisk, versionOnly, highRiskBlock, touchesConfig, CONFIG } from '../lib/risk.mjs';
 import { DEFAULTS as SELF_MERGE_DEFAULTS, parseVerdicts, trusted, validLogins } from '../lib/self-merge.mjs';
 import { enforcer, enforcerText, budgetText, freeMemoryMb, cores, admit, runBounded, HEAVY_TOOL_RULE, CONTAINER_RULE } from '../lib/budget.mjs';
@@ -142,7 +142,13 @@ const standardProblems = () => lifecycleProblems({ lockVersion: readLock().packa
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
-  const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
+  // Keyed by normalised path, as the lock records it, so a config path such as ./.eng/checks never gives a lock eng then refuses.
+  const files = {}, outside = [];
+  for (const [p, c] of Object.entries(renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md')))) {
+    const n = path.posix.normalize(p), why = lockPathProblem(n);
+    if (why || n in files) outside.push(`${p} (${why ?? `also rendered as ${n}`})`); else files[n] = c;
+  }
+  if (outside.length) die(`config invalid:\n  eng would render ${outside.length} file(s) that are not distinct relative, normalised repo paths: ${outside.slice(0, 3).join(', ')}. Fix the setting that names that folder.`);
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
@@ -153,6 +159,7 @@ function render(cfg) {
 // GitHub reads a PR template from .github/, the root or docs/, named in any case, as a file or a PULL_REQUEST_TEMPLATE/
 // folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
+const renderedExecutables = cfg => new Set([...executables(cfg)].map(p => path.posix.normalize(p)));
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
 function ownPrTemplates(rendered) {
   const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
@@ -198,7 +205,7 @@ function sync() {
   const old = readLock();
   const migrated = migrateConfig();
   const cfg = loadConfig();
-  const files = render(cfg), exec = executables(cfg);
+  const files = render(cfg), exec = renderedExecutables(cfg);
   let changed = migrated;
   for (const [p, content] of Object.entries(files)) {
     const abs = path.join(ROOT, p);
@@ -294,7 +301,7 @@ function syncCheck() {
     if (cur === null) bad.push(`${p}: missing`);
     else if (cur !== c) bad.push(`${p}: differs from what eng.config.yml renders`);
   }
-  for (const p of executables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
+  for (const p of renderedExecutables(cfg)) if (fs.existsSync(path.join(ROOT, p)) && !isExec(path.join(ROOT, p))) bad.push(`${p}: not executable`);
   // The lock lists what eng sync manages. A list that differs from what the config renders means a sync is due.
   const lock = readLock(), same = (a, b) => JSON.stringify(a) === JSON.stringify([...b].sort());
   if (!same(lock.files, Object.keys(files))) bad.push('.eng/lock.json: config changed since last sync');

@@ -164,7 +164,7 @@ test('{"files":"x"} is refused: eng sync deletes no repo file named 0 and writes
   const r = badLockRepo('{"package":"0.23.9","files":"x"}\n'), before = state(r);
   const s = r.eng('sync');
   assert.equal(s.status, 1, s.stdout + s.stderr);
-  assert.match(s.stderr, /^eng: FAIL \.eng\/lock\.json: files must be a list of repo paths, not "x"\. Fix: /m);
+  assert.match(s.stderr, /^eng: FAIL \.eng\/lock\.json: files must be a list of repo paths \(or the 0\.11\.0 \{ path: sha256 \} object\), not "x"\. Fix: /m);
   assert.doesNotMatch(s.stdout, /wrote|removed|migrated/);
   assert.equal(r.read('0'), 'mine\n');
   assert.deepEqual(state(r), before);
@@ -184,12 +184,14 @@ for (const [what, lock, why] of [
   ['an empty path', { files: [''] }, /\(empty\)/],
   ['a number', { files: [0] }, /0 \(not a string\)/],
   ['null in the list', { files: ['AGENTS.md', null] }, /null \(not a string\)/],
-  ['a legacy { path: sha } key that leaves the repo', { files: { [`../${path.basename(outside)}/keep`]: 'x' } }, /leaves the repo/],
-  ['files a number', { files: 5 }, /files must be a list of repo paths, not 5/],
-  ['files null', { files: null }, /files must be a list of repo paths, not null/],
-  ['no files field', {}, /files must be a list of repo paths, not null/],
+  ['a legacy { path: sha } key that leaves the repo', { files: { [`../${path.basename(outside)}/keep`]: sha256('x') } }, /leaves the repo/],
+  ['an object whose values are not sha256 hashes', { files: { 0: false } }, /files must be a list of repo paths \(or the 0\.11\.0 \{ path: sha256 \} object\), not \{"0":false\}/],
+  ['files a number', { files: 5 }, /files must be a list of repo paths .*, not 5/],
+  ['files null', { files: null }, /files must be a list of repo paths .*, not null/],
+  ['no files field', {}, /files must be a list of repo paths .*, not null/],
   ['a list at the top', ['0'], /not a JSON object/],
   ['not JSON', '{"files": [', /not valid JSON/],
+  ['an empty file', '', /not valid JSON/],
 ]) test(`a lock with ${what} is refused by sync, sync --check and init before any write or delete`, () => {
   const r = badLockRepo(typeof lock === 'string' ? lock : JSON.stringify({ package: '0.23.9', ...(Array.isArray(lock) ? {} : lock) }) + '\n');
   if (Array.isArray(lock)) fs.writeFileSync(r.file('.eng/lock.json'), JSON.stringify(lock) + '\n');
@@ -213,4 +215,26 @@ test('a valid lock still prunes: a listed file the config no longer renders is r
   const s = r.eng('sync'); assert.equal(s.status, 0, s.stderr);
   assert.match(s.stdout, /removed docs\/OLD\.md/);
   assert.ok(!fs.existsSync(r.file('docs/OLD.md')));
+});
+
+test('a config folder written ./.eng/checks renders and locks .eng/checks/.gitkeep, so the next sync and sync --check pass', () => {
+  const r = repo();
+  r.edit('eng.config.yml', s => s.replace(/^( +checks_dir:) \.eng\/checks/m, '$1 ./.eng/checks'));
+  assert.match(r.read('eng.config.yml'), /checks_dir: \.\/\.eng\/checks/);
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.ok(JSON.parse(r.read('.eng/lock.json')).files.includes('.eng/checks/.gitkeep'));
+  const again = r.eng('sync'); assert.equal(again.status, 0, again.stdout + again.stderr); assert.match(again.stdout, /^eng sync: no changes$/m);
+  const d = r.eng('sync', '--check'); assert.equal(d.status, 0, d.stdout + d.stderr);
+});
+
+test('a config folder outside the repo (checks_dir ../x) is refused before sync writes anything', () => {
+  const r = repo();
+  r.edit('eng.config.yml', s => s.replace(/^( +checks_dir:) \.eng\/checks/m, '$1 ../eng-lock-outside-checks'));
+  r.git('commit -qam "checks_dir outside"');
+  fs.rmSync(r.file('SHIPPING.md')); r.git('commit -qam "SHIPPING.md gone"');
+  const before = state(r), s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  assert.match(s.stderr, /config invalid:\n {2}eng would render 1 file\(s\) that are not distinct relative, normalised repo paths: \.\.\/eng-lock-outside-checks\/\.gitkeep \(leaves the repo/);
+  assert.ok(!fs.existsSync(path.join(path.dirname(r.dir), 'eng-lock-outside-checks')));
+  assert.deepEqual(state(r), before);
 });
