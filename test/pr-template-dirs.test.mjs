@@ -97,3 +97,31 @@ for (const [sd, own] of [['docs', 'docs/pull_request_template'], ['.github', '.g
     const c = r.eng('sync', '--check'); assert.equal(c.status, 0, c.stdout + c.stderr);
   });
 }
+
+// Review round 2 on #121: U+2028 and U+2029 end a line for many readers, so every character outside printable ASCII in
+// the value is written as \uXXXX, as parseConfig does for a repeated key.
+test('a skills_dir with U+2028 inside a PR template folder is refused on one printable-ASCII line', () => {
+  const r = repo(withSkillsDir('docs/pull_request_template/a\u2028b\u00e9'));
+  const s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  const lines = s.stderr.split(/\r\n|[\n\r\u2028\u2029\u0085]/).filter(l => l.includes('agents.skills_dir'));
+  assert.equal(lines.length, 1, s.stderr);
+  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\u2028b\\u00e9"\) is in /, s.stderr);
+  assert.match(lines[0], /^[ -~]*$/, s.stderr);
+});
+
+// Review round 2 on #121: a repo synced by an earlier eng with skills_dir docs/pull_request_template moves to skills_dir
+// docs. The plan sees that folder (eng's old skills) as the repo's template, so pruning its files must not remove it,
+// or the next sync --check plans eng's template and fails.
+test('moving skills_dir from docs/pull_request_template to docs: sync --check agrees with the sync that prunes', () => {
+  const r = repo(withSkillsDir('docs/tmpl'));
+  const i = r.eng('init'); assert.equal(i.status, 0, i.stdout + i.stderr);
+  // The state an earlier eng left: its skills in docs/pull_request_template, listed in the lock.
+  fs.renameSync(r.file('docs/tmpl'), r.file('docs/pull_request_template'));
+  const lock = r.file('.eng/lock.json');
+  fs.writeFileSync(lock, fs.readFileSync(lock, 'utf8').replaceAll('"docs/tmpl/', '"docs/pull_request_template/'));
+  fs.writeFileSync(r.file('eng.config.yml'), withSkillsDir('docs'));
+  const s = r.eng('sync'); assert.equal(s.status, 0, s.stdout + s.stderr);
+  assert.match(s.stdout, /removed docs\/pull_request_template\//, 'the old skills were pruned');
+  const c = r.eng('sync', '--check'); assert.equal(c.status, 0, c.stdout + c.stderr);
+});
