@@ -178,7 +178,11 @@ test('a fence keeps the block quote and list item it opened in (review round 1 o
   assert.equal(agentsOf(`${inQuote}${OLD}\n`), `${inQuote}${BLOCK}\n`, 'a closed fence in a block quote');
   const inList = '1. Example:\n   ```md\n   <!-- eng:begin -->\n   <!-- eng:end -->\n   ```\n\n';
   assert.equal(agentsOf(`${inList}${OLD}\n`), `${inList}${BLOCK}\n`, 'a closed fence in a list item');
-  for (const open of ['> ```markdown\n> Example inside a block quote.\n\n', '- ```md\n  example\n\n'])
+  const quoteInList = '- ```markdown\n  > A quote shown as Markdown.\n  <!-- eng:begin -->\n  <!-- eng:end -->\n  ```\n\n';
+  assert.equal(agentsOf(`${quoteInList}${OLD}\n`), `${quoteInList}${BLOCK}\n`, 'a literal > inside a list fence is content (round 2)');
+  const continued = '- Example:\n\n  ```md\n  <!-- eng:begin -->\n  <!-- eng:end -->\n  ```\n\n';
+  assert.equal(agentsOf(`${continued}${OLD}\n`), `${continued}${BLOCK}\n`, 'a closed fence on a list continuation line');
+  for (const open of ['> ```markdown\n> Example inside a block quote.\n\n', '- ```md\n  example\n\n', '- Example:\n\n  ```md\n  literal code\n\n## Maintenance\n\n'])
     assert.throws(() => agentsOf(`${OLD}\n\n${open}<!-- eng:end -->\n`), /1 <!-- eng:begin --> or <!-- eng:end --> line\(s\) outside eng's block/, `a fence ends with its container: ${JSON.stringify(open)}`);
 });
 
