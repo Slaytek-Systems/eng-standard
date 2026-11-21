@@ -50,9 +50,23 @@ const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 function loadConfig() {
   const p = path.join(ROOT, 'eng.config.yml');
   if (!fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
-  const cfg = YAML.parse(fs.readFileSync(p, 'utf8'));
+  const cfg = parseConfig(fs.readFileSync(p, 'utf8'));
   validate(cfg);
   return cfg;
+}
+// eng.config.yml text as data. YAML the parser refuses is one line built only from text eng controls: the file, the line
+// and a repeated key, JSON-escaped and cut to 40 characters. The parser's own reason is never printed, so nothing from the
+// file can break the line.
+function parseConfig(text) {
+  const doc = YAML.parseDocument(text), [e] = doc.errors;
+  const bad = 'config invalid: eng.config.yml';
+  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
+  const at = e.linePos ? `${bad} line ${e.linePos[0].line}` : bad;
+  if (e.code !== 'DUPLICATE_KEY') die(`${at}: the YAML does not parse`);
+  let k = ''; // the repeated key is the one that starts where the error does
+  YAML.visit(doc, { Pair(_, p) { if (p.key?.range?.[0] === e.pos[0]) { if (YAML.isScalar(p.key) && p.key.value != null) k = String(p.key.value); return YAML.visit.BREAK; } } });
+  const name = k && `: ${JSON.stringify(k.slice(0, 40)).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}${k.length > 40 ? '...' : ''}`;
+  die(`${at}: a key is given twice${name}`);
 }
 
 // Cross-field rules that stop loosening (design §1.2, the parts v0 implements).
@@ -197,6 +211,7 @@ function syncPlan(seed = null, initFiles = () => []) {
   if (cfgWhy) die(`eng.config.yml: ${cfgWhy}. eng reads nothing through it and writes nothing. Fix: replace it with a real file in the repo, then run eng sync.`);
   const cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
+  parseConfig(cur);
   const { text, changes } = migrate(cur);
   const added = addRewriteMode(text, graphiteRepo());
   if (added) changes.push(added);
