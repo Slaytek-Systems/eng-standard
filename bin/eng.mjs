@@ -142,7 +142,7 @@ const standardProblems = () => lifecycleProblems({ lockVersion: readLock().packa
 
 const repoKey = p => path.posix.normalize(p.replace(/^\/+/, ''));
 const renderedExecutables = cfg => new Set([...executables(cfg)].map(repoKey));
-function render(cfg) {
+function render(cfg, planned = null) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
   // Keyed by the repo path eng writes, so the lock never records ./agents/x (skills_dir .claude) or /x, which it refuses.
@@ -153,16 +153,19 @@ function render(cfg) {
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
   // A repo that already symlinks CLAUDE.md -> AGENTS.md is equivalent to our @AGENTS.md import; never write through the link.
   try { if (fs.readlinkSync(path.join(ROOT, 'CLAUDE.md')) === 'AGENTS.md') delete files['CLAUDE.md']; } catch {}
-  if (ownPrTemplates(files[ENG_PR_TEMPLATE]).length) delete files[ENG_PR_TEMPLATE];
+  if (ownPrTemplates(files[ENG_PR_TEMPLATE], planned).length) delete files[ENG_PR_TEMPLATE];
   return files;
 }
 // GitHub reads a PR template from .github/, the root or docs/, named in any case, as a file or a PULL_REQUEST_TEMPLATE/
 // folder. A repo with one eng did not render keeps it, and eng renders none: on a case-insensitive disk (macOS) ours would
 // overwrite .github/PULL_REQUEST_TEMPLATE.md, and on Linux the PR would get two. Ours is the one in the lock, or its exact bytes.
 const ENG_PR_TEMPLATE = '.github/pull_request_template.md';
-function ownPrTemplates(rendered) {
+// planned is a folder init is about to create; it counts as on disk, so init plans what sync renders once it exists.
+function ownPrTemplates(rendered, planned = null) {
   const ours = p => p === ENG_PR_TEMPLATE && (readLock().files.includes(p) || readOr(p) === rendered);
-  return ['.github', '.', 'docs'].flatMap(d => { try { return fs.readdirSync(path.join(ROOT, d)).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)); } catch { return []; } })
+  const ahead = d => { const rel = !planned ? null : d === '.' ? planned : planned.startsWith(`${d}/`) ? planned.slice(d.length + 1) : null; return rel ? [rel.split('/')[0]] : []; };
+  const names = d => { let ns = []; try { ns = fs.readdirSync(path.join(ROOT, d)); } catch {} return [...new Set([...ns, ...ahead(d)])]; };
+  return ['.github', '.', 'docs'].flatMap(d => names(d).filter(n => /^pull_request_template(\.(md|txt))?$/i.test(n)).map(n => path.posix.join(d, n)))
     .filter(p => !ours(p));
 }
 const prTemplateLine = files => { const own = ownPrTemplates(files[ENG_PR_TEMPLATE]); return { ok: true, what: own.length ? `PR template: ${own.join(', ')} (the repo's own; eng renders none)` : `PR template: ${ENG_PR_TEMPLATE} (eng's)` }; };
@@ -181,7 +184,7 @@ const visibilityLine = v => `  ${v.ok ? 'ok  ' : 'WARN'} ${v.what}`;
 // Every check eng sync makes, with no write: the lock, the config as this release migrates it (lib/migrate.mjs removes
 // what it retired, keeping every other byte), and the render with its skills. sync, sync --check and init run it before
 // their first write, so a refusal writes nothing. init passes the config it is about to seed.
-function syncPlan(seed = null) {
+function syncPlan(seed = null, planned = null) {
   const old = readLock(), cur = seed ?? readOr('eng.config.yml');
   if (cur === null) die('no eng.config.yml (run `eng init`)');
   const { text, changes } = migrate(cur);
@@ -189,10 +192,10 @@ function syncPlan(seed = null) {
   if (added) changes.push(added);
   const cfg = YAML.parse(added?.text ?? text);
   validate(cfg);
-  const files = render(cfg);
+  const files = render(cfg, planned);
   // Files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents, even
   // when an earlier agents.skills_dir rendered there: those files now belong to the developer.
-  const prune = old.files.filter(p => !(p in files) && !harnessOut(p) && onDisk(p));
+  const prune = [...new Set(old.files)].filter(p =>!(p in files) && !harnessOut(p) && onDisk(p));
   const through = prune.flatMap(p => { const why = linkedFolder(p); return why ? [`${p} (${why})`] : []; });
   if (through.length) die(`.eng/lock.json: eng sync would delete ${through.length} file(s) the config no longer renders through a symlinked folder, which can land outside the repo or on another repo file: ${through.join(', ')}. eng deletes nothing. Fix: delete each file yourself if it should go, then run eng sync.`);
   return { cfg, migrated: changes.length ? added?.text ?? text : null, changes, files, prune, exec: renderedExecutables(cfg) };
@@ -262,10 +265,12 @@ function init() {
     else seed = seedShipping(arg('--owner') || die('init: this repo already ships, so baseline edits need an owner: eng init --owner @handle (it goes in CODEOWNERS for renovation/baselines/)'));
   }
   let plan = syncPlan(seed?.text);
+  // A new checks folder can change what renders (one named like a PR template), so the plan counts it before init
+  // creates it: a refusal it causes (a prune through a symlinked folder) comes before any write.
+  const dir = checksDir(plan.cfg), checks = path.join(ROOT, dir), fresh = !fs.existsSync(checks);
+  if (fresh) plan = syncPlan(seed?.text, dir);
   seed?.write();
-  // A new checks folder can change what renders (one named like a PR template), so the plan is made again once it exists.
-  const checks = path.join(ROOT, checksDir(plan.cfg));
-  if (!fs.existsSync(checks)) { fs.mkdirSync(checks, { recursive: true }); plan = syncPlan(); }
+  if (fresh) fs.mkdirSync(checks, { recursive: true });
   const cfg = plan.cfg;
   sync(plan);
   if (cfg.renovation) for (const k of BASELINE_KINDS) if (readOr(baselinePath(k)) === null) saveBaseline(k, cfg);
