@@ -637,11 +637,11 @@ test('eng gate exits 0 only when every selected check ran and passed; a deferred
 // and the enclosing gate missed the notice.
 test('the shortest launch, node eng gate, shows the whole eng@gate title and gets the notice from a deferring inner gate', { skip: process.platform !== 'linux' && 'reads /proc' }, async t => {
   checks({ wrapper: `#!/bin/sh\nsleep 1\ncd sub && ${process.execPath} ${ENG} gate check:model | cat  # nested gate: the subject under test\n` });
-  const c = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')); c.verification.checks_dir = '../.eng/heavy';
+  const c = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')); c.verification.checks_dir = '.eng/heavy';
   fs.mkdirSync(path.join(dir, 'sub')); fs.writeFileSync(path.join(dir, 'sub', 'eng.config.yml'), YAML.stringify(c));
-  fs.mkdirSync(path.join(dir, '.eng/heavy')); fs.writeFileSync(path.join(dir, '.eng/heavy', 'model.sh'), DEFERRING.model, { mode: 0o755 });
+  fs.mkdirSync(path.join(dir, 'sub/.eng/heavy'), { recursive: true }); fs.writeFileSync(path.join(dir, 'sub/.eng/heavy', 'model.sh'), DEFERRING.model, { mode: 0o755 });
   fs.symlinkSync(ENG, path.join(dir, 'eng'));
-  t.after(() => { for (const p of ['sub', '.eng/heavy', 'eng']) fs.rmSync(path.join(dir, p), { recursive: true, force: true }); });
+  t.after(() => { for (const p of ['sub', 'eng']) fs.rmSync(path.join(dir, p), { recursive: true, force: true }); });
   const { spawn } = await import('node:child_process');
   const env = { ...process.env, ENG_BUDGET_ENFORCER: 'watchdog' }; delete env.CI;
   const g = spawn('node', ['eng', 'gate'], { cwd: dir, env });
