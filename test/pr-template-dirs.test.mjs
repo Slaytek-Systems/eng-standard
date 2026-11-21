@@ -73,3 +73,27 @@ test('a dangling docs -> .eng/x link with skills_dir .eng/x/pull_request_templat
   assert.ok(fs.existsSync(r.file('.github/pull_request_template.md')), 'eng rendered its PR template');
   const c = r.eng('sync', '--check'); assert.equal(c.status, 0, c.stdout + c.stderr);
 });
+
+// Review round 1 on #121: the value is shown JSON-quoted, so a newline in it cannot split the line.
+test('a skills_dir with a newline inside a PR template folder is refused on one line', () => {
+  const r = repo(withSkillsDir('docs/pull_request_template/a\nb'));
+  const s = r.eng('sync');
+  assert.equal(s.status, 1, s.stdout + s.stderr);
+  const lines = s.stderr.split('\n').filter(l => l.includes('agents.skills_dir'));
+  assert.equal(lines.length, 1, s.stderr);
+  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\nb"\) is in docs\/pull_request_template, /, s.stderr);
+});
+
+// Review round 1 on #121: with skills_dir docs or .github, the empty-folder cleanup after a sync must leave the
+// repo's own PR template folder alone, even an empty one, or the next sync --check plans eng's template and fails.
+for (const [sd, own] of [['docs', 'docs/pull_request_template'], ['.github', '.github/PULL_REQUEST_TEMPLATE']]) {
+  test(`skills_dir ${sd}: sync keeps an empty ${own} folder, and sync --check agrees`, () => {
+    const r = repo(withSkillsDir(sd));
+    fs.mkdirSync(r.file(own), { recursive: true });
+    fs.mkdirSync(r.file(`${own}/empty`));
+    const s = r.eng('sync'); assert.equal(s.status, 0, s.stdout + s.stderr);
+    assert.ok(fs.existsSync(r.file(`${own}/empty`)), `${own}/empty is still there`);
+    assert.ok(!fs.existsSync(r.file('.github/pull_request_template.md')), 'eng rendered no template beside the repo\'s own');
+    const c = r.eng('sync', '--check'); assert.equal(c.status, 0, c.stdout + c.stderr);
+  });
+}
