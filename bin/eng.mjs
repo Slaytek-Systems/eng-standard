@@ -93,7 +93,9 @@ function harnessConfigErrors(c) {
 // the first sync plans .github/pull_request_template.md before the folder exists, and the next sync --check drops it
 // (Core task p57daqhz3j9c0v0n0ntr93y3bs8jn2cd). So the config is refused before any write. A folder named like a
 // template file (pull_request_template.md/) is no template folder for GitHub, so it stays allowed.
-// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted, so it stays on one line.
+// The PR template folder a repo path is, or sits in, or null. The value is shown JSON-quoted with every character outside
+// printable ASCII as \\uXXXX (U+2028 ends a line for many readers), so it stays on one line.
+const asciiQuoted = v => JSON.stringify(v).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const PR_TEMPLATE_DIR = /^pull_request_template$/i;
 const prTemplateDirOf = p => {
   const [a, b = ''] = (repoRel(p) ?? '').split('/');
@@ -103,7 +105,7 @@ function prTemplateDirErrors(c) {
   const dirs = [[c?.agents?.skills_dir, 'agents.skills_dir', '.agents/skills'], [checksDir(c), 'verification.checks_dir', '.eng/checks']];
   return dirs.filter(([d]) => typeof d === 'string' && d.trim()).flatMap(([d, what, dflt]) => {
     const t = prTemplateDirOf(d);
-    return t ? [`${what} (${JSON.stringify(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
+    return t ? [`${what} (${asciiQuoted(d)}) is in ${t}, which GitHub reads as a PR template folder, so eng would count its own files there as the repo's PR template. Use a folder outside it (the default is ${dflt})`] : [];
   });
 }
 function configErrors(c) {
@@ -1214,9 +1216,10 @@ async function upgradeInfo() {
   const since = changesSince(changelog, installed).map(t => `\n         - ${t}`).join('');
   return { line: `  WARN ${head}. BEHIND; CHANGELOG entries since ${installed}:${since}\n       Next: move the pin to #v${latest}, install, eng sync, eng gate, one PR (${LIFECYCLE_DOC}, Upgrade)`, state: `BEHIND ${latest}` };
 }
-// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root.
+// After a pruned file, remove each folder it leaves empty (guard: off empties .eng/guard), up to the repo root. It stops at
+// a PR template folder: the plan counted it as the repo's own template, so removing it would change the next plan.
 function rmEmptyParents(p) {
-  for (let d = path.dirname(p); d !== '.' && !harnessOut(d); d = path.dirname(d)) {
+  for (let d = path.dirname(p); d !== '.' && !harnessOut(d) && prTemplateDirOf(d) !== d; d = path.dirname(d)) {
     try { if (fs.readdirSync(path.join(ROOT, d)).length) return; fs.rmdirSync(path.join(ROOT, d)); } catch { return; }
     console.log(`  removed ${d}/`);
   }
