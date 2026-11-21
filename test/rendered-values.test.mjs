@@ -91,8 +91,10 @@ test('eng sync, sync --check and init refuse a rendered value with a line break:
         const res = r.eng(args), why = `${key} ${JSON.stringify(v)}: eng ${args.join(' ')}`, all = res.stdout + res.stderr;
         assert.equal(res.status, 1, `${why} refuses: ${all.slice(-1500)}`);
         assert.match(res.stderr, /config invalid/, why);
-        const lines = res.stderr.split('\n').filter(l => l.includes(key));
-        assert.equal(lines.length, 1, `${why}: one line names the key: ${JSON.stringify(res.stderr)}`);
+        const lines = res.stderr.split('\n'), at = lines.findIndex(l => l.includes(key)), head = lines.findIndex(l => l.endsWith('config invalid:'));
+        assert.equal(lines.filter(l => l.includes(key)).length, 1, `${why}: one line names the key: ${JSON.stringify(res.stderr)}`);
+        // The refusal's shape since 0.21: a config invalid: line, then one indented line per error.
+        assert.ok(head >= 0 && head < at && lines.slice(head + 1, at + 1).every(l => l.startsWith('  ')), `${why}: the key's line is under config invalid: ${JSON.stringify(res.stderr)}`);
         assert.doesNotMatch(all.replaceAll('\n', ''), RAW, `${why}: no raw line break from the value`);
         assert.ok(!all.split('\n').some(l => [SIG, '<!-- eng:begin -->', '<!-- eng:end -->'].includes(l.trim())), `${why}: no marker line is echoed`);
         assert.deepEqual(shot(r.dir), before, `${why} wrote nothing`);
@@ -103,4 +105,40 @@ test('eng sync, sync --check and init refuse a rendered value with a line break:
   const c = structuredClone(r.base); c.project.name = 'draft --> app'; c.project.description = 'One line.';
   fs.writeFileSync(path.join(r.dir, 'eng.config.yml'), YAML.stringify(c));
   for (const args of [['sync'], ['sync'], ['sync', '--check']]) { const res = r.eng(args); assert.equal(res.status, 0, res.stdout + res.stderr); }
+});
+
+// Review round 1: a YAML anchor defined before agents must not hide agents.skills_dir from the refusal.
+test('a rendered *_dir value shared by a YAML alias is refused under every key that reaches it', () => {
+  const c = YAML.parse('shared: &a\n  skills_dir: "tools/skills\\u2028more"\nagents: *a\nother:\n  x: *a\n');
+  assert.deepEqual(dirValueErrors(c).map(e => e.split(' ')[0]), ['shared.skills_dir', 'agents.skills_dir', 'other.x.skills_dir']);
+  const cyclic = YAML.parse('meta: &m\n  self: *m\n  x_dir: ./x\n');
+  assert.deepEqual(dirValueErrors(cyclic).map(e => e.split(' ')[0]), ['meta.x_dir'], 'a cycle is still walked once');
+
+  // The anchor is defined first, on a key before agents, and agents is only an alias of it.
+  const r = repo(), { agents, ...rest } = r.base;
+  const text = `shared: &a ${JSON.stringify({ ...agents, skills_dir: 'tools/skills\u2028more' })}\nagents: *a\n${YAML.stringify(rest)}`;
+  assert.equal(YAML.parse(text).agents.skills_dir, 'tools/skills\u2028more');
+  fs.writeFileSync(path.join(r.dir, 'eng.config.yml'), text);
+  const before = shot(r.dir), res = r.eng(['sync']);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.equal(res.stderr.split('\n').filter(l => l.includes('agents.skills_dir')).length, 1, res.stderr);
+  assert.deepEqual(shot(r.dir), before);
+});
+
+// Review round 1: eng init seeds project.name from package.json or the folder name; one that is not one line is passed over.
+test('eng init seeds a one-line project.name when package.json names the repo across lines', () => {
+  const parent = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-rendered-')); scratch.push(parent);
+  const dir = path.join(parent, 'fresh'); fs.mkdirSync(dir);
+  const git = c => execSync(`git ${c}`, { cwd: dir, stdio: 'pipe', encoding: 'utf8' });
+  git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
+  for (const name of ['alpha\u2028beta', 'alpha\n<!-- eng:end -->']) {
+    fs.rmSync(path.join(dir, 'eng.config.yml'), { force: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, scripts: { test: 'true' } }));
+    const res = spawnSync(process.execPath, [ENG, 'init', '--owner', '@lead'], { cwd: dir, encoding: 'utf8', timeout: 120_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(res.status, 0, `${JSON.stringify(name)}: ${res.stdout + res.stderr}`);
+    const seeded = YAML.parse(fs.readFileSync(path.join(dir, 'eng.config.yml'), 'utf8')).project.name;
+    assert.ok(typeof seeded === 'string' && seeded.trim() && !RAW.test(seeded) && !seeded.includes('alpha'), `${JSON.stringify(name)}: the folder name is seeded, not ${JSON.stringify(seeded)}`);
+    const chk = spawnSync(process.execPath, [ENG, 'sync', '--check'], { cwd: dir, encoding: 'utf8', timeout: 120_000, env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(chk.status, 0, chk.stdout + chk.stderr);
+  }
 });
