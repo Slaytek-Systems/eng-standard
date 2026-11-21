@@ -47,20 +47,24 @@ const run = (c, cwd = ROOT) => spawnSync('bash', ['-c', c], { cwd, encoding: 'ut
 function withTmp(cfg) { const t = engTmp(cfg); RUN_ENV = t.env; if (t.owned) console.log(`  ENG_TMP=${t.dir} (removed on exit)`); return t; }
 const die = (m) => { console.error(`eng: FAIL ${m}`); process.exit(1); };
 
-function loadConfig() {
+// quiet: parse and validate only, without YAML warnings (the command prints them when it loads the config itself).
+// CONFIG_TEXT: what dispatch saw before the update notice: the text it checked, false for no file, or null (not looked).
+// The command uses that same snapshot, so a file saved or created while the notice waited cannot slip past the check.
+let CONFIG_TEXT = null;
+function loadConfig({ quiet = false } = {}) {
   const p = path.join(ROOT, 'eng.config.yml');
-  if (!fs.existsSync(p)) die('no eng.config.yml (run `eng init`)');
-  const cfg = parseConfig(fs.readFileSync(p, 'utf8'));
+  if (CONFIG_TEXT === false || (CONFIG_TEXT === null && !fs.existsSync(p))) die('no eng.config.yml (run `eng init`)');
+  const cfg = parseConfig(CONFIG_TEXT ?? fs.readFileSync(p, 'utf8'), quiet);
   validate(cfg);
   return cfg;
 }
 // eng.config.yml text as data. YAML the parser refuses is one line built only from text eng controls: the file, the line
 // and a repeated key, JSON-escaped and cut to 40 characters. The parser's own reason is never printed, so nothing from the
 // file can break the line.
-function parseConfig(text) {
+function parseConfig(text, quiet = false) {
   const doc = YAML.parseDocument(text), [e] = doc.errors;
   const bad = 'config invalid: eng.config.yml';
-  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
+  if (!e) { let cfg; try { cfg = doc.toJS(); } catch { die(`${bad}: the YAML does not parse`); } if (!quiet) doc.warnings.forEach(w => process.emitWarning(w)); return cfg; }
   const at = e.linePos ? `${bad} line ${e.linePos[0].line}` : bad;
   if (e.code !== 'DUPLICATE_KEY') die(`${at}: the YAML does not parse`);
   let k = ''; // the repeated key is the one that starts where the error does
@@ -1276,13 +1280,26 @@ const COMMANDS = [
   ['merge', 'merge gate [--pr <n>] [--post-status] | merge post [--dry-run]', 'the merge gate requires the tooling\'s PASS; post runs the post-merge check, opens the revert on red, and tends open PRs', () => merge(engCtx(), a)],
   ['doctor', 'doctor [--launch [--check-only]]', 'is this repo on the hallway? config, enforcers, merge settings, disk rules, and the eng-standard version (installed, rendered, latest, CHANGELOG between); --launch also proves the launch contract (--check-only: read the scripts, start nothing)', doctor],
 ];
-function runCmd() {
+// Which eng run this is: here (--here), scratch (a private worktree), named (a declared run), or null (usage).
+function runRoute() {
   const dd = a.indexOf('--'), opts = dd >= 0 ? a.slice(0, dd) : a;
-  if (opts.includes('--here')) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a.slice(dd));
-  if (dd >= 0 || opts.includes('--keep') || opts[0] === 'down') return scratchRun(engCtx(), a);
-  if (opts.length === 1) return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', opts[0]]);
+  return opts.includes('--here') ? 'here' : dd >= 0 || opts.includes('--keep') || opts[0] === 'down' ? 'scratch' : opts.length === 1 ? 'named' : null;
+}
+function runCmd() {
+  const route = runRoute(), dd = a.indexOf('--');
+  if (route === 'here') return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, a.slice(dd));
+  if (route === 'scratch') return scratchRun(engCtx(), a);
+  if (route === 'named') return ephemeral({ ...engCtx(), parentSockDir: PARENT_SOCK_DIR }, ['run', a[0]]);
   die(RUN_USAGE);
 }
+// The commands that read this checkout's eng.config.yml before any other refusal. When the file exists, dispatch checks it
+// before the update notice, doctor's version line and lint's --config-from advisory, so a config error is their only
+// output and the notice writes no cache. Each command still prints its own output, warnings included, where it did. Not
+// here: sync and init (their notice prints after they run), merge gate (its settings may come from the merge queue's base,
+// and it reads them only once it has a PR), eng run in a private worktree, and verdict status without a numeric --pr
+// (a usage error, before any config).
+const READS_CONFIG_FIRST = { lint: () => true, doctor: () => true, gate: () => true, e2e: () => true, rules: () => a[0] === 'prove',
+  verdict: () => a[0] !== 'status' || /^\d+$/.test(arg('--pr') || ''), merge: () => a[0] === 'post', run: () => runRoute() === 'here' || runRoute() === 'named' };
 // One stderr line when a newer eng-standard release exists (lib/update-notice.mjs). doctor prints its own version report.
 async function updateNotice() {
   try {
@@ -1300,7 +1317,14 @@ const engOpts = a.includes('--') ? a.slice(0, a.indexOf('--')) : a;
 const helpFor = cmd === 'help' ? COMMANDS.find(([n]) => n === a[0]) : found && engOpts.some(x => x === '--help' || x === '-h') ? found : null;
 if (helpFor) console.log(`usage: eng ${helpFor[1]}\n\n  ${helpFor[2]}`);
 // sync and init print the update notice after they run, so a refusal never lets it write its cache.
-else if (found) { const late = cmd === 'sync' || cmd === 'init'; if (cmd !== 'doctor' && !late) await updateNotice(); found[3](); if (late) await updateNotice(); }
+// A command that reads the config first checks it before the notice (a missing eng.config.yml keeps the old order).
+else if (found) {
+  const late = cmd === 'sync' || cmd === 'init', cfgPath = path.join(ROOT, 'eng.config.yml');
+  if (READS_CONFIG_FIRST[cmd]?.()) { CONFIG_TEXT = fs.existsSync(cfgPath) && fs.readFileSync(cfgPath, 'utf8'); if (CONFIG_TEXT !== false) loadConfig({ quiet: true }); }
+  if (cmd !== 'doctor' && !late) await updateNotice();
+  found[3]();
+  if (late) await updateNotice();
+}
 else {
   console.log(`eng: the Slaytek Systems engineering standard. One file, eng.config.yml, drives every command.\n\n${COMMANDS.map(([, u, w]) => `  eng ${u}\n      ${w}`).join('\n')}`);
   process.exit(cmd && !['--help', '-h', 'help'].includes(cmd) || (cmd === 'help' && a[0]) ? 1 : 0);

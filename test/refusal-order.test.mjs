@@ -127,3 +127,24 @@ test('sync --check reads the lock before the config, so a bad lock is the refusa
   const c = r.eng(['sync', '--check']);
   assert.notEqual(c.status, 0); assert.match(c.stderr, /^eng: FAIL \.eng\/lock\.json/m);
 });
+
+// Core task p574avny (#121 smalls): a harness folder refusal shows its value escaped, so a line break of any kind in the
+// value cannot split the config invalid line. Each refusal is exactly one line.
+const yamlQuoted = v => JSON.stringify(v).replace(/[^ -~]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+test('a skills_dir or checks_dir in a harness folder with a line break in its value is refused on one line per error', () => {
+  for (const brk of ['\n', '\r', '\u2028', '\u2029', '\u0085']) {
+    const skills = `.claude/skills/a${brk}b`, checks = `.claude/agents/c${brk}d`;
+    const r = repo(t => t.replace(/^( {2}skills_dir: ).*$/m, `$1${yamlQuoted(skills)}`).replace(/^( {2}checks_dir: ).*$/m, `$1${yamlQuoted(checks)}`));
+    for (const args of [['sync', '--check'], ['doctor']]) {
+      const s = r.eng(args), name = `${JSON.stringify(brk)}: eng ${args.join(' ')}`;
+      assert.equal(s.status, 1, `${name}: ${s.stdout}${s.stderr}`);
+      assert.doesNotMatch(s.stderr, /[\r\u2028\u2029\u0085]/, `${name}: no raw line break but \\n`);
+      const lines = s.stderr.split('\n').filter(Boolean);
+      assert.ok(lines.every((l, i) => i === 0 ? l === 'eng: FAIL config invalid:' : l.startsWith('  ') && !l.startsWith('   ')), `${name}: one line per error: ${s.stderr}`);
+      for (const [what, v] of [['agents\\.skills_dir', skills], ['verification\\.checks_dir', checks]]) {
+        const h = v.startsWith('.claude/skills') ? 'skills' : 'agents';
+        assert.equal(lines.filter(l => new RegExp(`^ {2}${what} \\(${yamlQuoted(v).replace(/[\\()[\].]/g, '\\$&')}\\) is in \\.claude/${h}, which eng never writes into: .* if Claude Code should see it$`).test(l)).length, 1, `${name}: ${what} is one whole line: ${s.stderr}`);
+      }
+    }
+  }
+});
