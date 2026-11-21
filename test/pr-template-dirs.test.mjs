@@ -80,8 +80,10 @@ test('a skills_dir with a newline inside a PR template folder is refused on one 
   const s = r.eng('sync');
   assert.equal(s.status, 1, s.stdout + s.stderr);
   const lines = s.stderr.split('\n').filter(l => l.includes('agents.skills_dir'));
-  assert.equal(lines.length, 1, s.stderr);
-  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\nb"\) is in docs\/pull_request_template, /, s.stderr);
+  // Two refusals, each on its own line: this one, and the line break in a rendered value (Core task p57cxn78).
+  assert.equal(lines.length, 2, s.stderr);
+  assert.ok(lines.some(l => /agents\.skills_dir \("docs\/pull_request_template\/a\\nb"\) is in docs\/pull_request_template, /.test(l)), s.stderr);
+  assert.ok(lines.some(l => /agents\.skills_dir \(.*\) holds a line break/.test(l)), s.stderr);
 });
 
 // Review round 1 on #121: with skills_dir docs or .github, the empty-folder cleanup after a sync must leave the
@@ -105,9 +107,11 @@ test('a skills_dir with U+2028 inside a PR template folder is refused on one pri
   const s = r.eng('sync');
   assert.equal(s.status, 1, s.stdout + s.stderr);
   const lines = s.stderr.split(/\r\n|[\n\r\u2028\u2029\u0085]/).filter(l => l.includes('agents.skills_dir'));
-  assert.equal(lines.length, 1, s.stderr);
-  assert.match(lines[0], /agents\.skills_dir \("docs\/pull_request_template\/a\\u2028b\\u00e9"\) is in /, s.stderr);
-  assert.match(lines[0], /^[ -~]*$/, s.stderr);
+  // Two refusals, each on its own line: this one, and the line break in a rendered value (Core task p57cxn78).
+  assert.equal(lines.length, 2, s.stderr);
+  assert.ok(lines.some(l => /agents\.skills_dir \("docs\/pull_request_template\/a\\u2028b\\u00e9"\) is in /.test(l)), s.stderr);
+  assert.ok(lines.some(l => /agents\.skills_dir \(.*\) holds a line break/.test(l)), s.stderr);
+  for (const l of lines) assert.match(l, /^[ -~]*$/, s.stderr);
 });
 
 // Review round 2 on #121: a repo synced by an earlier eng with skills_dir docs/pull_request_template moves to skills_dir

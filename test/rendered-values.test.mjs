@@ -40,7 +40,7 @@ test('renderedValueErrors refuses each rendered value that holds a line break of
       assert.ok(errs[0].startsWith(`${key} (`), why);
       assert.match(errs[0], /line break/, why);
       assert.match(errs[0], PRINTABLE, `${why}: the refusal is printable ASCII`);
-      assert.ok(errs[0].includes(`\\u${br.charCodeAt(0).toString(16).padStart(4, '0')}`), `${why}: the break is shown escaped`);
+      assert.equal(JSON.parse(errs[0].slice(`${key} (`.length, errs[0].indexOf(') holds'))), `a${br}b`, `${why}: the value is shown JSON-escaped`);
     }
     const c = template(); set(c, 'One plain line, draft --> review');
     assert.deepEqual(renderedValueErrors(c), [], `${key}: one line passes`);
