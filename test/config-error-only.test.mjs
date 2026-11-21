@@ -71,3 +71,50 @@ test('with a valid config, the update notice, doctor\'s version line and the lin
   assert.match(doc.stdout, /^ {2}WARN eng-standard: installed \S+, rendered \S+ \(\.eng\/lock\.json\), latest 99\.0\.0 /, doc.stdout);
   assert.doesNotMatch(doc.stderr, /is available/, 'doctor keeps its own version report');
 });
+
+// Review round 1 on #125.
+test('eng verdict status without a numeric --pr is a usage error before any config, as before', () => {
+  const r = repo(`${TPL}\nbroken: [\n`), x = r.eng(['verdict', 'status']);
+  assert.equal(x.status, 1); assert.match(x.stderr, /^eng: FAIL usage: eng verdict status --pr <n>$/m);
+  assert.doesNotMatch(x.stderr, /config invalid/);
+});
+
+test('with no eng.config.yml, doctor\'s version line and the lint advisory print first, as before', () => {
+  const r = repo(TPL); fs.rmSync(path.join(r.dir, 'eng.config.yml'));
+  const doc = r.eng(['doctor']);
+  assert.match(doc.stdout, /^ {2}\S+ eng-standard: installed /, doc.stdout + doc.stderr); assert.match(doc.stderr, /no eng\.config\.yml/);
+  const lint = r.eng(['lint', '--config-from', 'origin/main']);
+  assert.match(lint.stdout, /^ {2}--config-from is ignored/, lint.stdout + lint.stderr); assert.match(lint.stderr, /no eng\.config\.yml/);
+});
+
+test('a YAML warning in a valid config prints where doctor loads it, after its version line, as before', async () => {
+  const r = repo(`%YAML 1.3\n---\n${TPL}`), log = path.join(tmp('eng-log-'), 'out'), fd = fs.openSync(log, 'w');
+  const srv = (await import('node:http')).createServer((req, res) => { res.writeHead(200, { connection: 'close' }); res.end(req.url.endsWith('package.json') ? '{"version":"99.0.0"}' : '# Changelog\n'); });
+  await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  try {
+    const env = { ...process.env, XDG_CACHE_HOME: r.xdg, ENG_STANDARD_SOURCE: `http://127.0.0.1:${srv.address().port}/` };
+    const { spawn } = await import('node:child_process');
+    await new Promise(ok => spawn(process.execPath, [ENG, 'doctor'], { cwd: r.dir, env, stdio: ['ignore', fd, fd] }).on('close', ok));
+  } finally { srv.close(); fs.closeSync(fd); }
+  const both = fs.readFileSync(log, 'utf8'), v = both.search(/eng-standard: installed /), w = both.indexOf('YAMLWarning');
+  assert.ok(v >= 0 && (w === -1 || w > v), `version line first; a warning, if any, after it: ${both.slice(0, 600)}`);
+});
+
+test('the command uses the config text dispatch checked, even if the file changes while the notice waits', async () => {
+  const r = repo(TPL);
+  assert.equal(r.eng(['sync']).status, 0); execSync('git add -A && git commit -qm sync', { cwd: r.dir });
+  const srv = (await import('node:http')).createServer((req, res) => {
+    fs.writeFileSync(path.join(r.dir, 'eng.config.yml'), `${TPL}\nbroken: [\n`); // saved mid-lookup
+    res.writeHead(200, { 'content-type': 'application/json', connection: 'close' }); res.end('{"version":"99.0.0"}');
+  });
+  await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  try {
+    const env = { ...process.env, XDG_CACHE_HOME: tmp('eng-xdg-'), ENG_STANDARD_SOURCE: `http://127.0.0.1:${srv.address().port}/` };
+    for (const k of ['NODE_TEST_CONTEXT', 'CI', 'ENG_NO_UPDATE_CHECK', 'GITHUB_ACTIONS', 'BUILDKITE']) delete env[k];
+    const { spawn } = await import('node:child_process');
+    const [code, out, err] = await new Promise(ok => { let o = '', e = ''; const c = spawn(process.execPath, [ENG, 'lint'], { cwd: r.dir, env }); c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { e += d; }); c.on('close', s => ok([s, o, e])); });
+    assert.match(fs.readFileSync(path.join(r.dir, 'eng.config.yml'), 'utf8'), /broken: \[/, 'the file did change during the lookup');
+    assert.doesNotMatch(err, /config invalid/, err);
+    assert.match(err, /is available/); assert.equal(code, 0, out + err); assert.match(out, /eng lint: PASS/);
+  } finally { srv.close(); }
+});
