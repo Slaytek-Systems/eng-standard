@@ -199,3 +199,62 @@ test('ambiguous marker lines are refused, and eng sync writes nothing, not even 
     assert.deepEqual(fs.readdirSync(dir).sort(), ['.git', 'AGENTS.md', 'eng.config.yml']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Review round 1 on #99: fences behind list markers, closers CommonMark rejects, comments, line endings, and checks that
+// must refuse before any write (sync --check, init, a broken lock).
+test('fences behind list markers or with a non-space after the closer, comments and bare CR endings are read as Markdown is', async () => {
+  const { agentsBlockErrors } = await import('../lib/render.mjs');
+  const c = template(), block = blockOf(renderAll(c, null)['AGENTS.md']), OLD = '<!-- eng:begin -->\nold\n<!-- eng:end -->';
+  const list = '# AGENTS.md\n\n- An example:\n  ```md\n  <!-- eng:begin -->\n  example\n  <!-- eng:end -->\n  ```\n';
+  assert.equal(renderAll(c, list)['AGENTS.md'], `${list}\n${block}\n`, 'a list-item example alone: the block is appended');
+  assert.equal(renderAll(c, `${list}\n${OLD}\n`)['AGENTS.md'], `${list}\n${block}\n`, 'a list-item example and a real block: the block is replaced');
+  const nbsp = '# AGENTS.md\n\n```\n``` \n<!-- eng:begin -->\nexample\n<!-- eng:end -->\n```\n';
+  assert.equal(renderAll(c, nbsp)['AGENTS.md'], `${nbsp}\n${block}\n`, '``` then a non-breaking space does not close a fence');
+  const comment = '# AGENTS.md\n\n<!--\n```md\n-->\n\n';
+  assert.equal(renderAll(c, `${comment}${OLD}\n`)['AGENTS.md'], `${comment}${block}\n`, 'a fence inside an HTML comment is not a fence');
+  assert.throws(() => renderAll(c, '<!--\n<!-- eng:begin -->\nx\n<!-- eng:end -->\n'), /0 line\(s\) that are exactly <!-- eng:begin --> and 1/, 'the comment ends at the begin line, as in Markdown, so the end marker stands alone');
+  assert.throws(() => renderAll(c, '# AGENTS.md\n\n<!-- open\nnever closed\n'), /an HTML comment that never closes/);
+  const cr = `# AGENTS.md\r\rKeep.\r\r${OLD.replace(/\n/g, '\r')}\r`;
+  assert.equal(renderAll(c, cr)['AGENTS.md'], `# AGENTS.md\r\rKeep.\r\r${block}\r`, 'bare CR endings: the block is replaced, not appended');
+  const crlf = `# AGENTS.md\r\n\r\n${OLD.replace(/\n/g, '\r\n')}\r\n`;
+  assert.equal(renderAll(c, crlf)['AGENTS.md'], `# AGENTS.md\r\n\r\n${block}\r\n`);
+  assert.equal(renderAll(c, `x\n  ${OLD}  \n`)['AGENTS.md'], `x\n  ${block}  \n`, 'indent before the begin marker and spaces after the end marker are kept');
+  for (const d of ['~~~ markdown', '```', '  ```js', '- ```md', '> ~~~']) {
+    const bad = template(); bad.project.description = d;
+    assert.ok(agentsBlockErrors(bad).some(e => e.startsWith('project.description must not start with a ``` or ~~~ code fence')), d);
+  }
+  const fine = template(); fine.project.description = 'Ships `eng` and ``` fences ``` mid-line.';
+  assert.deepEqual(agentsBlockErrors(fine), []);
+});
+
+test('sync --check and init stop on ambiguous markers before anything else, and a broken lock stops sync before any write', () => {
+  const dup = '# AGENTS.md\n\n<!-- eng:begin -->\nA\n<!-- eng:begin -->\nB\n<!-- eng:end -->\n';
+  const cfg = template(); delete cfg.git?.rewrite_pushed;
+  let dir = scratch(cfg, dup);
+  try {
+    const r = spawnSync(process.execPath, [path.join(PKG, 'bin/eng.mjs'), 'sync', '--check'], { cwd: dir, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /eng needs one of each, begin first/, 'the marker fix comes first: eng sync cannot fix markers');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
+  dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-markers-'));
+  try {
+    execSync('git init -q -b main', { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), dup);
+    const r = spawnSync(process.execPath, [path.join(PKG, 'bin/eng.mjs'), 'init'], { cwd: dir, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /eng needs one of each, begin first/);
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['.git', 'AGENTS.md'], 'init seeded nothing');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
+  const mine = '# AGENTS.md\n\nKeep this.\n';
+  dir = scratch(cfg, mine);
+  try {
+    fs.mkdirSync(path.join(dir, '.eng')); fs.writeFileSync(path.join(dir, '.eng/lock.json'), '{');
+    const config = read(dir, 'eng.config.yml'), r = sync(dir);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.equal(read(dir, 'AGENTS.md'), mine);
+    assert.equal(read(dir, 'eng.config.yml'), config);
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['.eng', '.git', 'AGENTS.md', 'eng.config.yml']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

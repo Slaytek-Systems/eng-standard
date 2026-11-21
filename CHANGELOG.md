@@ -6,11 +6,12 @@ Versions follow the commit titles on `main` (`vX.Y.Z: ...`). Minor = new command
 
 **`eng sync` finds the AGENTS.md block only by whole marker lines outside fenced code, and a refusal writes nothing** (Core task p57dd5k4fvwcf37hbc4a1hbwjh8jnq77, found in review of #98; the bugs predate it). Before, eng found the block by substring.
 
-- Repo text that quoted `<!-- eng:begin -->` inline was taken for the block start, and eng sync deleted the repo text between the quote and the real block. Now a marker counts only as a whole line (up to three spaces of indent, trailing spaces allowed).
-- A marker pair in a fenced example (```` ``` ```` or `~~~`) was taken for the block, and eng sync overwrote the example. Fenced code is now repo text, above or below the real block. An example and no block: eng appends the block after it.
-- Marker lines that are not one begin then one end, or a fence that never closes when eng must append the block, make `eng sync`, `eng sync --check` and `eng doctor` stop with the fix.
-- With such markers, eng sync used to write the `git.rewrite_pushed` migration to `eng.config.yml` before it refused. It now checks everything before its first write, so a refusal leaves every file as it was.
-- **Upgrade:** move the pin, install and run `eng sync`. Nothing rendered changes for an AGENTS.md with one block and no markers elsewhere.
+- Repo text that quoted `<!-- eng:begin -->` inline was taken for the block start, and eng sync deleted the repo text between the quote and the real block. Now a marker counts only as a whole line (up to three spaces of indent, trailing spaces allowed), and the indent and spaces around it are kept.
+- A marker pair in a fenced example (```` ``` ```` or `~~~`, also inside a list item or blockquote) was taken for the block, and eng sync overwrote the example. Fenced code and multi-line HTML comments are now repo text, above or below the real block. An example and no block: eng appends the block after it. Lines may end in `\n`, `\r\n` or `\r`.
+- Marker lines that are not one begin then one end, or a fence or comment that never closes when eng must append the block, make `eng sync`, `eng sync --check`, `eng doctor` and `eng init` stop with the fix before anything else.
+- `project.description` may not start with a code fence: it starts a line in the block, where a fence would hide the end marker.
+- With such markers, eng sync used to write the `git.rewrite_pushed` migration to `eng.config.yml` before it refused. It now checks everything before its first write, the lock file included, so a refusal leaves every file as it was.
+- **Upgrade:** move the pin, install and run `eng sync`. An AGENTS.md with one block and no marker lines elsewhere renders exactly as before.
 
 ## 0.23.9 (21 Nov 2026)
 

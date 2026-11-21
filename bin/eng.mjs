@@ -137,11 +137,12 @@ const readOr = (p, d = null) => fs.existsSync(path.join(ROOT, p)) ? fs.readFileS
 const pkgVersion = () => JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).version;
 const standardProblems = () => lifecycleProblems({ lockVersion: parseLock(readOr('.eng/lock.json')).package, installed: pkgVersion(), pin: declaredPin(readOr('package.json')) });
 
+// eng's block in AGENTS.md must be findable before eng writes anything (lib/render.mjs agentsBlockSpan).
+function agentsBlockOrDie() { const span = agentsBlockSpan(readOr('AGENTS.md') ?? ''); if (span.error) die(span.error); }
 function render(cfg) {
   const errs = renderErrors(cfg);
   if (errs.length) die('config invalid:\n  ' + errs.join('\n  '));
-  const span = agentsBlockSpan(readOr('AGENTS.md') ?? '');
-  if (span.error) die(span.error);
+  agentsBlockOrDie();
   const files = renderAll(cfg, readOr('AGENTS.md'), readOr('SHIPPING.md'));
   const inHarness = Object.keys(files).filter(harnessOut);
   if (inHarness.length) die(`config invalid:\n  eng would render ${inHarness.length} file(s) into .claude/skills or .claude/agents (${inHarness.slice(0, 3).join(', ')}), which eng never writes into. Move the setting that names that folder.`);
@@ -196,7 +197,7 @@ function sync() {
   const mig = configMigration();
   const cfg = mig ? YAML.parse(mig.text) : loadConfig();
   if (mig) validate(cfg);
-  const files = render(cfg), exec = executables(cfg);
+  const files = render(cfg), exec = executables(cfg), old = parseLock(readOr('.eng/lock.json'));
   if (mig) {
     fs.writeFileSync(path.join(ROOT, 'eng.config.yml'), mig.text);
     for (const m of mig.changes) console.log(`  migrated eng.config.yml: ${m.did} (${m.why})`);
@@ -212,7 +213,6 @@ function sync() {
   }
   // Prune files a previous sync generated that the config no longer renders. Never in .claude/skills or .claude/agents,
   // even when an earlier agents.skills_dir rendered there: those files now belong to the developer.
-  const old = parseLock(readOr('.eng/lock.json'));
   for (const p of old.files) if (!(p in files) && !harnessOut(p) && onDisk(p) && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink()) { fs.rmSync(path.join(ROOT, p)); console.log(`  removed ${p}`); changed++; rmEmptyParents(p); }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
   // their parent), and skip a folder that cannot be read.
@@ -231,6 +231,7 @@ function sync() {
 // gets a CODEOWNERS line and baselines, so the findings it has today pass and only new ones fail. Re-running is safe:
 // an existing config is kept, and a baseline is written only when it is missing.
 function init() {
+  agentsBlockOrDie();
   const shipping = sh('git ls-files').split('\n').filter(f => f && f !== 'eng.config.yml').length > 0;
   if (!fs.existsSync(path.join(ROOT, 'eng.config.yml'))) {
     if (!shipping) {
@@ -285,6 +286,7 @@ function saveBaseline(kind, cfg) {
 }
 
 function syncCheck() {
+  agentsBlockOrDie();
   const raw = YAML.parse(readOr('eng.config.yml', '{}')) ?? {};
   const due = [...retired(raw).map(m => `${m.what}: ${m.why}`), ...(missingRewriteMode(raw) ? [`${rewriteModeLine(raw).what}: eng sync adds protected when Graphite is set up here, otherwise never, and prints why`] : [])];
   if (due.length) die(`sync --check: eng.config.yml has ${due.length} entr${due.length === 1 ? 'y' : 'ies'} this release migrates:\n  ${due.join('\n  ')}\n  Fix: ${FIX}.`);
