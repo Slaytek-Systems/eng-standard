@@ -134,3 +134,68 @@ test('the PASS line always shows in AGENTS.md and SHIPPING.md, whatever merge.au
     assert.doesNotMatch(out['SHIPPING.md'], /<PASS_PROVES>/);
   }
 });
+
+// Block markers (Part B of #98, Core task p57dd5k4fvwcf37hbc4a1hbwjh8jnq77): a marker counts only as a whole line outside
+// fenced code, and a refusal writes nothing, eng.config.yml included.
+const FENCED = '```markdown\n<!-- eng:begin -->\nexample block\n<!-- eng:end -->\n```\n';
+const sync = dir => spawnSync(process.execPath, [path.join(PKG, 'bin/eng.mjs'), 'sync'], { cwd: dir, encoding: 'utf8', env: { ...process.env, ENG_STANDARD_SOURCE: PKG } });
+const scratch = (cfg, agents) => {
+  const dir = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-markers-'));
+  execSync('git init -q -b main', { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'eng.config.yml'), YAML.stringify(cfg));
+  fs.writeFileSync(path.join(dir, 'AGENTS.md'), agents);
+  return dir;
+};
+const read = (dir, f) => fs.readFileSync(path.join(dir, f), 'utf8');
+
+test('repo text that quotes a marker inline is never taken for the block', () => {
+  const c = template();
+  const local = '# AGENTS.md\n\nThe generated part starts at `<!-- eng:begin -->` below.\n\n## Local approval rule\n\n- Changes to auth wait for the repo owner.\n';
+  const a = renderAll(c, `${local}\n<!-- eng:begin -->\nold\n<!-- eng:end -->\n`)['AGENTS.md'];
+  assert.ok(a.startsWith(local), 'the local rule between the inline quote and the block is kept');
+  assert.equal(a.split('\n').filter(l => l === '<!-- eng:begin -->').length, 1);
+  assert.ok(!a.includes('\nold\n'));
+  const only = '# AGENTS.md\n\nSee `<!-- eng:begin -->` and `<!-- eng:end -->`.\n';
+  assert.ok(renderAll(c, only)['AGENTS.md'].startsWith(`${only}\n<!-- eng:begin -->\n`), 'inline quotes only: the block is appended');
+});
+
+test('a marker pair in a fenced example is repo text, above or below the real block (the #98 regression)', () => {
+  const c = template(), block = blockOf(renderAll(c, null)['AGENTS.md']);
+  const above = `# AGENTS.md\n\nHow the block looks:\n\n${FENCED}\nKeep this.\n\n<!-- eng:begin -->\nold\n<!-- eng:end -->\n`;
+  assert.equal(renderAll(c, above)['AGENTS.md'], above.replace('<!-- eng:begin -->\nold\n<!-- eng:end -->', block));
+  const below = `# AGENTS.md\n\n<!-- eng:begin -->\nold\n<!-- eng:end -->\n\nHow the block looks:\n\n${FENCED.replace(/```/g, '~~~~')}\nKeep this.\n`;
+  assert.equal(renderAll(c, below)['AGENTS.md'], below.replace('<!-- eng:begin -->\nold\n<!-- eng:end -->', block));
+  const only = `# AGENTS.md\n\n${FENCED}`;
+  assert.equal(renderAll(c, only)['AGENTS.md'], `${only}\n${block}\n`, 'only a fenced example: the block is appended after it');
+  assert.throws(() => renderAll(c, '# AGENTS.md\n\n```\nnever closed\n'), /code fence .* never closes/);
+
+  const cfg = template(); cfg.agents.rules = [{ rule: 'Deploys run by hand; draft --> review --> live', enforced_by: 'review', why: 'no check sees it' }];
+  const dir = scratch(cfg, below);
+  try {
+    const r = sync(dir);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const a = read(dir, 'AGENTS.md');
+    assert.ok(a.endsWith(`\nHow the block looks:\n\n${FENCED.replace(/```/g, '~~~~')}\nKeep this.\n`), a);
+    assert.match(blockOf(a), /Sharp edge, no check catches it: Deploys run by hand; draft --> review --> live\n/);
+    assert.equal(sync(dir).stdout.trim().split('\n').at(-1), 'eng sync: no changes');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('ambiguous marker lines are refused, and eng sync writes nothing, not even the config migration', () => {
+  const c = template();
+  for (const bad of ['<!-- eng:begin -->\nx\n<!-- eng:begin -->\ny\n<!-- eng:end -->\n', '<!-- eng:end -->\nx\n<!-- eng:begin -->\n', 'text\n<!-- eng:begin -->\nno end\n', `<!-- eng:begin -->\na\n<!-- eng:end -->\n${FENCED}<!-- eng:end -->\n`])
+    assert.throws(() => renderAll(c, bad), /eng needs one of each, begin first/, JSON.stringify(bad));
+
+  const cfg = template(); delete cfg.git?.rewrite_pushed;
+  const mine = '# AGENTS.md\n\nKeep this.\n\n<!-- eng:begin -->\nA\n<!-- eng:begin -->\nB\n<!-- eng:end -->\n';
+  const dir = scratch(cfg, mine), config = read(dir, 'eng.config.yml');
+  try {
+    assert.doesNotMatch(config, /rewrite_pushed/, 'the config is one this release migrates');
+    const r = sync(dir);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /AGENTS\.md has 2 line\(s\) that are exactly <!-- eng:begin --> and 1 exactly <!-- eng:end -->/);
+    assert.equal(read(dir, 'AGENTS.md'), mine, 'AGENTS.md is untouched');
+    assert.equal(read(dir, 'eng.config.yml'), config, 'eng.config.yml is untouched');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['.git', 'AGENTS.md', 'eng.config.yml']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
