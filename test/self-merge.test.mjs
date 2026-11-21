@@ -152,7 +152,7 @@ if [[ "$1" == "api" && "$*" == *--slurp* ]]; then echo '[]'; exit 0; fi
 if [[ "$1" == "api" ]]; then printf '%s\\n' "$*" >> "${calls}"; echo '{}'; exit 0; fi
 echo "fake-gh: unexpected: $*" >&2; exit 1
 `, { mode: 0o755 });
-  git('init -q -b main'); git('config user.email t@t'); git('config user.name t');
+  git('init -q -b main'); git('config user.email t@t'); git('config user.name t'); git('remote add origin https://github.com/o/r.git');
   fs.writeFileSync(path.join(dir, '.gitignore'), '.fakebin/\n.gh-calls\n');
   fs.copyFileSync(ROOTCFG, path.join(dir, 'eng.config.yml'));
   git('add -A'); git('commit -qm base'); git('checkout -qb feat');
@@ -209,7 +209,7 @@ console.error('fake-gh: unexpected: ' + a.join(' ')); process.exit(1);
   g(origin, 'checkout -qb high'); fs.mkdirSync(path.join(origin, 'bin')); fs.writeFileSync(path.join(origin, 'bin/tool.mjs'), 'export const x = 1;\n');
   g(origin, 'add -A'); g(origin, 'commit -qm tool');
   const H = g(origin, 'rev-parse HEAD'), clone = name => {
-    const d = path.join(root, name); g(root, `clone -q -b high ${origin} ${name}`); g(d, 'config user.email t@t'); g(d, 'config user.name t'); return d;
+    const d = path.join(root, name); g(root, `clone -q -b high ${origin} ${name}`); g(d, 'config user.email t@t'); g(d, 'config user.name t'); g(d, 'remote add gh git@github.com:o/r.git'); return d;
   };
   const [a, b, c] = ['clone-a', 'clone-b', 'clone-c'].map(clone);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_HEAD: H };
@@ -1098,4 +1098,36 @@ test('isolation record: the configured tests are titles in test/ephemeral.test.m
   for (const t of ISO_TESTS) assert.ok(src.includes(`test('${t}'`), t);
   for (const bad of [{}, { paths: [], tests: ['x'] }, { paths: ['lib/run.mjs'], tests: [''] }, { paths: 'lib/run.mjs', tests: ['x'] }])
     assert.throws(() => selfMergeConfig({ ship: { self_merge: { isolation_record: bad } } }), /ship\.self_merge\.isolation_record needs paths/, JSON.stringify(bad));
+});
+
+// p571sqn1: eng verdict --pr <n> with no GitHub remote prints one plain FAIL line and exits 1 before gh is called.
+test('eng verdict --pr: no GitHub remote (none, or only non-GitHub ones) is one FAIL line, and gh is never called', () => {
+  const root = fs.mkdtempSync(path.join(process.env.ENG_TMP ?? os.tmpdir(), 'eng-noremote-')), bin = path.join(root, 'bin'), log = path.join(root, 'gh-calls');
+  fs.mkdirSync(bin); fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\necho 'gh: boom' >&2; exit 1\n`, { mode: 0o755 });
+  const d = path.join(root, 'repo'), g = c => execSync(`git ${c}`, { cwd: d, stdio: 'pipe', encoding: 'utf8' }).trim();
+  fs.mkdirSync(d); g('init -q -b main'); g('config user.email t@t'); g('config user.name t');
+  fs.copyFileSync(ROOTCFG, path.join(d, 'eng.config.yml')); g('add -A'); g('commit -qm base');
+  // The repo pins eng-standard and a newer release is known, so the update notice would print (and cache) if it ran.
+  fs.writeFileSync(path.join(d, 'package.json'), JSON.stringify({ name: 'demo', devDependencies: { '@slayteksystems/eng-standard': 'github:Slaytek-Systems/eng-standard#v0.18.2' } }));
+  g('checkout -qb feat'); fs.writeFileSync(path.join(d, 'README.md'), 'x\n'); g('add -A'); g('commit -qm docs');
+  const src = path.join(root, 'src'), xdg = path.join(root, 'xdg'); fs.mkdirSync(src); fs.mkdirSync(xdg);
+  fs.writeFileSync(path.join(src, 'package.json'), '{"version":"99.0.0"}'); fs.writeFileSync(path.join(src, 'CHANGELOG.md'), '# Changelog\n');
+  const { GITHUB_REPOSITORY, GH_REPO, NODE_TEST_CONTEXT, CI, ENG_NO_UPDATE_CHECK, GITHUB_ACTIONS, BUILDKITE, ...base } = process.env;
+  const env = { ...base, PATH: `${bin}:${process.env.PATH}`, XDG_CACHE_HOME: xdg, ENG_STANDARD_SOURCE: src };
+  const eng = (...a) => spawnSync(process.execPath, [ENG, ...a], { cwd: d, encoding: 'utf8', env });
+  const line = 'eng: FAIL verdict: PR #7 needs a GitHub remote; add one (git remote add origin https://github.com/<owner>/<repo>.git) or record the verdict without --pr\n';
+  try {
+    assert.equal(eng('run', '--by', 'v-1', '--', 'true').status, 0);
+    fs.rmSync(xdg, { recursive: true }); fs.mkdirSync(xdg);
+    for (const remotes of [[], [['origin', 'https://gitlab.com/o/r.git'], ['up', 'git@notgithub.com:o/r.git'], ['local', root]]]) {
+      for (const [n, u] of remotes) g(`remote add ${n} ${u}`);
+      for (const argv of [['verdict', 'PASS', '--by', 'v-1', '--pr', '7'], ['verdict', 'check', '--pr', '7'], ['verdict', 'status', '--pr', '7']]) {
+        const r = eng(...argv);
+        assert.deepEqual([r.status, r.stdout, r.stderr], [1, '', line], `${argv.join(' ')} with remotes ${JSON.stringify(remotes)}`);
+      }
+    }
+    assert.equal(fs.existsSync(log), false, 'gh was never called');
+    assert.deepEqual(fs.readdirSync(xdg), [], 'the update notice did not run');
+    assert.equal(g('notes --ref eng-verdict list'), '', 'no verdict was recorded either');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
