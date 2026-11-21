@@ -276,8 +276,10 @@ function sync(plan = syncPlan()) {
     console.log(`  removed ${p}`); changed++; rmEmptyParents(p);
   }
   // Remove empty folders under the skills folder, never inside .claude/skills or .claude/agents (skills_dir .claude is
-  // their parent), and skip a folder that cannot be read.
-  const walk = x => { let es; try { es = fs.readdirSync(x, { withFileTypes: true }); } catch { return; } for (const e of es) { const c = path.join(x, e.name); if (!e.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
+  // their parent), and skip a folder that cannot be read. syncPlan refused a symlink on skills_dir's path (every skill
+  // renders there). Each path is looked up with lstat, not the listing's type: a name that is not UTF-8 decodes to one
+  // another entry may have, so the listing's type can belong to a different file. A symlink is never entered.
+  const walk = x => { let ns; try { ns = fs.readdirSync(x); } catch { return; } for (const n of ns) { const c = path.join(x, n); let st; try { st = fs.lstatSync(c); } catch { continue; } if (!st.isDirectory() || harnessOut(path.relative(ROOT, c))) continue; walk(c); try { if (!fs.readdirSync(c).length) fs.rmdirSync(c); } catch {} } };
   walk(path.join(ROOT, cfg.agents.skills_dir));
   const lock = lockText(pkgVersion(), Object.keys(files));
   if (readOr('.eng/lock.json') !== lock) { fs.mkdirSync(path.join(ROOT, '.eng'), { recursive: true }); fs.writeFileSync(path.join(ROOT, '.eng/lock.json'), lock); console.log('  wrote .eng/lock.json'); changed++; }
