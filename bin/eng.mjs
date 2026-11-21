@@ -207,14 +207,16 @@ function prunePlan(lockFiles, files) {
     // The exact name in its folder's listing: on a case-insensitive disk lstat would also find another file.
     const dir = path.dirname(p);
     let names; try { names = fs.readdirSync(path.join(ROOT, dir)); } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') refused.push(`${p} (${dir} cannot be read (${e.code}))`); continue; }
-    if (names.includes(path.basename(p)) && fs.lstatSync(path.join(ROOT, p)).isFile()) prune.push(p);
+    if (!names.includes(path.basename(p))) continue;
+    let st; try { st = fs.lstatSync(path.join(ROOT, p)); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    if (st.isFile()) prune.push(p);
   }
   if (refused.length) die(`.eng/lock.json: eng sync would prune ${refused.length} file(s) the config no longer renders through a symlinked folder, or in a folder eng cannot read: ${refused.join(', ')}. eng reads nothing through the link, and writes and deletes nothing. Fix: delete each file yourself if it should go, then replace the linked folder with a real one (or make the folder readable), or remove the entry from .eng/lock.json; then run eng sync.`);
   return prune;
 }
 // For each folder on the repo-relative path p, below the repo root, from the top down: why it is a symlink or cannot be
-// read; null when one is not there (the entry is gone); false when every folder is a real, readable folder. lstat never
-// follows a link.
+// read; null when one is not there (the entry is gone); false when every folder is a real folder eng can list. lstat never
+// follows a link, and access runs only on a real folder.
 function folderProblem(p) {
   const parts = p.split('/').slice(0, -1);
   for (let i = 1; i <= parts.length; i++) {
@@ -222,6 +224,7 @@ function folderProblem(p) {
     let st; try { st = fs.lstatSync(path.join(ROOT, d)); } catch (e) { return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : `${d} cannot be read (${e.code || e.message})`; }
     if (st.isSymbolicLink()) return `${d} is a symlink`;
     if (!st.isDirectory()) return null;
+    try { fs.accessSync(path.join(ROOT, d), fs.constants.R_OK); } catch (e) { return `${d} cannot be read (${e.code || e.message})`; }
   }
   return false;
 }
